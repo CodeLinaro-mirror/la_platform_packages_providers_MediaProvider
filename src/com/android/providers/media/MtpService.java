@@ -33,6 +33,7 @@ import android.os.storage.StorageEventListener;
 import android.os.storage.StorageManager;
 import android.os.storage.StorageVolume;
 import android.util.Log;
+import android.util.BoostFramework;
 
 import com.android.internal.annotations.GuardedBy;
 import com.android.internal.util.Preconditions;
@@ -43,7 +44,8 @@ import java.util.HashMap;
 public class MtpService extends Service {
     private static final String TAG = "MtpService";
     private static final boolean LOGD = false;
-
+    private BoostFramework mPerfBoost = null;
+    private boolean mIsPerfLockAcquired = false;
     // We restrict PTP to these subdirectories
     private static final String[] PTP_DIRECTORIES = new String[] {
         Environment.DIRECTORY_DCIM,
@@ -115,6 +117,11 @@ public class MtpService extends Service {
     @Override
     public void onDestroy() {
         mStorageManager.unregisterListener(mStorageEventListener);
+        if (mIsPerfLockAcquired && mPerfBoost != null) {
+            mPerfBoost.perfLockRelease();
+            mIsPerfLockAcquired = false;
+            Log.d(TAG, "Perflock released for MTP ");
+        }
     }
 
     @Override
@@ -278,6 +285,15 @@ public class MtpService extends Service {
                 sServerHolder.server.addStorage(storage);
             }
         }
+        if (mPerfBoost == null) {
+            mPerfBoost = new BoostFramework();
+        }
+        if (mPerfBoost != null && !mIsPerfLockAcquired) {
+            //Use big enough number here to hold the perflock for entire MTP session
+            mPerfBoost.perfHint(BoostFramework.VENDOR_HINT_MTP_BOOST,null,Integer.MAX_VALUE,-1);
+            Log.d(TAG, "perflock acquired for MTP ");
+            mIsPerfLockAcquired = true;
+        }
     }
 
     private void removeStorageLocked(StorageVolume volume) {
@@ -295,6 +311,11 @@ public class MtpService extends Service {
                 sServerHolder.database.removeStorage(storage);
                 sServerHolder.server.removeStorage(storage);
             }
+        }
+        if (mIsPerfLockAcquired && mPerfBoost != null) {
+            mPerfBoost.perfLockRelease();
+            mIsPerfLockAcquired = false;
+            Log.d(TAG, "Perflock released for MTP ");
         }
     }
 
