@@ -290,7 +290,7 @@ public class MtpService extends Service {
         }
         if (mPerfBoost != null && !mIsPerfLockAcquired) {
             //Use big enough number here to hold the perflock for entire MTP session
-            mPerfBoost.perfHint(BoostFramework.VENDOR_HINT_MTP_BOOST,null,Integer.MAX_VALUE,-1);
+            mPerfBoost.perfHint(BoostFramework.VENDOR_HINT_MTP_BOOST,getApplicationContext().getPackageName(),Integer.MAX_VALUE,-1);
             Log.d(TAG, "perflock acquired for MTP ");
             mIsPerfLockAcquired = true;
         }

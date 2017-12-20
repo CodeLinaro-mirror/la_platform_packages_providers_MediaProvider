@@ -543,7 +543,7 @@ public final class RingtonePickerActivity extends AlertActivity implements
                                 .setFlags(mAttributesFlags)
                                 .build());
             }
-            ringtone.play();
+            if (ringtone.getUri() != null) ringtone.play();
         }
     }
 
