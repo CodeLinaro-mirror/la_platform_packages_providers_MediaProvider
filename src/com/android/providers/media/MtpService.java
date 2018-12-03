@@ -45,7 +45,7 @@ import android.hardware.usb.IUsbManager;
 import java.io.File;
 import java.io.FileDescriptor;
 import java.util.HashMap;
-
+import android.util.BoostFramework;
 /**
  * The singleton service backing instances of MtpServer that are started for the foreground user.
  * The service has the responsibility of retrieving user storage information and managing server
@@ -54,7 +54,8 @@ import java.util.HashMap;
 public class MtpService extends Service {
     private static final String TAG = "MtpService";
     private static final boolean LOGD = false;
-
+    private BoostFramework mPerfBoost = null;
+    private boolean mIsPerfLockAcquired = false;
     // We restrict PTP to these subdirectories
     private static final String[] PTP_DIRECTORIES = new String[] {
         Environment.DIRECTORY_DCIM,
@@ -124,6 +125,10 @@ public class MtpService extends Service {
     @Override
     public void onDestroy() {
         mStorageManager.unregisterListener(mStorageEventListener);
+        if (mIsPerfLockAcquired && mPerfBoost != null) {
+            mPerfBoost.perfLockRelease();
+            mIsPerfLockAcquired = false;
+        }
         synchronized (MtpService.class) {
             if (sServerHolder != null) {
                 sServerHolder.database.setServer(null);
@@ -234,9 +239,21 @@ public class MtpService extends Service {
                 sServerHolder.database.addStorage(volume);
             }
         }
+        if (mPerfBoost == null) {
+            mPerfBoost = new BoostFramework(true);
+        }
+        if (mPerfBoost != null && !mIsPerfLockAcquired) {
+            //Use big enough number here to hold the perflock for entire MTP session
+            mPerfBoost.perfHint(BoostFramework.VENDOR_HINT_MTP_BOOST, null, Integer.MAX_VALUE, -1);
+            mIsPerfLockAcquired = true;
+        }
     }
 
     private void removeStorage(StorageVolume volume) {
+        if (mIsPerfLockAcquired && mPerfBoost != null) {
+            mPerfBoost.perfLockRelease();
+            mIsPerfLockAcquired = false;
+        }
         synchronized (MtpService.class) {
             if (sServerHolder != null) {
                 sServerHolder.database.removeStorage(volume);
