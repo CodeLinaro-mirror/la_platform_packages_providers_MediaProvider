@@ -18,6 +18,8 @@ package com.android.providers.media;
 
 import static android.provider.MediaStore.PARAM_PRIMARY;
 import static android.provider.MediaStore.PARAM_SECONDARY;
+import static android.provider.MediaStore.Downloads.isDownload;
+import static android.provider.MediaStore.Downloads.isDownloadDir;
 
 import static com.android.providers.media.MediaProvider.ensureFileColumns;
 import static com.android.providers.media.MediaProvider.getPathOwnerPackageName;
@@ -26,6 +28,7 @@ import static com.android.providers.media.MediaProvider.recoverAbusiveGroupBy;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
@@ -33,9 +36,12 @@ import android.content.ContentValues;
 import android.net.Uri;
 import android.os.Environment;
 import android.provider.MediaStore;
+import android.provider.MediaStore.Images.ImageColumns;
 import android.provider.MediaStore.MediaColumns;
-import android.support.test.runner.AndroidJUnit4;
+import android.util.Log;
 import android.util.Pair;
+
+import androidx.test.runner.AndroidJUnit4;
 
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -44,6 +50,8 @@ import java.util.regex.Pattern;
 
 @RunWith(AndroidJUnit4.class)
 public class MediaProviderTest {
+    private static final String TAG = "MediaProviderTest";
+
     @Test
     public void testPathOwnerPackageName_None() throws Exception {
         assertEquals(null, getPathOwnerPackageName(null));
@@ -314,6 +322,168 @@ public class MediaProviderTest {
                 "column_a AS column_b"));
         assertFalse(isGreylistMatch(
                 "other_table.column_a AS column_b"));
+    }
+
+    @Test
+    public void testGreylist_118475754() {
+        assertTrue(isGreylistMatch(
+                "count(*) pcount"));
+        assertTrue(isGreylistMatch(
+                "foo AS bar"));
+        assertTrue(isGreylistMatch(
+                "foo bar"));
+        assertTrue(isGreylistMatch(
+                "count(foo) AS bar"));
+        assertTrue(isGreylistMatch(
+                "count(foo) bar"));
+    }
+
+    @Test
+    public void testGreylist_119522660() {
+        assertTrue(isGreylistMatch(
+                "CAST(_id AS TEXT) AS string_id"));
+        assertTrue(isGreylistMatch(
+                "cast(_id as text)"));
+    }
+
+    @Test
+    public void testIsDownload() throws Exception {
+        assertTrue(isDownload("/storage/emulated/0/Download/colors.png"));
+        assertTrue(isDownload("/storage/emulated/0/Download/test.pdf"));
+        assertTrue(isDownload("/storage/emulated/0/Download/dir/foo.mp4"));
+        assertTrue(isDownload("/storage/0000-0000/Download/foo.txt"));
+        assertTrue(isDownload(
+                "/storage/emulated/0/Android/sandbox/com.example/Download/colors.png"));
+        assertTrue(isDownload(
+                "/storage/emulated/0/Android/sandbox/shared-com.uid.shared/Download/colors.png"));
+        assertTrue(isDownload(
+                "/storage/0000-0000/Android/sandbox/com.example/Download/colors.png"));
+        assertTrue(isDownload(
+                "/storage/0000-0000/Android/sandbox/shared-com.uid.shared/Download/colors.png"));
+
+
+        assertFalse(isDownload("/storage/emulated/0/Pictures/colors.png"));
+        assertFalse(isDownload("/storage/emulated/0/Pictures/Download/colors.png"));
+        assertFalse(isDownload("/storage/emulated/0/Android/data/com.example/Download/foo.txt"));
+        assertFalse(isDownload(
+                "/storage/emulated/0/Android/sandbox/com.example/dir/Download/foo.txt"));
+        assertFalse(isDownload("/storage/emulated/0/Download"));
+        assertFalse(isDownload("/storage/emulated/0/Android/sandbox/com.example/Download"));
+        assertFalse(isDownload(
+                "/storage/0000-0000/Android/sandbox/shared-com.uid.shared/Download"));
+    }
+
+    @Test
+    public void testIsDownloadDir() throws Exception {
+        assertTrue(isDownloadDir("/storage/emulated/0/Download"));
+        assertTrue(isDownloadDir("/storage/emulated/0/Android/sandbox/com.example/Download"));
+
+        assertFalse(isDownloadDir("/storage/emulated/0/Download/colors.png"));
+        assertFalse(isDownloadDir("/storage/emulated/0/Download/dir/"));
+        assertFalse(isDownloadDir(
+                "/storage/emulated/0/Android/sandbox/com.example/Download/dir/foo.txt"));
+    }
+
+    @Test
+    public void testComputeDataValues_Grouped() throws Exception {
+        for (String data : new String[] {
+                "/storage/0000-0000/DCIM/Camera/IMG1024.JPG",
+                "/storage/0000-0000/DCIM/Camera/iMg1024.JpG",
+                "/storage/0000-0000/DCIM/Camera/IMG1024.CR2",
+                "/storage/0000-0000/DCIM/Camera/IMG1024.BURST001.JPG",
+        }) {
+            final ContentValues values = computeDataValues(data);
+            assertBucket(values, "/storage/0000-0000/DCIM/Camera", "Camera");
+            assertGroup(values, "IMG1024");
+            assertDirectories(values, "DCIM", "Camera");
+        }
+    }
+
+    @Test
+    public void testComputeDataValues_Extensions() throws Exception {
+        ContentValues values;
+
+        values = computeDataValues("/storage/0000-0000/DCIM/Camera/IMG1024");
+        assertBucket(values, "/storage/0000-0000/DCIM/Camera", "Camera");
+        assertGroup(values, null);
+        assertDirectories(values, "DCIM", "Camera");
+
+        values = computeDataValues("/storage/0000-0000/DCIM/Camera/.foo");
+        assertBucket(values, "/storage/0000-0000/DCIM/Camera", "Camera");
+        assertGroup(values, null);
+        assertDirectories(values, "DCIM", "Camera");
+    }
+
+    @Test
+    public void testComputeDataValues_DirectoriesInvalid() throws Exception {
+        for (String data : new String[] {
+                "/storage/IMG1024.JPG",
+                "/data/media/IMG1024.JPG",
+                "IMG1024.JPG",
+        }) {
+            final ContentValues values = computeDataValues(data);
+            assertDirectories(values, null, null);
+        }
+    }
+
+    @Test
+    public void testComputeDataValues_Directories() throws Exception {
+        ContentValues values;
+
+        values = computeDataValues("/storage/emulated/0/IMG1024.JPG");
+        assertBucket(values, "/storage/emulated/0", "0");
+        assertGroup(values, "IMG1024");
+        assertDirectories(values, null, null);
+
+        values = computeDataValues("/storage/emulated/0/One/IMG1024.JPG");
+        assertBucket(values, "/storage/emulated/0/One", "One");
+        assertGroup(values, "IMG1024");
+        assertDirectories(values, "One", null);
+
+        values = computeDataValues("/storage/emulated/0/One/Two/IMG1024.JPG");
+        assertBucket(values, "/storage/emulated/0/One/Two", "Two");
+        assertGroup(values, "IMG1024");
+        assertDirectories(values, "One", "Two");
+
+        values = computeDataValues("/storage/emulated/0/One/Two/Three/IMG1024.JPG");
+        assertBucket(values, "/storage/emulated/0/One/Two/Three", "Three");
+        assertGroup(values, "IMG1024");
+        assertDirectories(values, "One", "Two");
+    }
+
+    private static ContentValues computeDataValues(String path) {
+        final ContentValues values = new ContentValues();
+        values.put(MediaColumns.DATA, path);
+        MediaProvider.computeDataValues(values);
+        Log.v(TAG, "Computed values " + values);
+        return values;
+    }
+
+    private static void assertBucket(ContentValues values, String bucketId, String bucketName) {
+        if (bucketId != null) {
+            assertEquals(bucketName,
+                    values.getAsString(ImageColumns.BUCKET_DISPLAY_NAME));
+            assertEquals(bucketId.toLowerCase().hashCode(),
+                    (long) values.getAsLong(ImageColumns.BUCKET_ID));
+        } else {
+            assertNull(values.get(ImageColumns.BUCKET_DISPLAY_NAME));
+            assertNull(values.get(ImageColumns.BUCKET_ID));
+        }
+    }
+
+    private static void assertGroup(ContentValues values, String groupId) {
+        if (groupId != null) {
+            assertEquals(groupId.toLowerCase().hashCode(),
+                    (long) values.getAsLong(ImageColumns.GROUP_ID));
+        } else {
+            assertNull(values.get(ImageColumns.GROUP_ID));
+        }
+    }
+
+    private static void assertDirectories(ContentValues values, String primaryDir,
+            String secondaryDir) {
+        assertEquals(primaryDir, values.get(ImageColumns.PRIMARY_DIRECTORY));
+        assertEquals(secondaryDir, values.get(ImageColumns.SECONDARY_DIRECTORY));
     }
 
     private static boolean isGreylistMatch(String raw) {
