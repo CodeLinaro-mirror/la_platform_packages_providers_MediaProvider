@@ -20,35 +20,135 @@ import static android.provider.MediaStore.Downloads.isDownload;
 import static android.provider.MediaStore.Downloads.isDownloadDir;
 
 import static com.android.providers.media.MediaProvider.ensureFileColumns;
-import static com.android.providers.media.MediaProvider.getPathOwnerPackageName;
+import static com.android.providers.media.MediaProvider.extractPathOwnerPackageName;
 import static com.android.providers.media.MediaProvider.maybeBalance;
 import static com.android.providers.media.MediaProvider.recoverAbusiveGroupBy;
 
+import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
+import android.content.ContentResolver;
 import android.content.ContentValues;
+import android.content.Context;
+import android.database.Cursor;
+import android.database.sqlite.SQLiteQueryBuilder;
 import android.net.Uri;
 import android.os.Environment;
 import android.provider.MediaStore;
 import android.provider.MediaStore.Images.ImageColumns;
 import android.provider.MediaStore.MediaColumns;
+import android.util.ArrayMap;
 import android.util.Log;
 import android.util.Pair;
+
+import androidx.test.InstrumentationRegistry;
+import androidx.test.runner.AndroidJUnit4;
+
+import com.android.providers.media.MediaProvider.VolumeArgumentException;
+import com.android.providers.media.scan.MediaScannerTest.IsolatedContext;
 
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
+import java.util.Arrays;
 import java.util.regex.Pattern;
-
-import androidx.test.runner.AndroidJUnit4;
 
 @RunWith(AndroidJUnit4.class)
 public class MediaProviderTest {
-    private static final String TAG = "MediaProviderTest";
+    static final String TAG = "MediaProviderTest";
+
+    @Test
+    public void testSchema() {
+        final Context context = InstrumentationRegistry.getTargetContext();
+        final Context isolatedContext = new IsolatedContext(context, "modern");
+        final ContentResolver isolatedResolver = isolatedContext.getContentResolver();
+
+        for (String path : new String[] {
+                "images/media",
+                "images/media/1",
+                "images/thumbnails",
+                "images/thumbnails/1",
+
+                "audio/media",
+                "audio/media/1",
+                "audio/media/1/genres",
+                "audio/media/1/genres/1",
+                "audio/media/1/playlists",
+                "audio/media/1/playlists/1",
+                "audio/genres",
+                "audio/genres/1",
+                "audio/genres/1/members",
+                "audio/playlists",
+                "audio/playlists/1",
+                "audio/playlists/1/members",
+                "audio/playlists/1/members/1",
+                "audio/artists",
+                "audio/artists/1",
+                "audio/artists/1/albums",
+                "audio/albums",
+                "audio/albums/1",
+                "audio/albumart",
+                "audio/albumart/1",
+
+                "video/media",
+                "video/media/1",
+                "video/thumbnails",
+                "video/thumbnails/1",
+
+                "file",
+                "file/1",
+
+                "downloads",
+                "downloads/1",
+        }) {
+            final Uri probe = MediaStore.AUTHORITY_URI.buildUpon()
+                    .appendPath(MediaStore.VOLUME_EXTERNAL).appendEncodedPath(path).build();
+            try (Cursor c = isolatedResolver.query(probe, null, null, null)) {
+                assertNotNull("probe", c);
+            }
+        }
+    }
+
+    @Test
+    public void testComputeCommonPrefix_Single() {
+        assertEquals(Uri.parse("content://authority/1/2/3"),
+                MediaProvider.computeCommonPrefix(Arrays.asList(
+                        Uri.parse("content://authority/1/2/3"))));
+    }
+
+    @Test
+    public void testComputeCommonPrefix_Deeper() {
+        assertEquals(Uri.parse("content://authority/1/2/3"),
+                MediaProvider.computeCommonPrefix(Arrays.asList(
+                        Uri.parse("content://authority/1/2/3/4"),
+                        Uri.parse("content://authority/1/2/3/4/5"),
+                        Uri.parse("content://authority/1/2/3"))));
+    }
+
+    @Test
+    public void testComputeCommonPrefix_Siblings() {
+        assertEquals(Uri.parse("content://authority/1/2"),
+                MediaProvider.computeCommonPrefix(Arrays.asList(
+                        Uri.parse("content://authority/1/2/3"),
+                        Uri.parse("content://authority/1/2/99"))));
+    }
+
+    @Test
+    public void testComputeCommonPrefix_Drastic() {
+        assertEquals(Uri.parse("content://authority"),
+                MediaProvider.computeCommonPrefix(Arrays.asList(
+                        Uri.parse("content://authority/1/2/3"),
+                        Uri.parse("content://authority/99/99/99"))));
+    }
+
+    private static String getPathOwnerPackageName(String path) {
+        return extractPathOwnerPackageName(path);
+    }
 
     @Test
     public void testPathOwnerPackageName_None() throws Exception {
@@ -84,7 +184,7 @@ public class MediaProviderTest {
 
     @Test
     public void testBuildData_Simple() throws Exception {
-        final Uri uri = MediaStore.Images.Media.EXTERNAL_CONTENT_URI;
+        final Uri uri = MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY);
         assertEndsWith("/Pictures/file.png",
                 buildFile(uri, null, null, "file", "image/png"));
         assertEndsWith("/Pictures/file.png",
@@ -95,29 +195,23 @@ public class MediaProviderTest {
 
     @Test
     public void testBuildData_Primary() throws Exception {
-        final Uri uri = MediaStore.Images.Media.EXTERNAL_CONTENT_URI;
+        final Uri uri = MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY);
         assertEndsWith("/DCIM/IMG_1024.JPG",
                 buildFile(uri, Environment.DIRECTORY_DCIM, null, "IMG_1024.JPG", "image/jpeg"));
     }
 
     @Test
     public void testBuildData_Secondary() throws Exception {
-        final Uri uri = MediaStore.Images.Media.EXTERNAL_CONTENT_URI;
+        final Uri uri = MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY);
         assertEndsWith("/Pictures/Screenshots/foo.png",
                 buildFile(uri, null, Environment.DIRECTORY_SCREENSHOTS, "foo.png", "image/png"));
     }
 
     @Test
     public void testBuildData_InvalidNames() throws Exception {
-        final Uri uri = MediaStore.Images.Media.EXTERNAL_CONTENT_URI;
+        final Uri uri = MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY);
         assertThrows(IllegalArgumentException.class, () -> {
             buildFile(uri, null, null, "foo/bar", "image/png");
-        });
-        assertThrows(IllegalArgumentException.class, () -> {
-            buildFile(uri, "foo/bar", null, "foo", "image/png");
-        });
-        assertThrows(IllegalArgumentException.class, () -> {
-            buildFile(uri, null, "foo/bar", "foo", "image/png");
         });
         assertThrows(IllegalArgumentException.class, () -> {
             buildFile(uri, null, null, ".hidden", "image/png");
@@ -131,19 +225,19 @@ public class MediaProviderTest {
         }) {
             if (!type.startsWith("audio/")) {
                 assertThrows(IllegalArgumentException.class, () -> {
-                    buildFile(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
+                    buildFile(MediaStore.Audio.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY),
                             null, null, "foo", type);
                 });
             }
             if (!type.startsWith("video/")) {
                 assertThrows(IllegalArgumentException.class, () -> {
-                    buildFile(MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+                    buildFile(MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY),
                             null, null, "foo", type);
                 });
             }
             if (!type.startsWith("image/")) {
                 assertThrows(IllegalArgumentException.class, () -> {
-                    buildFile(MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                    buildFile(MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY),
                             null, null, "foo", type);
                 });
             }
@@ -152,7 +246,7 @@ public class MediaProviderTest {
 
     @Test
     public void testBuildData_Charset() throws Exception {
-        final Uri uri = MediaStore.Images.Media.EXTERNAL_CONTENT_URI;
+        final Uri uri = MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY);
         assertEndsWith("/Pictures/foo__bar/bar__baz.png",
                 buildFile(uri, null, "foo\0\0bar", "bar::baz.png", "image/png"));
     }
@@ -358,6 +452,103 @@ public class MediaProviderTest {
     }
 
     @Test
+    public void testGreylist_126945991() {
+        assertTrue(isGreylistMatch(
+                "substr(_data, length(_data)-length(_display_name), 1) as filename_prevchar"));
+    }
+
+    @Test
+    public void testGreylist_127900881() {
+        assertTrue(isGreylistMatch(
+                "*"));
+    }
+
+    @Test
+    public void testGreylist_128389972() {
+        assertTrue(isGreylistMatch(
+                " count(bucket_id) images_count"));
+    }
+
+    @Test
+    public void testGreylist_129746861() {
+        assertTrue(isGreylistMatch(
+                "case when (datetaken >= 157680000 and datetaken < 1892160000) then datetaken * 1000 when (datetaken >= 157680000000 and datetaken < 1892160000000) then datetaken when (datetaken >= 157680000000000 and datetaken < 1892160000000000) then datetaken / 1000 else 0 end"));
+    }
+
+    @Test
+    public void testGreylist_114112523() {
+        assertTrue(isGreylistMatch(
+                "audio._id AS _id"));
+    }
+
+    @Test
+    public void testComputeProjection() throws Exception {
+        final SQLiteQueryBuilder builder = new SQLiteQueryBuilder();
+        final ArrayMap<String, String> map = new ArrayMap<>();
+        map.put("external", "internal");
+        builder.setProjectionMap(map);
+        builder.setProjectionAggregationAllowed(false);
+        builder.setStrict(true);
+
+        assertArrayEquals(
+                new String[] { "internal" },
+                builder.computeProjection(null));
+        assertArrayEquals(
+                new String[] { "internal" },
+                builder.computeProjection(new String[] { "external" }));
+        assertThrows(IllegalArgumentException.class, () -> {
+            builder.computeProjection(new String[] { "internal" });
+        });
+        assertThrows(IllegalArgumentException.class, () -> {
+            builder.computeProjection(new String[] { "MIN(internal)" });
+        });
+        assertThrows(IllegalArgumentException.class, () -> {
+            builder.computeProjection(new String[] { "MIN(external)" });
+        });
+        assertThrows(IllegalArgumentException.class, () -> {
+            builder.computeProjection(new String[] { "FOO(external)" });
+        });
+    }
+
+    @Test
+    public void testComputeProjection_AggregationAllowed() throws Exception {
+        final SQLiteQueryBuilder builder = new SQLiteQueryBuilder();
+        final ArrayMap<String, String> map = new ArrayMap<>();
+        map.put("external", "internal");
+        builder.setProjectionMap(map);
+        builder.setProjectionAggregationAllowed(true);
+        builder.setStrict(true);
+
+        assertArrayEquals(
+                new String[] { "internal" },
+                builder.computeProjection(null));
+        assertArrayEquals(
+                new String[] { "internal" },
+                builder.computeProjection(new String[] { "external" }));
+        assertThrows(IllegalArgumentException.class, () -> {
+            builder.computeProjection(new String[] { "internal" });
+        });
+        assertThrows(IllegalArgumentException.class, () -> {
+            builder.computeProjection(new String[] { "MIN(internal)" });
+        });
+        assertArrayEquals(
+                new String[] { "MIN(internal)" },
+                builder.computeProjection(new String[] { "MIN(external)" }));
+        assertThrows(IllegalArgumentException.class, () -> {
+            builder.computeProjection(new String[] { "FOO(external)" });
+        });
+    }
+
+    @Test
+    public void testBindList() {
+        assertEquals("()", MediaProvider.bindList());
+        assertEquals("( 'foo' )", MediaProvider.bindList("foo"));
+        assertEquals("( 'foo' , 'bar' )", MediaProvider.bindList("foo", "bar"));
+        assertEquals("( 'foo' , 'bar' , 'baz' )", MediaProvider.bindList("foo", "bar", "baz"));
+        assertEquals("( 'foo' , NULL , 42 )", MediaProvider.bindList("foo", null, 42));
+    }
+
+    @Test
     public void testIsDownload() throws Exception {
         assertTrue(isDownload("/storage/emulated/0/Download/colors.png"));
         assertTrue(isDownload("/storage/emulated/0/Download/test.pdf"));
@@ -404,9 +595,10 @@ public class MediaProviderTest {
                 "/storage/0000-0000/DCIM/Camera/IMG1024.BURST001.JPG",
         }) {
             final ContentValues values = computeDataValues(data);
+            assertVolume(values, "0000-0000");
             assertBucket(values, "/storage/0000-0000/DCIM/Camera", "Camera");
             assertGroup(values, "IMG1024");
-            assertDirectories(values, "DCIM", "Camera");
+            assertDirectories(values, "DCIM/Camera", "DCIM", "Camera");
         }
     }
 
@@ -415,14 +607,16 @@ public class MediaProviderTest {
         ContentValues values;
 
         values = computeDataValues("/storage/0000-0000/DCIM/Camera/IMG1024");
+        assertVolume(values, "0000-0000");
         assertBucket(values, "/storage/0000-0000/DCIM/Camera", "Camera");
         assertGroup(values, null);
-        assertDirectories(values, "DCIM", "Camera");
+        assertDirectories(values, "DCIM/Camera", "DCIM", "Camera");
 
         values = computeDataValues("/storage/0000-0000/DCIM/Camera/.foo");
+        assertVolume(values, "0000-0000");
         assertBucket(values, "/storage/0000-0000/DCIM/Camera", "Camera");
         assertGroup(values, null);
-        assertDirectories(values, "DCIM", "Camera");
+        assertDirectories(values, "DCIM/Camera", "DCIM", "Camera");
     }
 
     @Test
@@ -433,7 +627,7 @@ public class MediaProviderTest {
                 "IMG1024.JPG",
         }) {
             final ContentValues values = computeDataValues(data);
-            assertDirectories(values, null, null);
+            assertDirectories(values, null, null, null);
         }
     }
 
@@ -441,25 +635,34 @@ public class MediaProviderTest {
     public void testComputeDataValues_Directories() throws Exception {
         ContentValues values;
 
-        values = computeDataValues("/storage/emulated/0/IMG1024.JPG");
-        assertBucket(values, "/storage/emulated/0", "0");
-        assertGroup(values, "IMG1024");
-        assertDirectories(values, null, null);
+        for (String top : new String[] {
+                "/storage/emulated/0",
+                "/storage/emulated/0/Android/sandbox/com.example",
+        }) {
+            values = computeDataValues(top + "/IMG1024.JPG");
+            assertVolume(values, MediaStore.VOLUME_EXTERNAL_PRIMARY);
+            assertBucket(values, top, null);
+            assertGroup(values, "IMG1024");
+            assertDirectories(values, "", null, null);
 
-        values = computeDataValues("/storage/emulated/0/One/IMG1024.JPG");
-        assertBucket(values, "/storage/emulated/0/One", "One");
-        assertGroup(values, "IMG1024");
-        assertDirectories(values, "One", null);
+            values = computeDataValues(top + "/One/IMG1024.JPG");
+            assertVolume(values, MediaStore.VOLUME_EXTERNAL_PRIMARY);
+            assertBucket(values, top + "/One", "One");
+            assertGroup(values, "IMG1024");
+            assertDirectories(values, "One", "One", null);
 
-        values = computeDataValues("/storage/emulated/0/One/Two/IMG1024.JPG");
-        assertBucket(values, "/storage/emulated/0/One/Two", "Two");
-        assertGroup(values, "IMG1024");
-        assertDirectories(values, "One", "Two");
+            values = computeDataValues(top + "/One/Two/IMG1024.JPG");
+            assertVolume(values, MediaStore.VOLUME_EXTERNAL_PRIMARY);
+            assertBucket(values, top + "/One/Two", "Two");
+            assertGroup(values, "IMG1024");
+            assertDirectories(values, "One/Two", "One", "Two");
 
-        values = computeDataValues("/storage/emulated/0/One/Two/Three/IMG1024.JPG");
-        assertBucket(values, "/storage/emulated/0/One/Two/Three", "Three");
-        assertGroup(values, "IMG1024");
-        assertDirectories(values, "One", "Two");
+            values = computeDataValues(top + "/One/Two/Three/IMG1024.JPG");
+            assertVolume(values, MediaStore.VOLUME_EXTERNAL_PRIMARY);
+            assertBucket(values, top + "/One/Two/Three", "Three");
+            assertGroup(values, "IMG1024");
+            assertDirectories(values, "One/Two/Three", "One", "Two");
+        }
     }
 
     private static ContentValues computeDataValues(String path) {
@@ -491,8 +694,13 @@ public class MediaProviderTest {
         }
     }
 
-    private static void assertDirectories(ContentValues values, String primaryDir,
-            String secondaryDir) {
+    private static void assertVolume(ContentValues values, String volumeName) {
+        assertEquals(volumeName, values.getAsString(ImageColumns.VOLUME_NAME));
+    }
+
+    private static void assertDirectories(ContentValues values, String relativePath,
+            String primaryDir, String secondaryDir) {
+        assertEquals(relativePath, values.get(ImageColumns.RELATIVE_PATH));
         assertEquals(primaryDir, values.get(ImageColumns.PRIMARY_DIRECTORY));
         assertEquals(secondaryDir, values.get(ImageColumns.SECONDARY_DIRECTORY));
     }
@@ -517,7 +725,11 @@ public class MediaProviderTest {
         }
         values.put(MediaColumns.DISPLAY_NAME, displayName);
         values.put(MediaColumns.MIME_TYPE, mimeType);
-        ensureFileColumns(uri, values);
+        try {
+            ensureFileColumns(uri, values);
+        } catch (VolumeArgumentException e) {
+            throw e.rethrowAsIllegalArgumentException();
+        }
         return values.getAsString(MediaColumns.DATA);
     }
 
