@@ -56,10 +56,24 @@ import static com.android.tests.fused.lib.TestUtils.openFileAs;
 import static com.android.tests.fused.lib.TestUtils.openWithMediaProvider;
 import static com.android.tests.fused.lib.TestUtils.readExifMetadataFromTestApp;
 import static com.android.tests.fused.lib.TestUtils.revokePermission;
+import static com.android.tests.fused.lib.TestUtils.setupDefaultDirectories;
 import static com.android.tests.fused.lib.TestUtils.uninstallApp;
 import static com.android.tests.fused.lib.TestUtils.uninstallAppNoThrow;
 import static com.android.tests.fused.lib.TestUtils.updateDisplayNameWithMediaProvider;
 import static com.android.tests.fused.lib.TestUtils.pollForExternalStorageState;
+import static com.android.tests.fused.lib.TestUtils.ALARMS_DIR;
+import static com.android.tests.fused.lib.TestUtils.AUDIOBOOKS_DIR;
+import static com.android.tests.fused.lib.TestUtils.DCIM_DIR;
+import static com.android.tests.fused.lib.TestUtils.DOCUMENTS_DIR;
+import static com.android.tests.fused.lib.TestUtils.DOWNLOAD_DIR;
+import static com.android.tests.fused.lib.TestUtils.MUSIC_DIR;
+import static com.android.tests.fused.lib.TestUtils.MOVIES_DIR;
+import static com.android.tests.fused.lib.TestUtils.NOTIFICATIONS_DIR;
+import static com.android.tests.fused.lib.TestUtils.PICTURES_DIR;
+import static com.android.tests.fused.lib.TestUtils.PODCASTS_DIR;
+import static com.android.tests.fused.lib.TestUtils.RINGTONES_DIR;
+import static com.android.tests.fused.lib.TestUtils.ANDROID_DATA_DIR;
+import static com.android.tests.fused.lib.TestUtils.ANDROID_MEDIA_DIR;
 
 import static com.google.common.truth.Truth.assertThat;
 
@@ -88,6 +102,8 @@ import androidx.test.runner.AndroidJUnit4;
 import com.android.cts.install.lib.TestApp;
 import com.android.tests.fused.lib.ReaddirTestHelper;
 
+import com.google.common.io.Files;
+
 import org.junit.Before;
 import org.junit.Ignore;
 import org.junit.Test;
@@ -95,6 +111,7 @@ import org.junit.runner.RunWith;
 
 import java.io.File;
 import java.io.FileDescriptor;
+import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -110,30 +127,14 @@ public class FilePathAccessTest {
 
     static final File EXTERNAL_STORAGE_DIR = Environment.getExternalStorageDirectory();
 
-    // Default top-level directories
-    static final File ALARMS_DIR = new File(EXTERNAL_STORAGE_DIR, Environment.DIRECTORY_ALARMS);
-    static final File AUDIOBOOKS_DIR = new File(EXTERNAL_STORAGE_DIR,
-            Environment.DIRECTORY_AUDIOBOOKS);
-    static final File DCIM_DIR = new File(EXTERNAL_STORAGE_DIR, Environment.DIRECTORY_DCIM);
-    static final File DOCUMENTS_DIR = new File(EXTERNAL_STORAGE_DIR,
-            Environment.DIRECTORY_DOCUMENTS);
-    static final File DOWNLOAD_DIR = new File(EXTERNAL_STORAGE_DIR,
-            Environment.DIRECTORY_DOWNLOADS);
-    static final File MUSIC_DIR = new File(EXTERNAL_STORAGE_DIR, Environment.DIRECTORY_MUSIC);
-    static final File MOVIES_DIR = new File(EXTERNAL_STORAGE_DIR, Environment.DIRECTORY_MOVIES);
-    static final File NOTIFICATIONS_DIR = new File(EXTERNAL_STORAGE_DIR, Environment.DIRECTORY_NOTIFICATIONS);
-    static final File PICTURES_DIR = new File(EXTERNAL_STORAGE_DIR, Environment.DIRECTORY_PICTURES);
-    static final File PODCASTS_DIR = new File(EXTERNAL_STORAGE_DIR, Environment.DIRECTORY_PODCASTS);
-    static final File RINGTONES_DIR = new File(EXTERNAL_STORAGE_DIR, Environment.DIRECTORY_RINGTONES);
-
-    static final File ANDROID_DATA_DIR = new File(EXTERNAL_STORAGE_DIR, "Android/data");
-    static final File ANDROID_MEDIA_DIR = new File(EXTERNAL_STORAGE_DIR, "Android/media");
     static final String TEST_DIRECTORY_NAME = "FilePathAccessTestDirectory";
 
     static final File EXTERNAL_FILES_DIR = getContext().getExternalFilesDir(null);
     static final File EXTERNAL_MEDIA_DIR = getContext().getExternalMediaDirs()[0];
 
     static final String AUDIO_FILE_NAME = "FilePathAccessTest_file.mp3";
+    static final String PLAYLIST_FILE_NAME = "FilePathAccessTest_file.m3u";
+    static final String SUBTITLE_FILE_NAME = "FilePathAccessTest_file.srt";
     static final String VIDEO_FILE_NAME = "FilePathAccessTest_file.mp4";
     static final String IMAGE_FILE_NAME = "FilePathAccessTest_file.jpg";
     static final String NONMEDIA_FILE_NAME = "FilePathAccessTest_file.pdf";
@@ -154,12 +155,20 @@ public class FilePathAccessTest {
             permissionToOp(Manifest.permission.MANAGE_EXTERNAL_STORAGE);
 
     @Before
-    public void setUp() throws Exception {
+    public void setup() throws Exception {
         // skips all test cases if FUSE is not active.
         assumeTrue(getBoolean("persist.sys.fuse", false));
 
         pollForExternalStorageState();
         EXTERNAL_FILES_DIR.mkdirs();
+    }
+
+    /**
+     * This method needs to be called once before running the whole test.
+     */
+    @Test
+    public void setupExternalStorage() {
+        setupDefaultDirectories();
     }
 
     /**
@@ -201,6 +210,12 @@ public class FilePathAccessTest {
         assertThrows(IOException.class, "Operation not permitted", () -> {
             new File(PICTURES_DIR, AUDIO_FILE_NAME).createNewFile();
         });
+        assertThrows(IOException.class, "Operation not permitted", () -> {
+            new File(PICTURES_DIR, PLAYLIST_FILE_NAME).createNewFile();
+        });
+        assertThrows(IOException.class, "Operation not permitted", () -> {
+            new File(DCIM_DIR, SUBTITLE_FILE_NAME).createNewFile();
+        });
 
         assertCanCreateFile(new File(ALARMS_DIR, AUDIO_FILE_NAME));
         assertCanCreateFile(new File(AUDIOBOOKS_DIR, AUDIO_FILE_NAME));
@@ -215,7 +230,9 @@ public class FilePathAccessTest {
         assertCanCreateFile(new File(DOWNLOAD_DIR, NONMEDIA_FILE_NAME));
         assertCanCreateFile(new File(DOWNLOAD_DIR, VIDEO_FILE_NAME));
         assertCanCreateFile(new File(MOVIES_DIR, VIDEO_FILE_NAME));
+        assertCanCreateFile(new File(MOVIES_DIR, SUBTITLE_FILE_NAME));
         assertCanCreateFile(new File(MUSIC_DIR, AUDIO_FILE_NAME));
+        assertCanCreateFile(new File(MUSIC_DIR, PLAYLIST_FILE_NAME));
         assertCanCreateFile(new File(NOTIFICATIONS_DIR, AUDIO_FILE_NAME));
         assertCanCreateFile(new File(PICTURES_DIR, IMAGE_FILE_NAME));
         assertCanCreateFile(new File(PICTURES_DIR, VIDEO_FILE_NAME));
@@ -652,6 +669,7 @@ public class FilePathAccessTest {
     /**
      * Test that app can see files and directories in Android/media.
      */
+    @Ignore("Re-enable as part of b/145737191")
     @Test
     public void testListFilesFromExternalMediaDirectory() throws Exception {
         final File videoFile = new File(EXTERNAL_MEDIA_DIR, VIDEO_FILE_NAME);
@@ -671,11 +689,13 @@ public class FilePathAccessTest {
             // Install TEST_APP_A with READ_EXTERNAL_STORAGE permission.
             // TEST_APP_A with storage permission should see other app's external media directory.
             installApp(TEST_APP_A, true);
-            // Apps can't list files in other app's external media directory.
-            assertThat(listAs(TEST_APP_A, ANDROID_MEDIA_DIR.getPath())).isEmpty();
-            assertThat(listAs(TEST_APP_A, EXTERNAL_MEDIA_DIR.getPath())).isEmpty();
+            // Apps with READ_EXTERNAL_STORAGE can list files in other app's external media directory.
+            assertThat(listAs(TEST_APP_A, ANDROID_MEDIA_DIR.getPath())).contains(THIS_PACKAGE_NAME);
+            // TODO(b/145737191) fails because we don't index these files yet.
+            assertThat(listAs(TEST_APP_A, EXTERNAL_MEDIA_DIR.getPath())).containsExactly(videoFileName);
         } finally {
             videoFile.delete();
+            uninstallAppNoThrow(TEST_APP_A);
         }
     }
 
@@ -1272,18 +1292,22 @@ public class FilePathAccessTest {
     public void testRenameAndReplaceFile() throws Exception {
         final File videoFile1 = new File(DCIM_DIR, VIDEO_FILE_NAME);
         final File videoFile2 = new File(MOVIES_DIR, VIDEO_FILE_NAME);
+        final ContentResolver cr = getContentResolver();
         try {
             assertThat(videoFile1.createNewFile()).isTrue();
             assertThat(videoFile2.createNewFile()).isTrue();
-            final String[] projection = new String[] {MediaColumns._ID};
-            // Get id of video file in movies which will be deleted on rename.
-            final int id = getFileRowIdFromDatabase(videoFile2);
+            final Uri uriVideoFile1 = MediaStore.scanFile(cr, videoFile1);
+            final Uri uriVideoFile2 = MediaStore.scanFile(cr, videoFile2);
 
             // Renaming a file which replaces file in newPath videoFile2 is allowed.
             assertCanRenameFile(videoFile1, videoFile2);
 
-            // MediaProvider database entry for videoFile2 should be deleted on rename.
-            assertThat(getFileRowIdFromDatabase(videoFile2)).isNotEqualTo(id);
+            // Uri of videoFile2 should be accessible after rename.
+            assertThat(cr.openFileDescriptor(uriVideoFile2, "rw")).isNotNull();
+            // Uri of videoFile1 should not be accessible after rename.
+            assertThrows(FileNotFoundException.class, () -> {
+                cr.openFileDescriptor(uriVideoFile1, "rw");
+            });
         } finally {
             videoFile1.delete();
             videoFile2.delete();
@@ -1678,8 +1702,12 @@ public class FilePathAccessTest {
             executeShellCommand("rm " + otherAppPdfFile2);
             otherAppImageFile1.delete();
             otherAppImageFile2.delete();
+            MediaStore.scanFile(getContentResolver(), otherAppImageFile1);
+            MediaStore.scanFile(getContentResolver(), otherAppImageFile2);
             otherAppVideoFile1.delete();
             otherAppVideoFile2.delete();
+            MediaStore.scanFile(getContentResolver(), otherAppVideoFile1);
+            MediaStore.scanFile(getContentResolver(), otherAppVideoFile2);
             otherAppPdfFile1.delete();
             otherAppPdfFile2.delete();
             dirInDcim.delete();
@@ -1689,6 +1717,71 @@ public class FilePathAccessTest {
         }
     }
 
+    /**
+     * Test that row ID corresponding to deleted path is restored on subsequent create.
+     */
+    @Test
+    public void testCreateCanRestoreDeletedRowId() throws Exception {
+        final File imageFile = new File(DCIM_DIR, IMAGE_FILE_NAME);
+        final ContentResolver cr = getContentResolver();
+
+        try {
+            assertThat(imageFile.createNewFile()).isTrue();
+            final long oldRowId = getFileRowIdFromDatabase(imageFile);
+            assertThat(oldRowId).isNotEqualTo(-1);
+            final Uri uriOfOldFile = MediaStore.scanFile(cr, imageFile);
+            assertThat(uriOfOldFile).isNotNull();
+
+            assertThat(imageFile.delete()).isTrue();
+            // We should restore old row Id corresponding to deleted imageFile.
+            assertThat(imageFile.createNewFile()).isTrue();
+            assertThat(getFileRowIdFromDatabase(imageFile)).isEqualTo(oldRowId);
+            assertThat(cr.openFileDescriptor(uriOfOldFile, "rw")).isNotNull();
+
+            assertThat(imageFile.delete()).isTrue();
+            installApp(TEST_APP_A, false);
+            assertThat(createFileAs(TEST_APP_A, imageFile.getAbsolutePath())).isTrue();
+
+            final Uri uriOfNewFile = MediaStore.scanFile(getContentResolver(), imageFile);
+            assertThat(uriOfNewFile).isNotNull();
+            // We shouldn't restore deleted row Id if delete & create are called from different apps
+            assertThat(Integer.getInteger(uriOfNewFile.getLastPathSegment()))
+                    .isNotEqualTo(oldRowId);
+        } finally {
+            imageFile.delete();
+            deleteFileAsNoThrow(TEST_APP_A, imageFile.getAbsolutePath());
+            uninstallAppNoThrow(TEST_APP_A);
+        }
+    }
+
+    /**
+     * Test that row ID corresponding to deleted path is restored on subsequent rename.
+     */
+    @Test
+    public void testRenameCanRestoreDeletedRowId() throws Exception {
+        final File imageFile = new File(DCIM_DIR, IMAGE_FILE_NAME);
+        final File temporaryFile = new File(DOWNLOAD_DIR, IMAGE_FILE_NAME + "_.tmp");
+        final ContentResolver cr = getContentResolver();
+
+        try {
+            assertThat(imageFile.createNewFile()).isTrue();
+            final Uri oldUri = MediaStore.scanFile(cr, imageFile);
+            assertThat(oldUri).isNotNull();
+
+            Files.copy(imageFile, temporaryFile);
+            assertThat(imageFile.delete()).isTrue();
+            assertCanRenameFile(temporaryFile, imageFile);
+
+            final Uri newUri = MediaStore.scanFile(cr, imageFile);
+            assertThat(newUri).isNotNull();
+            assertThat(newUri.getLastPathSegment()).isEqualTo(oldUri.getLastPathSegment());
+            // oldUri of imageFile is still accessible after delete and rename.
+            assertThat(cr.openFileDescriptor(oldUri, "rw")).isNotNull();
+        } finally {
+            imageFile.delete();
+            temporaryFile.delete();
+        }
+    }
     private static void assertCantQueryFile(File file) {
         assertThat(getFileUri(file)).isNull();
     }
