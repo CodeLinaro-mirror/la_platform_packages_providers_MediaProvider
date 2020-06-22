@@ -25,16 +25,21 @@ import static android.os.ParcelFileDescriptor.MODE_WRITE_ONLY;
 import static android.system.OsConstants.F_OK;
 import static android.system.OsConstants.O_ACCMODE;
 import static android.system.OsConstants.O_APPEND;
+import static android.system.OsConstants.O_CLOEXEC;
 import static android.system.OsConstants.O_CREAT;
+import static android.system.OsConstants.O_NOFOLLOW;
 import static android.system.OsConstants.O_RDONLY;
 import static android.system.OsConstants.O_RDWR;
 import static android.system.OsConstants.O_TRUNC;
 import static android.system.OsConstants.O_WRONLY;
 import static android.system.OsConstants.R_OK;
+import static android.system.OsConstants.S_IRWXG;
+import static android.system.OsConstants.S_IRWXU;
 import static android.system.OsConstants.W_OK;
 
 import static com.android.providers.media.util.DatabaseUtils.getAsBoolean;
 import static com.android.providers.media.util.DatabaseUtils.getAsLong;
+import static com.android.providers.media.util.DatabaseUtils.parseBoolean;
 import static com.android.providers.media.util.Logging.TAG;
 
 import android.content.ClipDescription;
@@ -42,9 +47,13 @@ import android.content.ContentValues;
 import android.content.Context;
 import android.net.Uri;
 import android.os.Environment;
+import android.os.ParcelFileDescriptor;
 import android.os.storage.StorageManager;
 import android.provider.MediaStore;
 import android.provider.MediaStore.MediaColumns;
+import android.system.ErrnoException;
+import android.system.Os;
+import android.system.OsConstants;
 import android.text.TextUtils;
 import android.text.format.DateUtils;
 import android.util.Log;
@@ -55,6 +64,7 @@ import androidx.annotation.Nullable;
 import androidx.annotation.VisibleForTesting;
 
 import java.io.File;
+import java.io.FileDescriptor;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
@@ -79,8 +89,37 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public class FileUtils {
+    /**
+     * Drop-in replacement for {@link ParcelFileDescriptor#open(File, int)}
+     * which adds security features like {@link OsConstants#O_CLOEXEC} and
+     * {@link OsConstants#O_NOFOLLOW}.
+     */
+    public static @NonNull ParcelFileDescriptor openSafely(@NonNull File file, int pfdFlags)
+            throws FileNotFoundException {
+        final int posixFlags = translateModePfdToPosix(pfdFlags) | O_CLOEXEC | O_NOFOLLOW;
+        try {
+            final FileDescriptor fd = Os.open(file.getAbsolutePath(), posixFlags,
+                    S_IRWXU | S_IRWXG);
+            try {
+                return ParcelFileDescriptor.dup(fd);
+            } finally {
+                closeQuietly(fd);
+            }
+        } catch (IOException | ErrnoException e) {
+            throw new FileNotFoundException(e.getMessage());
+        }
+    }
+
     public static void closeQuietly(@Nullable AutoCloseable closeable) {
         android.os.FileUtils.closeQuietly(closeable);
+    }
+
+    public static void closeQuietly(@Nullable FileDescriptor fd) {
+        if (fd == null) return;
+        try {
+            Os.close(fd);
+        } catch (ErrnoException ignored) {
+        }
     }
 
     public static long copy(@NonNull InputStream in, @NonNull OutputStream out) throws IOException {
@@ -647,7 +686,7 @@ public class FileUtils {
 
             // Extract requested extension from display name
             final int lastDot = displayName.lastIndexOf('.');
-            if (lastDot >= 0) {
+            if (lastDot > 0) {
                 name = displayName.substring(0, lastDot);
                 ext = displayName.substring(lastDot + 1);
                 mimeTypeFromExt = MimeTypeMap.getSingleton().getMimeTypeFromExtension(
@@ -663,13 +702,14 @@ public class FileUtils {
             }
 
             final String extFromMimeType;
-            if (ClipDescription.MIMETYPE_UNKNOWN.equals(mimeType)) {
+            if (ClipDescription.MIMETYPE_UNKNOWN.equalsIgnoreCase(mimeType)) {
                 extFromMimeType = null;
             } else {
                 extFromMimeType = MimeTypeMap.getSingleton().getExtensionFromMimeType(mimeType);
             }
 
-            if (Objects.equals(mimeType, mimeTypeFromExt) || Objects.equals(ext, extFromMimeType)) {
+            if (MimeUtils.equalIgnoreCase(mimeType, mimeTypeFromExt)
+                    || MimeUtils.equalIgnoreCase(ext, extFromMimeType)) {
                 // Extension maps back to requested MIME type; allow it
             } else {
                 // No match; insist that create file matches requested MIME
@@ -767,8 +807,25 @@ public class FileUtils {
         }
 
         final Uri uri = MediaStore.Files.getContentUri(volumeName);
-        return context.getSystemService(StorageManager.class).getStorageVolume(uri)
+        final File path = context.getSystemService(StorageManager.class).getStorageVolume(uri)
                 .getDirectory();
+        if (path != null) {
+            return path;
+        } else {
+            throw new FileNotFoundException(volumeName + " has no associated path");
+        }
+    }
+
+    /**
+     * Returns the content URI for the volume that contains the given path.
+     *
+     * <p>{@link MediaStore.Files#getContentUriForPath(String)} can't detect public volumes and can
+     * only return the URI for the primary external storage, that's why this utility should be used
+     * instead.
+     */
+    public static @NonNull Uri getContentUriForPath(@NonNull String path) {
+        Objects.requireNonNull(path);
+        return MediaStore.Files.getContentUri(extractVolumeName(path));
     }
 
     /**
@@ -788,7 +845,9 @@ public class FileUtils {
     public static final Pattern PATTERN_DOWNLOADS_DIRECTORY = Pattern.compile(
             "(?i)^/storage/[^/]+/(?:[0-9]+/)?(?:Android/sandbox/[^/]+/)?Download/?");
     public static final Pattern PATTERN_EXPIRES_FILE = Pattern.compile(
-            "(?i)^\\.(pending|trashed)-(\\d+)-(.+)$");
+            "(?i)^\\.(pending|trashed)-(\\d+)-([^/]+)$");
+    public static final Pattern PATTERN_PENDING_FILEPATH_FOR_SQL = Pattern.compile(
+            ".*/\\.pending-(\\d+)-([^/]+)$");
 
     /**
      * File prefix indicating that the file {@link MediaColumns#IS_PENDING}.
@@ -804,13 +863,13 @@ public class FileUtils {
      * Default duration that {@link MediaColumns#IS_PENDING} items should be
      * preserved for until automatically cleaned by {@link #runIdleMaintenance}.
      */
-    public static final long DEFAULT_DURATION_PENDING = DateUtils.WEEK_IN_MILLIS;
+    public static final long DEFAULT_DURATION_PENDING = 7 * DateUtils.DAY_IN_MILLIS;
 
     /**
      * Default duration that {@link MediaColumns#IS_TRASHED} items should be
      * preserved for until automatically cleaned by {@link #runIdleMaintenance}.
      */
-    public static final long DEFAULT_DURATION_TRASHED = DateUtils.WEEK_IN_MILLIS;
+    public static final long DEFAULT_DURATION_TRASHED = 30 * DateUtils.DAY_IN_MILLIS;
 
     public static boolean isDownload(@NonNull String path) {
         return PATTERN_DOWNLOADS_FILE.matcher(path).matches();
@@ -821,17 +880,17 @@ public class FileUtils {
     }
 
     /**
-     * Regex that matches any valid path in external storage,
-     * and captures the top-level directory as the first group.
-     */
-    private static final Pattern PATTERN_TOP_LEVEL_DIR = Pattern.compile(
-            "(?i)^/storage/[^/]+/[0-9]+/([^/]+)(/.*)?");
-    /**
      * Regex that matches paths in all well-known package-specific directories,
      * and which captures the package name as the first group.
      */
     public static final Pattern PATTERN_OWNED_PATH = Pattern.compile(
-            "(?i)^/storage/[^/]+/(?:[0-9]+/)?Android/(?:data|media|obb|sandbox)/([^/]+)(/.*)?");
+            "(?i)^/storage/[^/]+/(?:[0-9]+/)?Android/(?:data|media|obb|sandbox)/([^/]+)(/?.*)?");
+
+    /**
+     * Regex that matches Android/obb or Android/data path.
+     */
+    public static final Pattern PATTERN_DATA_OR_OBB_PATH = Pattern.compile(
+            "(?i)^/storage/[^/]+/(?:[0-9]+/)?Android/(?:data|obb)/?$");
 
     /**
      * Regex that matches paths for {@link MediaColumns#RELATIVE_PATH}; it
@@ -847,7 +906,7 @@ public class FileUtils {
             "(?i)^/storage/([^/]+)");
 
     private static @Nullable String normalizeUuid(@Nullable String fsUuid) {
-        return fsUuid != null ? fsUuid.toLowerCase(Locale.US) : null;
+        return fsUuid != null ? fsUuid.toLowerCase(Locale.ROOT) : null;
     }
 
     public static @Nullable String extractVolumePath(@Nullable String data) {
@@ -920,16 +979,56 @@ public class FileUtils {
     }
 
     /**
+     * Returns true if relative path is Android/data or Android/obb path.
+     */
+    public static boolean isDataOrObbPath(String path) {
+        if (path == null) return false;
+        final Matcher m = PATTERN_DATA_OR_OBB_PATH.matcher(path);
+        return m.matches();
+    }
+
+    /**
      * Returns the name of the top level directory, or null if the path doesn't go through the
      * external storage directory.
      */
     @Nullable
     public static String extractTopLevelDir(String path) {
-        Matcher m = PATTERN_TOP_LEVEL_DIR.matcher(path);
-        if (m.matches()) {
-            return m.group(1);
+        final String relativePath = extractRelativePath(path);
+        if (relativePath == null) {
+            return null;
         }
-        return null;
+        final String[] relativePathSegments = relativePath.split("/");
+        return relativePathSegments.length > 0 ? relativePathSegments[0] : null;
+    }
+
+    /**
+     * Compute the value of {@link MediaColumns#DATE_EXPIRES} based on other
+     * columns being modified by this operation.
+     */
+    public static void computeDateExpires(@NonNull ContentValues values) {
+        // External apps have no ability to change this field
+        values.remove(MediaColumns.DATE_EXPIRES);
+
+        // Only define the field when this modification is actually adjusting
+        // one of the flags that should influence the expiration
+        final Object pending = values.get(MediaColumns.IS_PENDING);
+        if (pending != null) {
+            if (parseBoolean(pending, false)) {
+                values.put(MediaColumns.DATE_EXPIRES,
+                        (System.currentTimeMillis() + DEFAULT_DURATION_PENDING) / 1000);
+            } else {
+                values.putNull(MediaColumns.DATE_EXPIRES);
+            }
+        }
+        final Object trashed = values.get(MediaColumns.IS_TRASHED);
+        if (trashed != null) {
+            if (parseBoolean(trashed, false)) {
+                values.put(MediaColumns.DATE_EXPIRES,
+                        (System.currentTimeMillis() + DEFAULT_DURATION_TRASHED) / 1000);
+            } else {
+                values.putNull(MediaColumns.DATE_EXPIRES);
+            }
+        }
     }
 
     /**
@@ -937,12 +1036,10 @@ public class FileUtils {
      * {@link MediaColumns#DATA}. This method performs no enforcement of
      * argument validity.
      */
-    public static void computeValuesFromData(@NonNull ContentValues values) {
+    public static void computeValuesFromData(@NonNull ContentValues values, boolean isForFuse) {
         // Worst case we have to assume no bucket details
         values.remove(MediaColumns.VOLUME_NAME);
         values.remove(MediaColumns.RELATIVE_PATH);
-        values.remove(MediaColumns.IS_DOWNLOAD);
-        values.remove(MediaColumns.IS_PENDING);
         values.remove(MediaColumns.IS_TRASHED);
         values.remove(MediaColumns.DATE_EXPIRES);
         values.remove(MediaColumns.DISPLAY_NAME);
@@ -957,8 +1054,6 @@ public class FileUtils {
 
         values.put(MediaColumns.VOLUME_NAME, extractVolumeName(data));
         values.put(MediaColumns.RELATIVE_PATH, extractRelativePath(data));
-        values.put(MediaColumns.IS_DOWNLOAD, isDownload(data));
-
         final String displayName = extractDisplayName(data);
         final Matcher matcher = FileUtils.PATTERN_EXPIRES_FILE.matcher(displayName);
         if (matcher.matches()) {
@@ -969,7 +1064,14 @@ public class FileUtils {
             values.put(MediaColumns.DATE_EXPIRES, Long.parseLong(matcher.group(2)));
             values.put(MediaColumns.DISPLAY_NAME, matcher.group(3));
         } else {
-            values.put(MediaColumns.IS_PENDING, 0);
+            if (isForFuse) {
+                // Allow Fuse thread to set IS_PENDING when using DATA column.
+                // TODO(b/156867379) Unset IS_PENDING when Fuse thread doesn't explicitly specify
+                // IS_PENDING. It can't be done now because we scan after create. Scan doesn't
+                // explicitly specify the value of IS_PENDING.
+            } else {
+                values.put(MediaColumns.IS_PENDING, 0);
+            }
             values.put(MediaColumns.IS_TRASHED, 0);
             values.putNull(MediaColumns.DATE_EXPIRES);
             values.put(MediaColumns.DISPLAY_NAME, displayName);
@@ -992,12 +1094,13 @@ public class FileUtils {
      * argument validity.
      */
     public static void computeDataFromValues(@NonNull ContentValues values,
-            @NonNull File volumePath) {
+            @NonNull File volumePath, boolean isForFuse) {
         values.remove(MediaColumns.DATA);
 
         final String displayName = values.getAsString(MediaColumns.DISPLAY_NAME);
         final String resolvedDisplayName;
-        if (getAsBoolean(values, MediaColumns.IS_PENDING, false)) {
+        // Pending file path shouldn't be rewritten for files inserted via filepath.
+        if (!isForFuse && getAsBoolean(values, MediaColumns.IS_PENDING, false)) {
             final long dateExpires = getAsLong(values, MediaColumns.DATE_EXPIRES,
                     (System.currentTimeMillis() + DEFAULT_DURATION_PENDING) / 1000);
             resolvedDisplayName = String.format(".%s-%d-%s",
@@ -1016,15 +1119,18 @@ public class FileUtils {
         values.put(MediaColumns.DATA, filePath.getAbsolutePath());
     }
 
-    public static void sanitizeValues(@NonNull ContentValues values) {
+    public static void sanitizeValues(@NonNull ContentValues values,
+            boolean rewriteHiddenFileName) {
         final String[] relativePath = values.getAsString(MediaColumns.RELATIVE_PATH).split("/");
         for (int i = 0; i < relativePath.length; i++) {
-            relativePath[i] = sanitizeDisplayName(relativePath[i]);
+            relativePath[i] = sanitizeDisplayName(relativePath[i], rewriteHiddenFileName);
         }
         values.put(MediaColumns.RELATIVE_PATH,
                 String.join("/", relativePath) + "/");
+
+        final String displayName = values.getAsString(MediaColumns.DISPLAY_NAME);
         values.put(MediaColumns.DISPLAY_NAME,
-                sanitizeDisplayName(values.getAsString(MediaColumns.DISPLAY_NAME)));
+                sanitizeDisplayName(displayName, rewriteHiddenFileName));
     }
 
     /** {@hide} **/
@@ -1057,18 +1163,61 @@ public class FileUtils {
     }
 
     /**
-     * Sanitizes given name by appending '_' to make it non-hidden and mutating the file
-     * name to make it valid for a FAT filesystem.
+     * Sanitizes given name by mutating the file name to make it valid for a FAT filesystem.
      * @hide
      */
     public static @Nullable String sanitizeDisplayName(@Nullable String name) {
+        return sanitizeDisplayName(name, /*rewriteHiddenFileName*/ false);
+    }
+
+    /**
+     * Sanitizes given name by appending '_' to make it non-hidden and mutating the file name to
+     * make it valid for a FAT filesystem.
+     * @hide
+     */
+    public static @Nullable String sanitizeDisplayName(@Nullable String name,
+            boolean rewriteHiddenFileName) {
         if (name == null) {
             return null;
-        } else if (name.startsWith(".")) {
+        } else if (rewriteHiddenFileName && name.startsWith(".")) {
             // The resulting file must not be hidden.
-            return buildValidFatFilename("_" + name);
+            return "_" + name;
         } else {
             return buildValidFatFilename(name);
         }
+    }
+
+    /**
+     * Clears all app's external cache directories, i.e. for each app we delete
+     * /sdcard/Android/data/app/cache/* but we keep the directory itself.
+     *
+     * @return 0 in case of success, or {@link OsConstants#EIO} if any error occurs.
+     *
+     * <p>This method doesn't perform any checks, so make sure that the calling package is allowed
+     * to clear cache directories first.
+     *
+     * <p>If this method returned {@link OsConstants#EIO}, then we can't guarantee whether all, none
+     * or part of the directories were cleared.
+     */
+    public static int clearAppCacheDirectories() {
+        int status = 0;
+        Log.i(TAG, "Clearing cache for all apps");
+        final File rootDataDir = buildPath(Environment.getExternalStorageDirectory(),
+                "Android", "data");
+        for (File appDataDir : rootDataDir.listFiles()) {
+            try {
+                final File appCacheDir = new File(appDataDir, "cache");
+                if (appCacheDir.isDirectory()) {
+                    FileUtils.deleteContents(appCacheDir);
+                }
+            } catch (Exception e) {
+                // We want to avoid crashing MediaProvider at all costs, so we handle all "generic"
+                // exceptions here, and just report to the caller that an IO exception has occurred.
+                // We still try to clear the rest of the directories.
+                Log.e(TAG, "Couldn't delete all app cache dirs!", e);
+                status = OsConstants.EIO;
+            }
+        }
+        return status;
     }
 }

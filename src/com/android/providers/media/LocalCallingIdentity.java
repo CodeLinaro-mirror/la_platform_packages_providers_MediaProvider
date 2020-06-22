@@ -58,6 +58,7 @@ public class LocalCallingIdentity {
     public final int pid;
     public final int uid;
     public final String packageNameUnchecked;
+    // Info used for logging permission checks
     public @Nullable String attributionTag;
 
     private LocalCallingIdentity(Context context, int pid, int uid, String packageNameUnchecked,
@@ -242,19 +243,24 @@ public class LocalCallingIdentity {
             case PERMISSION_IS_REDACTION_NEEDED:
                 return isRedactionNeededInternal();
             case PERMISSION_READ_AUDIO:
-                return checkPermissionReadAudio(context, pid, uid, getPackageName());
+                return checkPermissionReadAudio(context, pid, uid, getPackageName(), attributionTag);
             case PERMISSION_READ_VIDEO:
-                return checkPermissionReadVideo(context, pid, uid, getPackageName());
+                return checkPermissionReadVideo(context, pid, uid, getPackageName(), attributionTag);
             case PERMISSION_READ_IMAGES:
-                return checkPermissionReadImages(context, pid, uid, getPackageName());
+                return checkPermissionReadImages(
+                        context, pid, uid, getPackageName(), attributionTag);
             case PERMISSION_WRITE_AUDIO:
-                return checkPermissionWriteAudio(context, pid, uid, getPackageName());
+                return checkPermissionWriteAudio(
+                        context, pid, uid, getPackageName(), attributionTag);
             case PERMISSION_WRITE_VIDEO:
-                return checkPermissionWriteVideo(context, pid, uid, getPackageName());
+                return checkPermissionWriteVideo(
+                        context, pid, uid, getPackageName(), attributionTag);
             case PERMISSION_WRITE_IMAGES:
-                return checkPermissionWriteImages(context, pid, uid, getPackageName());
+                return checkPermissionWriteImages(
+                        context, pid, uid, getPackageName(), attributionTag);
             case PERMISSION_MANAGE_EXTERNAL_STORAGE:
-                return checkPermissionManageExternalStorage(context, pid, uid, getPackageName());
+                return checkPermissionManageExternalStorage(
+                        context, pid, uid, getPackageName(), attributionTag);
             default:
                 return false;
         }
@@ -297,13 +303,13 @@ public class LocalCallingIdentity {
     }
 
     private boolean isLegacyWriteInternal() {
-        return hasPermission(PERMISSION_IS_LEGACY_GRANTED) &&
-                checkPermissionWriteStorage(context, pid, uid, getPackageName());
+        return hasPermission(PERMISSION_IS_LEGACY_GRANTED)
+                && checkPermissionWriteStorage(context, pid, uid, getPackageName(), attributionTag);
     }
 
     private boolean isLegacyReadInternal() {
-        return hasPermission(PERMISSION_IS_LEGACY_GRANTED) &&
-                checkPermissionReadStorage(context, pid, uid, getPackageName());
+        return hasPermission(PERMISSION_IS_LEGACY_GRANTED)
+                && checkPermissionReadStorage(context, pid, uid, getPackageName(), attributionTag);
     }
 
     /** System internals or callers holding permission have no redaction */

@@ -17,182 +17,181 @@
 package com.android.providers.media.util;
 
 import static android.Manifest.permission.BACKUP;
+import static android.Manifest.permission.MANAGE_EXTERNAL_STORAGE;
 import static android.Manifest.permission.READ_EXTERNAL_STORAGE;
 import static android.Manifest.permission.WRITE_EXTERNAL_STORAGE;
 import static android.app.AppOpsManager.MODE_ALLOWED;
 import static android.app.AppOpsManager.OPSTR_LEGACY_STORAGE;
-import static android.app.AppOpsManager.OPSTR_MANAGE_EXTERNAL_STORAGE;
-import static android.app.AppOpsManager.OPSTR_READ_EXTERNAL_STORAGE;
 import static android.app.AppOpsManager.OPSTR_READ_MEDIA_AUDIO;
 import static android.app.AppOpsManager.OPSTR_READ_MEDIA_IMAGES;
 import static android.app.AppOpsManager.OPSTR_READ_MEDIA_VIDEO;
-import static android.app.AppOpsManager.OPSTR_WRITE_EXTERNAL_STORAGE;
 import static android.app.AppOpsManager.OPSTR_WRITE_MEDIA_AUDIO;
 import static android.app.AppOpsManager.OPSTR_WRITE_MEDIA_IMAGES;
 import static android.app.AppOpsManager.OPSTR_WRITE_MEDIA_VIDEO;
 import static android.content.pm.PackageManager.PERMISSION_GRANTED;
 
-import android.annotation.NonNull;
 import android.app.AppOpsManager;
 import android.content.Context;
+import android.content.pm.PackageManager;
+import android.provider.MediaStore;
+
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 
 public class PermissionUtils {
     // Callers must hold both the old and new permissions, so that we can
     // handle obscure cases like when an app targets Q but was installed on
     // a device that was originally running on P before being upgraded to Q.
 
-    public static boolean checkPermissionSystem(Context context,
-            int pid, int uid, String packageName) {
-        return uid == android.os.Process.SYSTEM_UID || uid == android.os.Process.myUid()
-                || uid == android.os.Process.SHELL_UID || uid == android.os.Process.ROOT_UID;
+    private static volatile int sLegacyMediaProviderUid = -1;
+
+    private static ThreadLocal<String> sOpDescription = new ThreadLocal<>();
+
+    public static void setOpDescription(@Nullable String description) {
+        sOpDescription.set(description);
     }
 
-    public static boolean checkPermissionBackup(Context context, int pid, int uid) {
+    public static void clearOpDescription() { sOpDescription.set(null); }
+
+    public static boolean checkPermissionSystem(
+            @NonNull Context context, int pid, int uid, String packageName) {
+        // Apps sharing legacy MediaProvider's uid like DownloadProvider and MTP are treated as
+        // system.
+        return uid == android.os.Process.SYSTEM_UID || uid == android.os.Process.myUid()
+                || uid == android.os.Process.SHELL_UID || uid == android.os.Process.ROOT_UID
+                || isLegacyMediaProvider(context, uid);
+    }
+
+    public static boolean checkPermissionBackup(@NonNull Context context, int pid, int uid) {
         return context.checkPermission(BACKUP, pid, uid) == PERMISSION_GRANTED;
     }
 
-    public static boolean checkPermissionManageExternalStorage(Context context, int pid, int uid,
-            String packageName) {
-        return hasAppOpPermission(context, pid, uid, packageName, OPSTR_MANAGE_EXTERNAL_STORAGE);
+    public static boolean checkPermissionManageExternalStorage(@NonNull Context context, int pid,
+            int uid, @NonNull String packageName, @Nullable String attributionTag) {
+        return checkPermissionForDataDelivery(context, MANAGE_EXTERNAL_STORAGE, pid, uid,
+                packageName, attributionTag,
+                generateAppOpMessage(packageName,sOpDescription.get()));
     }
 
-    public static boolean checkPermissionWriteStorage(Context context,
-            int pid, int uid, String packageName) {
-        return checkPermissionAndAppOp(context, pid,
-                uid, packageName, WRITE_EXTERNAL_STORAGE, OPSTR_WRITE_EXTERNAL_STORAGE);
+    public static boolean checkPermissionWriteStorage(@NonNull Context context, int pid, int uid,
+            @NonNull String packageName, @Nullable String attributionTag) {
+        return checkPermissionForDataDelivery(context, WRITE_EXTERNAL_STORAGE, pid, uid,
+                packageName, attributionTag,
+                generateAppOpMessage(packageName,sOpDescription.get()));
     }
 
-    public static boolean checkPermissionReadStorage(Context context,
-            int pid, int uid, String packageName) {
-        return checkPermissionAndAppOp(context, pid,
-                uid, packageName, READ_EXTERNAL_STORAGE, OPSTR_READ_EXTERNAL_STORAGE);
+    public static boolean checkPermissionReadStorage(@NonNull Context context, int pid, int uid,
+            @NonNull String packageName, @Nullable String attributionTag) {
+        return checkPermissionForDataDelivery(context, READ_EXTERNAL_STORAGE, pid, uid,
+                packageName, attributionTag,
+                generateAppOpMessage(packageName,sOpDescription.get()));
     }
 
-    public static boolean checkIsLegacyStorageGranted(Context context, int uid,
-            String packageName) {
+    public static boolean checkIsLegacyStorageGranted(
+            @NonNull Context context, int uid, String packageName) {
         return context.getSystemService(AppOpsManager.class)
                 .unsafeCheckOp(OPSTR_LEGACY_STORAGE, uid, packageName) == MODE_ALLOWED;
     }
 
-    public static boolean checkPermissionReadAudio(Context context,
-            int pid, int uid, String packageName) {
-        if (!checkPermissionAndAppOp(context, pid, uid, packageName,
-                READ_EXTERNAL_STORAGE, OPSTR_READ_EXTERNAL_STORAGE)) return false;
-        return noteAppOpAllowingLegacy(context, pid, uid, packageName,
-                OPSTR_READ_MEDIA_AUDIO);
-    }
-
-    public static boolean checkPermissionWriteAudio(Context context,
-            int pid, int uid, String packageName) {
-        if (!checkPermissionAndAppOpAllowingNonLegacy(context, pid, uid, packageName,
-                WRITE_EXTERNAL_STORAGE, OPSTR_WRITE_EXTERNAL_STORAGE)) return false;
-        return noteAppOpAllowingLegacy(context, pid, uid, packageName,
-                OPSTR_WRITE_MEDIA_AUDIO);
-    }
-
-    public static boolean checkPermissionReadVideo(Context context,
-            int pid, int uid, String packageName) {
-        if (!checkPermissionAndAppOp(context, pid, uid, packageName,
-                READ_EXTERNAL_STORAGE, OPSTR_READ_EXTERNAL_STORAGE)) return false;
-        return noteAppOpAllowingLegacy(context, pid, uid, packageName,
-                OPSTR_READ_MEDIA_VIDEO);
-    }
-
-    public static boolean checkPermissionWriteVideo(Context context,
-            int pid, int uid, String packageName) {
-        if (!checkPermissionAndAppOpAllowingNonLegacy(context, pid, uid, packageName,
-                WRITE_EXTERNAL_STORAGE, OPSTR_WRITE_EXTERNAL_STORAGE)) return false;
-        return noteAppOpAllowingLegacy(context, pid, uid, packageName,
-                OPSTR_WRITE_MEDIA_VIDEO);
-    }
-
-    public static boolean checkPermissionReadImages(Context context,
-            int pid, int uid, String packageName) {
-        if (!checkPermissionAndAppOp(context, pid, uid, packageName,
-                READ_EXTERNAL_STORAGE, OPSTR_READ_EXTERNAL_STORAGE)) return false;
-        return noteAppOpAllowingLegacy(context, pid, uid, packageName,
-                OPSTR_READ_MEDIA_IMAGES);
-    }
-
-    public static boolean checkPermissionWriteImages(Context context,
-            int pid, int uid, String packageName) {
-        if (!checkPermissionAndAppOpAllowingNonLegacy(context, pid, uid, packageName,
-                WRITE_EXTERNAL_STORAGE, OPSTR_WRITE_EXTERNAL_STORAGE)) return false;
-        return noteAppOpAllowingLegacy(context, pid, uid, packageName,
-                OPSTR_WRITE_MEDIA_IMAGES);
-    }
-
-    private static boolean checkPermissionAndAppOp(Context context,
-            int pid, int uid, String packageName, String permission, String op) {
-        if (context.checkPermission(permission, pid, uid) != PERMISSION_GRANTED) {
+    public static boolean checkPermissionReadAudio(@NonNull Context context, int pid, int uid,
+            @NonNull String packageName, @Nullable String attributionTag) {
+        if (!checkPermissionForPreflight(context, READ_EXTERNAL_STORAGE, pid, uid, packageName)) {
             return false;
         }
+        return checkAppOpAllowingLegacy(context, OPSTR_READ_MEDIA_AUDIO, pid,
+                uid, packageName, attributionTag,
+                generateAppOpMessage(packageName, sOpDescription.get()));
+    }
 
-        final AppOpsManager appOps = context.getSystemService(AppOpsManager.class);
-        try {
-            appOps.checkPackage(uid, packageName);
-        } catch (SecurityException e) {
+    public static boolean checkPermissionWriteAudio(@NonNull Context context, int pid, int uid,
+            @NonNull String packageName, @Nullable String attributionTag) {
+        if (!checkPermissionAllowingNonLegacy(
+                    context, WRITE_EXTERNAL_STORAGE, pid, uid, packageName)) {
             return false;
         }
+        return checkAppOpAllowingLegacy(context, OPSTR_WRITE_MEDIA_AUDIO, pid,
+                uid, packageName, attributionTag,
+                generateAppOpMessage(packageName, sOpDescription.get()));
+    }
 
-        final int mode = appOps.unsafeCheckOpNoThrow(op, uid, packageName);
-        switch (mode) {
-            case AppOpsManager.MODE_ALLOWED:
-                return true;
-            case AppOpsManager.MODE_DEFAULT:
-            case AppOpsManager.MODE_IGNORED:
-            case AppOpsManager.MODE_ERRORED:
-                return false;
-            default:
-                throw new IllegalStateException(op + " has unknown mode " + mode);
+    public static boolean checkPermissionReadVideo(@NonNull Context context, int pid, int uid,
+            @NonNull String packageName, @Nullable String attributionTag) {
+        if (!checkPermissionForPreflight(context, READ_EXTERNAL_STORAGE, pid, uid, packageName)) {
+            return false;
         }
+        return checkAppOpAllowingLegacy(context, OPSTR_READ_MEDIA_VIDEO, pid,
+                uid, packageName, attributionTag,
+                generateAppOpMessage(packageName, sOpDescription.get()));
+    }
+
+    public static boolean checkPermissionWriteVideo(@NonNull Context context, int pid, int uid,
+            @NonNull String packageName, @Nullable String attributionTag) {
+        if (!checkPermissionAllowingNonLegacy(
+                context, WRITE_EXTERNAL_STORAGE, pid, uid, packageName)) {
+            return false;
+        }
+        return checkAppOpAllowingLegacy(context, OPSTR_WRITE_MEDIA_VIDEO, pid,
+                uid, packageName, attributionTag,
+                generateAppOpMessage(packageName, sOpDescription.get()));
+    }
+
+    public static boolean checkPermissionReadImages(@NonNull Context context, int pid, int uid,
+            @NonNull String packageName, @Nullable String attributionTag) {
+        if (!checkPermissionForPreflight(context, READ_EXTERNAL_STORAGE, pid, uid, packageName)) {
+            return false;
+        }
+        return checkAppOpAllowingLegacy(context, OPSTR_READ_MEDIA_IMAGES, pid,
+                uid, packageName, attributionTag,
+                generateAppOpMessage(packageName, sOpDescription.get()));
+    }
+
+    public static boolean checkPermissionWriteImages(@NonNull Context context, int pid, int uid,
+            @NonNull String packageName, @Nullable String attributionTag) {
+        if (!checkPermissionAllowingNonLegacy(
+                context, WRITE_EXTERNAL_STORAGE, pid, uid, packageName)) {
+            return false;
+        }
+        return checkAppOpAllowingLegacy(context, OPSTR_WRITE_MEDIA_IMAGES, pid,
+                uid, packageName, attributionTag,
+                generateAppOpMessage(packageName, sOpDescription.get()));
     }
 
     /**
-     * Checks if the given package has the given {@code permission} and {@code op}, but allows it
-     * to bypass the permission and app-op check if it's NOT a legacy app, i.e. doesn't hold
-     * {@link AppOpsManager#OPSTR_LEGACY_STORAGE}. This is useful for deprecated permissions and/or
-     * app-ops, like {@link android.Manifest.permission#WRITE_EXTERNAL_STORAGE}
-     * @see #checkPermissionAndAppOp
+     * Generates a message to be used with the different {@link AppOpsManager#noteOp} variations.
+     * If the supplied description is {@code null}, the returned message will be {@code null}.
      */
-    private static boolean checkPermissionAndAppOpAllowingNonLegacy(Context context,
-            int pid, int uid, String packageName, String permission, String op) {
-        final AppOpsManager appOps = context.getSystemService(AppOpsManager.class);
-        try {
-            appOps.checkPackage(uid, packageName);
-        } catch (SecurityException e) {
-            return false;
+    private static String generateAppOpMessage(
+            @NonNull String packageName, @Nullable String description) {
+        if (description == null) {
+            return null;
         }
+        return "Package: " + packageName + ". Description: " + description + ".";
+    }
+
+    /**
+     * Similar to {@link #checkPermissionForPreflight(Context, String, int, int, String)},
+     * but also returns true for non-legacy apps.
+     */
+    private static boolean checkPermissionAllowingNonLegacy(@NonNull Context context,
+            @NonNull String permission, int pid, int uid, @NonNull String packageName) {
+        final AppOpsManager appOps = context.getSystemService(AppOpsManager.class);
+
         // Allowing non legacy apps to bypass this check
         if (appOps.unsafeCheckOpNoThrow(OPSTR_LEGACY_STORAGE, uid,
                 packageName) != AppOpsManager.MODE_ALLOWED) return true;
 
-        // Seems like it's a legacy app, so it has to pass the permission and app-op check
-        return checkPermissionAndAppOp(context, pid, uid, packageName, permission, op);
+        // Seems like it's a legacy app, so it has to pass the permission check
+        return checkPermissionForPreflight(context, permission, pid, uid, packageName);
     }
 
     /**
-     * Checks if calling app is allowed the app-op. If its app-op mode is
-     * {@link AppOpsManager#MODE_DEFAULT} then it falls back to checking the appropriate permission
-     * for the app-op. The permission is retrieved from
-     * {@link AppOpsManager#opToPermission(String)}.
+     * Checks *only* App Ops, also returns true for legacy apps.
      */
-    private static boolean hasAppOpPermission(@NonNull Context context, int pid, int uid,
-            @NonNull String packageName, @NonNull String op) {
+    private static boolean checkAppOpAllowingLegacy(@NonNull Context context,
+            @NonNull String op, int pid, int uid, @NonNull String packageName,
+            @Nullable String attributionTag, @Nullable String opMessage) {
         final AppOpsManager appOps = context.getSystemService(AppOpsManager.class);
-        final int mode = appOps.noteOpNoThrow(op, uid, packageName, null, null);
-        if (mode == AppOpsManager.MODE_DEFAULT) {
-            final String permission = AppOpsManager.opToPermission(op);
-            return permission != null
-                    && context.checkPermission(permission, pid, uid) == PERMISSION_GRANTED;
-        }
-        return mode == AppOpsManager.MODE_ALLOWED;
-    }
-
-    private static boolean noteAppOpAllowingLegacy(Context context,
-            int pid, int uid, String packageName, String op) {
-        final AppOpsManager appOps = context.getSystemService(AppOpsManager.class);
-        final int mode = appOps.noteOpNoThrow(op, uid, packageName);
+        final int mode = appOps.noteOpNoThrow(op, uid, packageName, attributionTag, opMessage);
         switch (mode) {
             case AppOpsManager.MODE_ALLOWED:
                 return true;
@@ -207,6 +206,178 @@ public class PermissionUtils {
                 return false;
             default:
                 throw new IllegalStateException(op + " has unknown mode " + mode);
+        }
+    }
+
+    private static boolean isLegacyMediaProvider(Context context, int uid) {
+        if (sLegacyMediaProviderUid == -1) {
+            // Uid stays constant while legacy Media Provider stays installed. Cache legacy
+            // MediaProvider's uid for the first time.
+            sLegacyMediaProviderUid = context.getPackageManager()
+                    .resolveContentProvider(MediaStore.AUTHORITY_LEGACY, 0)
+                    .applicationInfo.uid;
+        }
+        return (uid == sLegacyMediaProviderUid);
+    }
+
+    /**
+     * Checks whether a given package in a UID and PID has a given permission
+     * and whether the app op that corresponds to this permission is allowed.
+     *
+     * <strong>NOTE:</strong> Use this method only for permission checks at the
+     * preflight point where you will not deliver the permission protected data
+     * to clients but schedule permission data delivery, apps register listeners,
+     * etc.
+     *
+     * <p>For example, if an app registers a location listener it should have the location
+     * permission but no data is actually sent to the app at the moment of registration
+     * and you should use this method to determine if the app has or may have location
+     * permission (if app has only foreground location the grant state depends on the app's
+     * fg/gb state) and this check will not leave a trace that permission protected data
+     * was delivered. When you are about to deliver the location data to a registered
+     * listener you should use {@link #checkPermissionForDataDelivery(Context, String,
+     * int, int, String, String, String)} which will evaluate the permission access based on the
+     * current fg/bg state of the app and leave a record that the data was accessed.
+     *
+     * @param context Context for accessing resources.
+     * @param permission The permission to check.
+     * @param pid The process id for which to check.
+     * @param uid The uid for which to check.
+     * @param packageName The package name for which to check. If null the
+     *     the first package for the calling UID will be used.
+     * @return boolean if permission is {@link #PERMISSION_GRANTED}
+     *
+     * @see #checkPermissionForDataDelivery(Context, String, int, int, String, String, String)
+     */
+    private static boolean checkPermissionForPreflight(@NonNull Context context,
+            @NonNull String permission, int pid, int uid, @Nullable String packageName) {
+        return checkPermissionCommon(context, permission, pid, uid, packageName,
+                null /*attributionTag*/, null /*message*/,
+                false /*forDataDelivery*/);
+    }
+
+    /**
+     * Checks whether a given package in a UID and PID has a given permission
+     * and whether the app op that corresponds to this permission is allowed.
+     *
+     * <strong>NOTE:</strong> Use this method only for permission checks at the
+     * point where you will deliver the permission protected data to clients.
+     *
+     * <p>For example, if an app registers a location listener it should have the location
+     * permission but no data is actually sent to the app at the moment of registration
+     * and you should use {@link #checkPermissionForPreflight(Context, String, int, int, String)}
+     * to determine if the app has or may have location permission (if app has only foreground
+     * location the grant state depends on the app's fg/gb state) and this check will not
+     * leave a trace that permission protected data was delivered. When you are about to
+     * deliver the location data to a registered listener you should use this method which
+     * will evaluate the permission access based on the current fg/bg state of the app and
+     * leave a record that the data was accessed.
+     *
+     * @param context Context for accessing resources.
+     * @param permission The permission to check.
+     * @param pid The process id for which to check. Use {@link #PID_UNKNOWN} if the PID
+     *    is not known.
+     * @param uid The uid for which to check.
+     * @param packageName The package name for which to check. If null the
+     *     the first package for the calling UID will be used.
+     * @param attributionTag attribution tag
+     * @return boolean true if {@link #PERMISSION_GRANTED}
+     * @param message A message describing the reason the permission was checked
+     *
+     * @see #checkPermissionForPreflight(Context, String, int, int, String)
+     */
+    private static boolean checkPermissionForDataDelivery(@NonNull Context context,
+            @NonNull String permission, int pid, int uid, @Nullable String packageName,
+            @Nullable String attributionTag, @Nullable String message) {
+        return checkPermissionCommon(context, permission, pid, uid, packageName, attributionTag,
+                message, true /*forDataDelivery*/);
+    }
+
+    private static boolean checkPermissionCommon(@NonNull Context context,
+            @NonNull String permission, int pid, int uid, @Nullable String packageName,
+            @Nullable String attributionTag, @Nullable String message, boolean forDataDelivery) {
+        if (packageName == null) {
+            String[] packageNames = context.getPackageManager().getPackagesForUid(uid);
+            if (packageNames != null && packageNames.length > 0) {
+                packageName = packageNames[0];
+            }
+        }
+
+        if (isAppOpPermission(permission)) {
+            return checkAppOpPermission(context, permission, pid, uid, packageName, attributionTag,
+                    message, forDataDelivery);
+        }
+        if (isRuntimePermission(permission)) {
+            return checkRuntimePermission(context, permission, pid, uid, packageName,
+                    attributionTag, message, forDataDelivery);
+        }
+        return context.checkPermission(permission, pid, uid) == PERMISSION_GRANTED;
+    }
+
+    private static boolean isAppOpPermission(String permission) {
+        switch (permission) {
+            case MANAGE_EXTERNAL_STORAGE:
+                return true;
+        }
+        return false;
+    }
+
+    private static boolean isRuntimePermission(String permission) {
+        switch (permission) {
+            case READ_EXTERNAL_STORAGE:
+            case WRITE_EXTERNAL_STORAGE:
+                return true;
+        }
+        return false;
+    }
+
+    private static boolean checkAppOpPermission(@NonNull Context context,
+            @NonNull String permission, int pid, int uid, @Nullable String packageName,
+            @Nullable String attributionTag, @Nullable String message, boolean forDataDelivery) {
+        final String op = AppOpsManager.permissionToOp(permission);
+        if (op == null || packageName == null) {
+            return false;
+        }
+
+        final AppOpsManager appOpsManager = context.getSystemService(AppOpsManager.class);
+        final int opMode = (forDataDelivery)
+                ? appOpsManager.noteOpNoThrow(op, uid, packageName, attributionTag, message)
+                : appOpsManager.unsafeCheckOpRawNoThrow(op, uid, packageName);
+
+        switch (opMode) {
+            case AppOpsManager.MODE_ALLOWED:
+            case AppOpsManager.MODE_FOREGROUND:
+                return true;
+            case AppOpsManager.MODE_DEFAULT:
+                return context.checkPermission(permission, pid, uid) == PERMISSION_GRANTED;
+            default:
+                return false;
+        }
+    }
+
+    private static boolean checkRuntimePermission(@NonNull Context context,
+            @NonNull String permission, int pid, int uid, @Nullable String packageName,
+            @Nullable String attributionTag, @Nullable String message, boolean forDataDelivery) {
+        if (context.checkPermission(permission, pid, uid) == PackageManager.PERMISSION_DENIED) {
+            return false;
+        }
+
+        final String op = AppOpsManager.permissionToOp(permission);
+        if (op == null || packageName == null) {
+            return true;
+        }
+
+        final AppOpsManager appOpsManager = context.getSystemService(AppOpsManager.class);
+        final int opMode = (forDataDelivery)
+                ? appOpsManager.noteOpNoThrow(op, uid, packageName, attributionTag, message)
+                : appOpsManager.unsafeCheckOpRawNoThrow(op, uid, packageName);
+
+        switch (opMode) {
+            case AppOpsManager.MODE_ALLOWED:
+            case AppOpsManager.MODE_FOREGROUND:
+                return true;
+            default:
+                return false;
         }
     }
 }

@@ -57,7 +57,6 @@ import android.os.RemoteException;
 import android.os.storage.StorageManager;
 import android.os.storage.StorageVolume;
 import android.text.TextUtils;
-import android.text.format.DateUtils;
 import android.util.ArrayMap;
 import android.util.ArraySet;
 import android.util.Log;
@@ -159,6 +158,9 @@ public final class MediaStore {
      * using {@link #getExternalVolumeNames(Context)}.
      */
     public static final String VOLUME_EXTERNAL_PRIMARY = "external_primary";
+
+    /** {@hide} */
+    public static final String VOLUME_DEMO = "demo";
 
     /** {@hide} */
     public static final String RESOLVE_PLAYLIST_MEMBERS_CALL = "resolve_playlist_members";
@@ -609,6 +611,15 @@ public final class MediaStore {
     public static final String QUERY_ARG_RELATED_URI = "android:query-arg-related-uri";
 
     /**
+     * Flag that can be used to enable movement of media items on disk through
+     * {@link ContentResolver#update} calls. This is typically true for
+     * third-party apps, but false for system components.
+     *
+     * @hide
+     */
+    public static final String QUERY_ARG_ALLOW_MOVEMENT = "android:query-arg-allow-movement";
+
+    /**
      * Specify how {@link MediaColumns#IS_PENDING} items should be filtered when
      * performing a {@link MediaStore} operation.
      * <p>
@@ -701,7 +712,6 @@ public final class MediaStore {
      * By default no pending items are returned.
      *
      * @see MediaColumns#IS_PENDING
-     * @see MediaStore#getIncludePending(Uri)
      * @deprecated consider migrating to {@link #QUERY_ARG_MATCH_PENDING} which
      *             is more expressive.
      */
@@ -719,7 +729,7 @@ public final class MediaStore {
     /** @hide */
     @Deprecated
     public static boolean getIncludePending(@NonNull Uri uri) {
-        return parseBoolean(uri.getQueryParameter(MediaStore.PARAM_INCLUDE_PENDING));
+        return uri.getBooleanQueryParameter(MediaStore.PARAM_INCLUDE_PENDING, false);
     }
 
     /**
@@ -749,7 +759,7 @@ public final class MediaStore {
      * @see MediaStore#setRequireOriginal(Uri)
      */
     public static boolean getRequireOriginal(@NonNull Uri uri) {
-        return parseBoolean(uri.getQueryParameter(MediaStore.PARAM_REQUIRE_ORIGINAL));
+        return uri.getBooleanQueryParameter(MediaStore.PARAM_REQUIRE_ORIGINAL, false);
     }
 
     /**
@@ -896,11 +906,8 @@ public final class MediaStore {
         final ContentValues values = new ContentValues();
         if (value) {
             values.put(MediaColumns.IS_TRASHED, 1);
-            values.put(MediaColumns.DATE_EXPIRES,
-                    (System.currentTimeMillis() + DateUtils.WEEK_IN_MILLIS) / 1000);
         } else {
             values.put(MediaColumns.IS_TRASHED, 0);
-            values.putNull(MediaColumns.DATE_EXPIRES);
         }
         return createRequest(resolver, CREATE_TRASH_REQUEST_CALL, uris, values);
     }
@@ -1103,9 +1110,17 @@ public final class MediaStore {
          * The time the media item should be considered expired. Typically only
          * meaningful in the context of {@link #IS_PENDING} or
          * {@link #IS_TRASHED}.
+         * <p>
+         * The value stored in this column is automatically calculated when
+         * {@link #IS_PENDING} or {@link #IS_TRASHED} is changed. The default
+         * pending expiration is typically 7 days, and the default trashed
+         * expiration is typically 30 days.
+         * <p>
+         * Expired media items are automatically deleted once their expiration
+         * time has passed, typically during during the next device idle period.
          */
         @CurrentTimeSecondsLong
-        @Column(Cursor.FIELD_TYPE_INTEGER)
+        @Column(value = Cursor.FIELD_TYPE_INTEGER, readOnly = true)
         public static final String DATE_EXPIRES = "date_expires";
 
         /**
@@ -2058,7 +2073,6 @@ public final class MediaStore {
                 values.put(MediaColumns.MIME_TYPE, "image/jpeg");
                 values.put(MediaColumns.DATE_ADDED, now / 1000);
                 values.put(MediaColumns.DATE_MODIFIED, now / 1000);
-                values.put(MediaColumns.DATE_EXPIRES, (now + DateUtils.DAY_IN_MILLIS) / 1000);
                 values.put(MediaColumns.IS_PENDING, 1);
 
                 final Uri uri = cr.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
@@ -2070,7 +2084,6 @@ public final class MediaStore {
                     // Everything went well above, publish it!
                     values.clear();
                     values.put(MediaColumns.IS_PENDING, 0);
-                    values.putNull(MediaColumns.DATE_EXPIRES);
                     cr.update(uri, values, null, null);
                     return uri.toString();
                 } catch (Exception e) {
@@ -2587,7 +2600,7 @@ public final class MediaStore {
          */
         @Deprecated
         public static @Nullable String keyFor(@Nullable String name) {
-            if (TextUtils.isEmpty(name)) return null;
+            if (TextUtils.isEmpty(name)) return "";
 
             if (UNKNOWN_STRING.equals(name)) {
                 return "01";
@@ -2596,7 +2609,7 @@ public final class MediaStore {
             final boolean sortFirst = name.startsWith("\001");
 
             name = PATTERN_TRIM_BEFORE.matcher(name).replaceAll("");
-            if (TextUtils.isEmpty(name)) return null;
+            if (TextUtils.isEmpty(name)) return "";
 
             final Collator c = Collator.getInstance(Locale.ROOT);
             c.setStrength(Collator.PRIMARY);
@@ -3652,6 +3665,8 @@ public final class MediaStore {
         final StorageManager sm = context.getSystemService(StorageManager.class);
         final Set<String> res = new ArraySet<>();
         for (StorageVolume sv : sm.getStorageVolumes()) {
+            Log.v(TAG, "Examining volume " + sv.getId() + " with name "
+                    + sv.getMediaStoreVolumeName() + " and state " + sv.getState());
             switch (sv.getState()) {
                 case Environment.MEDIA_MOUNTED:
                 case Environment.MEDIA_MOUNTED_READ_ONLY: {
@@ -3718,6 +3733,8 @@ public final class MediaStore {
             return volumeName;
         } else if (VOLUME_EXTERNAL_PRIMARY.equals(volumeName)) {
             return volumeName;
+        } else if (VOLUME_DEMO.equals(volumeName)) {
+            return volumeName;
         }
 
         // When not one of the well-known values above, it must be a hex UUID
@@ -3730,13 +3747,6 @@ public final class MediaStore {
             }
         }
         return volumeName;
-    }
-
-    private static boolean parseBoolean(@Nullable String value) {
-        if (value == null) return false;
-        if ("1".equals(value)) return true;
-        if ("true".equalsIgnoreCase(value)) return true;
-        return false;
     }
 
     /**

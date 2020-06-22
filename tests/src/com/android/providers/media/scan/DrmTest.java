@@ -62,10 +62,12 @@ import java.io.InputStream;
 import java.io.RandomAccessFile;
 import java.io.SequenceInputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Enumeration;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Objects;
-import java.util.Vector;
 import java.util.function.Consumer;
 
 /**
@@ -97,6 +99,7 @@ public class DrmTest {
 
     @Test
     public void testForwardLock_Audio() throws Exception {
+        Assume.assumeTrue(isForwardLockSupported());
         doForwardLock("audio/mpeg", R.raw.test_audio, (values) -> {
             assertEquals(1_045L, (long) values.getAsLong(FileColumns.DURATION));
             assertEquals(FileColumns.MEDIA_TYPE_AUDIO,
@@ -106,6 +109,7 @@ public class DrmTest {
 
     @Test
     public void testForwardLock_Video() throws Exception {
+        Assume.assumeTrue(isForwardLockSupported());
         doForwardLock("video/mp4", R.raw.test_video, (values) -> {
             assertEquals(40_000L, (long) values.getAsLong(FileColumns.DURATION));
             assertEquals(FileColumns.MEDIA_TYPE_VIDEO,
@@ -115,6 +119,7 @@ public class DrmTest {
 
     @Test
     public void testForwardLock_Image() throws Exception {
+        Assume.assumeTrue(isForwardLockSupported());
         doForwardLock("image/jpeg", R.raw.test_image, (values) -> {
             // ExifInterface currently doesn't know how to scan DRM images, so
             // the best we can do is verify the base test metadata
@@ -125,6 +130,7 @@ public class DrmTest {
 
     @Test
     public void testForwardLock_Binary() throws Exception {
+        Assume.assumeTrue(isForwardLockSupported());
         doForwardLock("application/octet-stream", R.raw.test_image, null);
     }
 
@@ -134,6 +140,8 @@ public class DrmTest {
      */
     @Test
     public void testForwardLock_130680734() throws Exception {
+        Assume.assumeTrue(isForwardLockSupported());
+
         final ContentValues values = new ContentValues();
         values.put(MediaColumns.DISPLAY_NAME, "temp" + System.nanoTime() + ".fl");
         values.put(MediaColumns.MIME_TYPE, MIME_FORWARD_LOCKED);
@@ -166,7 +174,7 @@ public class DrmTest {
 
     public @NonNull InputStream createDmStream(@NonNull String mimeType, int resId)
             throws IOException {
-        Vector<InputStream> sequence = new Vector<InputStream>();
+        List<InputStream> sequence = new ArrayList<>();
 
         String dmHeader = "--mime_content_boundary\r\n" +
                 "Content-Type: " + mimeType + "\r\n" +
@@ -180,13 +188,11 @@ public class DrmTest {
         String dmFooter = "\r\n--mime_content_boundary--";
         sequence.add(new ByteArrayInputStream(dmFooter.getBytes(StandardCharsets.UTF_8)));
 
-        return new SequenceInputStream(sequence.elements());
+        return new SequenceInputStream(new EnumerationAdapter<InputStream>(sequence.iterator()));
     }
 
     private void doForwardLock(String mimeType, int resId,
             @Nullable Consumer<ContentValues> verifier) throws Exception {
-        Assume.assumeTrue(isForwardLockSupported());
-
         InputStream dmStream = createDmStream(mimeType, resId);
 
         File flPath = new File(mContext.getExternalMediaDirs()[0],
@@ -368,5 +374,28 @@ public class DrmTest {
             }
         }
         return false;
+    }
+
+    /**
+     * This is purely an adapter to convert modern {@link Iterator} back into an
+     * {@link Enumeration} for legacy code.
+     */
+    @SuppressWarnings("JdkObsolete")
+    private static class EnumerationAdapter<T> implements Enumeration<T> {
+        private final Iterator<T> it;
+
+        public EnumerationAdapter(Iterator<T> it) {
+            this.it = it;
+        }
+
+        @Override
+        public boolean hasMoreElements() {
+            return it.hasNext();
+        }
+
+        @Override
+        public T nextElement() {
+            return it.next();
+        }
     }
 }

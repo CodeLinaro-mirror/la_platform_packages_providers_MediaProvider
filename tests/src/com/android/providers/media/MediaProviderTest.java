@@ -61,6 +61,7 @@ import com.android.providers.media.util.FileUtils;
 import com.android.providers.media.util.SQLiteQueryBuilder;
 
 import org.junit.AfterClass;
+import org.junit.Assume;
 import org.junit.BeforeClass;
 import org.junit.Ignore;
 import org.junit.Test;
@@ -96,7 +97,7 @@ public class MediaProviderTest {
                         Manifest.permission.READ_COMPAT_CHANGE_CONFIG);
 
         final Context context = InstrumentationRegistry.getTargetContext();
-        sIsolatedContext = new IsolatedContext(context, "modern");
+        sIsolatedContext = new IsolatedContext(context, "modern", /*asFuseThread*/ false);
         sIsolatedResolver = sIsolatedContext.getContentResolver();
     }
 
@@ -104,6 +105,19 @@ public class MediaProviderTest {
     public static void tearDown() {
         InstrumentationRegistry.getInstrumentation()
                 .getUiAutomation().dropShellPermissionIdentity();
+    }
+
+    /**
+     * To fully exercise all our tests, we require that the Cuttlefish emulator
+     * have both emulated primary storage and an SD card be present.
+     */
+    @Test
+    public void testCuttlefish() {
+        Assume.assumeTrue(Build.MODEL.contains("Cuttlefish"));
+
+        assertTrue("Cuttlefish must have both emulated storage and an SD card to exercise tests",
+                MediaStore.getExternalVolumeNames(InstrumentationRegistry.getTargetContext())
+                        .size() > 1);
     }
 
     @Test
@@ -228,7 +242,7 @@ public class MediaProviderTest {
     public void testCanonicalize() throws Exception {
         // We might have old files lurking, so force a clean slate
         final Context context = InstrumentationRegistry.getTargetContext();
-        sIsolatedContext = new IsolatedContext(context, "modern");
+        sIsolatedContext = new IsolatedContext(context, "modern", /*asFuseThread*/ false);
         sIsolatedResolver = sIsolatedContext.getContentResolver();
 
         final File dir = Environment
@@ -741,18 +755,6 @@ public class MediaProviderTest {
     }
 
     @Test
-    public void testParseBoolean() throws Exception {
-        assertTrue(MediaProvider.parseBoolean("TRUE"));
-        assertTrue(MediaProvider.parseBoolean("true"));
-        assertTrue(MediaProvider.parseBoolean("1"));
-
-        assertFalse(MediaProvider.parseBoolean("FALSE"));
-        assertFalse(MediaProvider.parseBoolean("false"));
-        assertFalse(MediaProvider.parseBoolean("0"));
-        assertFalse(MediaProvider.parseBoolean(null));
-    }
-
-    @Test
     public void testIsDownload() throws Exception {
         assertTrue(isDownload("/storage/emulated/0/Download/colors.png"));
         assertTrue(isDownload("/storage/emulated/0/Download/test.pdf"));
@@ -878,7 +880,13 @@ public class MediaProviderTest {
         final ContentValues values = new ContentValues();
         values.put(MediaColumns.DISPLAY_NAME, "pngimage.png");
 
-        new MediaProvider().ensureFileColumns(uri, values);
+        final MediaProvider provider = new MediaProvider() {
+            @Override
+            public boolean isFuseThread() {
+                return false;
+            }
+        };
+        provider.ensureFileColumns(uri, values);
 
         assertMimetype(values, "image/png");
     }
@@ -897,14 +905,13 @@ public class MediaProviderTest {
 
     @Test
     public void testRelativePathForValidDirectories() throws Exception {
-        for (Pair<String, String> top: new ArrayList<Pair<String, String>>() {{
-            add(new Pair("/storage/emulated/0", new String("/")));
-            add(new Pair("/storage/emulated/0/DCIM", "DCIM/"));
-            add(new Pair("/storage/emulated/0/DCIM/Camera", "DCIM/Camera/"));
-            add(new Pair("/storage/emulated/0/Android/media/com.example/Foo",
-                    "Android/media/com.example/Foo/"));
-            add(new Pair("/storage/0000-0000/DCIM/Camera", "DCIM/Camera/"));
-        }}) {
+        for (Pair<String, String> top : Arrays.asList(
+                Pair.create("/storage/emulated/0", new String("/")),
+                Pair.create("/storage/emulated/0/DCIM", "DCIM/"),
+                Pair.create("/storage/emulated/0/DCIM/Camera", "DCIM/Camera/"),
+                Pair.create("/storage/emulated/0/Android/media/com.example/Foo",
+                        "Android/media/com.example/Foo/"),
+                Pair.create("/storage/0000-0000/DCIM/Camera", "DCIM/Camera/"))) {
             assertEquals(top.second, FileUtils.extractRelativePathForDirectory(top.first));
         }
     }
@@ -912,7 +919,7 @@ public class MediaProviderTest {
     private static ContentValues computeDataValues(String path) {
         final ContentValues values = new ContentValues();
         values.put(MediaColumns.DATA, path);
-        FileUtils.computeValuesFromData(values);
+        FileUtils.computeValuesFromData(values, /*forFuse*/ false);
         Log.v(TAG, "Computed values " + values);
         return values;
     }
@@ -960,14 +967,14 @@ public class MediaProviderTest {
         values.put(MediaColumns.MIME_TYPE, mimeType);
         try {
             ensureFileColumns(uri, values);
-        } catch (VolumeArgumentException e) {
+        } catch (VolumeArgumentException | VolumeNotFoundException e) {
             throw e.rethrowAsIllegalArgumentException();
         }
         return values.getAsString(MediaColumns.DATA);
     }
 
     private void ensureFileColumns(Uri uri, ContentValues values)
-            throws VolumeArgumentException {
+            throws VolumeArgumentException, VolumeNotFoundException {
         try (ContentProviderClient cpc = sIsolatedResolver
                 .acquireContentProviderClient(MediaStore.AUTHORITY)) {
             ((MediaProvider) cpc.getLocalContentProvider())
@@ -1001,10 +1008,6 @@ public class MediaProviderTest {
         final ArrayList<ContentProviderOperation> ops = new ArrayList<>();
         ops.add(ContentProviderOperation.newDelete(uris[0]).build());
         ops.add(ContentProviderOperation.newDelete(uris[1]).build());
-        try {
-            sIsolatedResolver.applyBatch(MediaStore.AUTHORITY, ops);
-        } catch (IllegalStateException ignore) {
-            fail("Nested transaction");
-        }
+        sIsolatedResolver.applyBatch(MediaStore.AUTHORITY, ops);
     }
 }

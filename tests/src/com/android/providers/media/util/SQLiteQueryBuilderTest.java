@@ -28,11 +28,14 @@ import android.database.sqlite.SQLiteCursor;
 import android.database.sqlite.SQLiteCursorDriver;
 import android.database.sqlite.SQLiteDatabase;
 import android.database.sqlite.SQLiteQuery;
+import android.os.Build;
 import android.os.CancellationSignal;
 import android.os.OperationCanceledException;
 
 import androidx.test.InstrumentationRegistry;
 import androidx.test.runner.AndroidJUnit4;
+
+import com.google.common.util.concurrent.Uninterruptibles;
 
 import org.junit.After;
 import org.junit.Before;
@@ -358,11 +361,8 @@ public class SQLiteQueryBuilderTest {
             } finally {
                 barrier1.release();
                 barrier2.release();
-                try {
-                    contentionThread.join();
-                    cancellationThread.join();
-                } catch (InterruptedException e) {
-                }
+                Uninterruptibles.joinUninterruptibly(contentionThread);
+                Uninterruptibles.joinUninterruptibly(cancellationThread);
             }
         }
 
@@ -419,10 +419,7 @@ public class SQLiteQueryBuilderTest {
                     return; // success!
                 }
             } finally {
-                try {
-                    cancellationThread.join();
-                } catch (InterruptedException e) {
-                }
+                Uninterruptibles.joinUninterruptibly(cancellationThread);
             }
         }
 
@@ -694,6 +691,53 @@ public class SQLiteQueryBuilderTest {
             values.put(column, 42);
             assertStrictUpdateInvalid(values, null, null);
         }
+    }
+
+    private static void assertEnforceStrictGrammarRelaxedByTargetSdk(String selection) {
+        final SQLiteQueryBuilder builder = new SQLiteQueryBuilder();
+        final HashMap<String, String> map = new HashMap<>();
+        map.put("_data", "_data");
+        map.put("date_added", "date_added");
+        map.put("date_modified", "date_modified");
+        map.put("media_type", "media_type");
+        builder.setProjectionMap(map);
+        {
+            builder.setTargetSdkVersion(Build.VERSION_CODES.Q);
+            builder.enforceStrictGrammar(selection, null, null, null, null);
+        }
+        try {
+            builder.setTargetSdkVersion(Build.VERSION_CODES.R);
+            builder.enforceStrictGrammar(selection, null, null, null, null);
+            fail("Expected to throw");
+        } catch (IllegalArgumentException expected) {
+        }
+    }
+
+    @Test
+    public void testStrict_154193772() {
+        final String selection = "(LOWER(_data) LIKE \"%.wmv\" OR LOWER(_data) LIKE \"%.wm\" OR LOWER(_data) LIKE \"%.wtv\" OR LOWER(_data) LIKE \"%.asf\" OR LOWER(_data) LIKE \"%.hls\" OR LOWER(_data) LIKE \"%.mp4\" OR LOWER(_data) LIKE \"%.m4v\" OR LOWER(_data) LIKE \"%.mov\" OR LOWER(_data) LIKE \"%.mp4v\" OR LOWER(_data) LIKE \"%.3g2\" OR LOWER(_data) LIKE \"%.3gp\" OR LOWER(_data) LIKE \"%.3gp2\" OR LOWER(_data) LIKE \"%.3gpp\" OR LOWER(_data) LIKE \"%.mj2\" OR LOWER(_data) LIKE \"%.qt\" OR LOWER(_data) LIKE \"%.external\" OR LOWER(_data) LIKE \"%.mov\" OR LOWER(_data) LIKE \"%.asf\" OR LOWER(_data) LIKE \"%.avi\" OR LOWER(_data) LIKE \"%.divx\" OR LOWER(_data) LIKE \"%.mpg\" OR LOWER(_data) LIKE \"%.mpeg\" OR LOWER(_data) LIKE \"%.mkv\" OR LOWER(_data) LIKE \"%.webm\" OR LOWER(_data) LIKE \"%.mk3d\" OR LOWER(_data) LIKE \"%.mks\" OR LOWER(_data) LIKE \"%.3gp\" OR LOWER(_data) LIKE \"%.mpegts\" OR LOWER(_data) LIKE \"%.ts\" OR LOWER(_data) LIKE \"%.m2ts\" OR LOWER(_data) LIKE \"%.m2t\") AND (date_added >= ? OR date_modified >=?)";
+        assertEnforceStrictGrammarRelaxedByTargetSdk(selection);
+    }
+
+    @Test
+    public void testStrict_156554363() {
+        final String selection = "date_added>? AND media_type=0 AND (_data LIKE \"%.mov\" OR _data LIKE \"%.MOV\"";
+        assertEnforceStrictGrammarRelaxedByTargetSdk(selection);
+    }
+
+    @Test
+    public void testStrict_156832140() {
+        final String selection = "_data LIKE \"%com.gopro.smarty%\"";
+        assertEnforceStrictGrammarRelaxedByTargetSdk(selection);
+    }
+
+    @Test
+    public void testStrict_156136746() {
+        // Verify that both keywords column names are allowed to be
+        // case-insensitive, per the SQLite specification
+        assertStrictQueryValid(new String[] { "Name", "Max(Month)" },
+                "IfNull(Month,-1) Between 1100 And 1900", null,
+                "Month", "Month In (1,2)", null, null);
     }
 
     private void assertStrictInsertValid(ContentValues values) {

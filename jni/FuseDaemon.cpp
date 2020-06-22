@@ -96,17 +96,20 @@ const bool IS_OS_DEBUGABLE = android::base::GetIntProperty("ro.debuggable", 0);
 
 #define FUSE_UNKNOWN_INO 0xffffffff
 
+// Stolen from: android_filesystem_config.h
+#define AID_APP_START 10000
+
 constexpr size_t MAX_READ_SIZE = 128 * 1024;
 // Stolen from: UserHandle#getUserId
 constexpr int PER_USER_RANGE = 100000;
-// Cache inode attributes forever to improve performance
-// Whenver attributes could have changed on the lower filesystem outside the FUSE driver, we call
-// fuse_invalidate_entry_cache
-constexpr double DEFAULT_ATTR_TIMEOUT_SECONDS = std::numeric_limits<double>::max();
-// Cache dentries forever to improve performance
-// Whenver attributes could have changed on the lower filesystem outside the FUSE driver, we call
-// fuse_invalidate_entry_cache
-constexpr double DEFAULT_ENTRY_TIMEOUT_SECONDS = std::numeric_limits<double>::max();
+
+// Regex copied from FileUtils.java in MediaProvider, but without media directory.
+const std::regex PATTERN_OWNED_PATH(
+    "^/storage/[^/]+/(?:[0-9]+/)?Android/(?:data|obb|sandbox)/([^/]+)(/?.*)?",
+    std::regex_constants::icase);
+
+const std::regex ANDROID_DATA_OBB_PATH("^/storage/[^/]+/(?:[0-9]+/)?(?:Android)/?(?:data|obb)?$",
+                                       std::regex_constants::icase);
 
 /*
  * In order to avoid double caching with fuse, call fadvise on the file handles
@@ -129,8 +132,6 @@ class FAdviser {
     void Close(int fd) { SendMessage(Message::close, fd); }
 
   private:
-    std::thread thread_;
-
     struct Message {
         enum Type { record, close, quit };
         Type type;
@@ -218,8 +219,9 @@ class FAdviser {
         cv_.notify_one();
     }
 
-    std::queue<Message> queue_;
     std::mutex mutex_;
+    std::thread thread_;
+    std::queue<Message> queue_;
     std::condition_variable cv_;
 
     typedef std::multimap<size_t, int> Sizes;
@@ -354,28 +356,26 @@ static struct fuse* get_fuse(fuse_req_t req) {
     return reinterpret_cast<struct fuse*>(fuse_req_userdata(req));
 }
 
-static bool is_android_path(const string& path, const string& fuse_path, uid_t uid) {
-    int user_id = uid / PER_USER_RANGE;
-    const std::string android_path = fuse_path + "/" + std::to_string(user_id) + "/Android";
-    return path.rfind(android_path, 0) == 0;
+static bool is_package_owned_path(const string& path, const string& fuse_path) {
+    if (path.rfind(fuse_path, 0) != 0) {
+        return false;
+    }
+    return std::regex_match(path, PATTERN_OWNED_PATH);
 }
 
-static double get_attr_timeout(const string& path, uid_t uid, struct fuse* fuse, node* parent) {
-    if (fuse->IsRoot(parent) || is_android_path(path, fuse->path, uid)) {
-        // The /0 and /0/Android attrs can be always cached, as they never change
-        return std::numeric_limits<double>::max();
-    } else {
-        return DEFAULT_ATTR_TIMEOUT_SECONDS;
-    }
-}
-
-static double get_entry_timeout(const string& path, uid_t uid, struct fuse* fuse, node* parent) {
-    if (fuse->IsRoot(parent) || is_android_path(path, fuse->path, uid)) {
-        // The /0 and /0/Android dentries can be always cached, as they are visible to all apps
-        return std::numeric_limits<double>::max();
-    } else {
-        return DEFAULT_ENTRY_TIMEOUT_SECONDS;
-    }
+static void invalidate_case_insensitive_dentry_matches(struct fuse* fuse, node* parent,
+                                                       const string& name,
+                                                       const vector<string>& children) {
+    fuse_ino_t parent_ino = fuse->ToInode(parent);
+    std::thread t([=]() {
+        for (const string& child_name : children) {
+            if (fuse_lowlevel_notify_inval_entry(fuse->se, parent_ino, child_name.c_str(),
+                                                 child_name.size())) {
+                LOG(ERROR) << "Failed to invalidate dentry " << child_name;
+            }
+        }
+    });
+    t.detach();
 }
 
 static node* make_node_entry(fuse_req_t req, node* parent, const string& name, const string& path,
@@ -392,18 +392,56 @@ static node* make_node_entry(fuse_req_t req, node* parent, const string& name, c
 
     node = parent->LookupChildByName(name, true /* acquire */);
     if (!node) {
-        node = ::node::Create(parent, name, &fuse->lock, &fuse->tracker);
+        // Handle case insensitivity
+        vector<string> children = parent->MatchChildrenCaseInsensitive(name);
+        bool should_invalidate = false;
+
+        // Check if path exists again, this time case insensitive.
+        // If there are case insensitive children, we may reuse the node or create a new one
+        if (!children.empty()) {
+            // We use the first child because for Android/, Android/data or Android/obb
+            // the code below ensures there can only be one node.
+            // For other paths, the code is still correct because we will still create a new node
+            // regardless and invalidate all previous case-insensitive children
+            const string& child_i = children[0];
+            // We don't acquire the node yet because we will create a new node if it isn't an
+            // Android/, Android/data or Android/obb path
+            class node* node_i = parent->LookupChildByName(child_i, false /* acquire */);
+            CHECK(node_i != nullptr);
+            string path_i = node_i->BuildPath();
+
+            LOG(DEBUG) << "Case insensitive match: " << path_i;
+            if (std::regex_match(path_i, ANDROID_DATA_OBB_PATH)) {
+                // Reuse the existing node by acquiring the node
+                // We don't invalidate because Android/data and Android/obb
+                // are mount points and we will lose the mounts if we invalidate.
+                node = parent->LookupChildByName(child_i, true /* acquire */);
+                LOG(DEBUG) << "Reusing name: " << child_i;
+            } else {
+                // Don't reuse the existing node so we don't mix up the kernel node ref count
+                // Instead, invalidate all previous nodes and we will create a new one below
+                invalidate_case_insensitive_dentry_matches(fuse, parent, name, children);
+            }
+        }
+
+        // If we didn't reuse a node, then we create a new node
+        if (!node) {
+            node = ::node::Create(parent, name, &fuse->lock, &fuse->tracker);
+        }
     }
 
     TRACE_NODE(node);
+
     // This FS is not being exported via NFS so just a fixed generation number
     // for now. If we do need this, we need to increment the generation ID each
     // time the fuse daemon restarts because that's what it takes for us to
     // reuse inode numbers.
     e->generation = 0;
     e->ino = fuse->ToInode(node);
-    e->entry_timeout = get_entry_timeout(path, ctx->uid, fuse, parent);
-    e->attr_timeout = get_attr_timeout(path, ctx->uid, fuse, parent);
+    e->entry_timeout = is_package_owned_path(path, fuse->path) ?
+            0 : std::numeric_limits<double>::max();
+    e->attr_timeout = is_package_owned_path(path, fuse->path) ?
+            0 : std::numeric_limits<double>::max();
 
     return node;
 }
@@ -424,7 +462,7 @@ namespace fuse {
 
 static void pf_init(void* userdata, struct fuse_conn_info* conn) {
     // We don't want a getattr request with every read request
-    conn->want &= ~FUSE_CAP_AUTO_INVAL_DATA;
+    conn->want &= ~FUSE_CAP_AUTO_INVAL_DATA & ~FUSE_CAP_READDIRPLUS_AUTO;
     unsigned mask = (FUSE_CAP_SPLICE_WRITE | FUSE_CAP_SPLICE_MOVE | FUSE_CAP_SPLICE_READ |
                      FUSE_CAP_ASYNC_READ | FUSE_CAP_ATOMIC_O_TRUNC | FUSE_CAP_WRITEBACK_CACHE |
                      FUSE_CAP_EXPORT_SUPPORT | FUSE_CAP_FLOCK_LOCKS);
@@ -442,13 +480,43 @@ static void pf_destroy(void* userdata) {
     node::DeleteTree(fuse->root);
 }
 
+// Return true if the path is accessible for that uid.
+static bool is_app_accessible_path(MediaProviderWrapper* mp, const string& path, uid_t uid) {
+    if (uid < AID_APP_START) {
+        return true;
+    }
+
+    std::smatch match;
+    if (std::regex_match(path, match, PATTERN_OWNED_PATH)) {
+        const std::string& pkg = match[1];
+        // .nomedia is not a valid package. .nomedia always exists in /Android/data directory,
+        // and it's not an external file/directory of any package
+        if (pkg == ".nomedia") {
+            return true;
+        }
+        if (!mp->IsUidForPackage(pkg, uid)) {
+            PLOG(WARNING) << "Invalid other package file access from " << pkg << "(: " << path;
+            return false;
+        }
+    }
+    return true;
+}
+
 static std::regex storage_emulated_regex("^\\/storage\\/emulated\\/([0-9]+)");
 static node* do_lookup(fuse_req_t req, fuse_ino_t parent, const char* name,
                        struct fuse_entry_param* e, int* error_code) {
     struct fuse* fuse = get_fuse(req);
-    const struct fuse_ctx* ctx = fuse_req_ctx(req);
     node* parent_node = fuse->FromInode(parent);
+    if (!parent_node) {
+        *error_code = ENOENT;
+        return nullptr;
+    }
     string parent_path = parent_node->BuildPath();
+    if (!is_app_accessible_path(fuse->mp, parent_path, req->ctx.uid)) {
+        *error_code = ENOENT;
+        return nullptr;
+    }
+
     string child_path = parent_path + "/" + name;
 
     TRACE_NODE(parent_node);
@@ -488,6 +556,7 @@ static void do_forget(struct fuse* fuse, fuse_ino_t ino, uint64_t nlookup) {
 }
 
 static void pf_forget(fuse_req_t req, fuse_ino_t ino, uint64_t nlookup) {
+    // Always allow to forget so no need to check is_app_accessible_path()
     ATRACE_CALL();
     node* node;
     struct fuse* fuse = get_fuse(req);
@@ -513,19 +582,25 @@ static void pf_getattr(fuse_req_t req,
                        struct fuse_file_info* fi) {
     ATRACE_CALL();
     struct fuse* fuse = get_fuse(req);
-    const struct fuse_ctx* ctx = fuse_req_ctx(req);
     node* node = fuse->FromInode(ino);
+    if (!node) {
+        fuse_reply_err(req, ENOENT);
+        return;
+    }
     string path = node->BuildPath();
+    if (!is_app_accessible_path(fuse->mp, path, req->ctx.uid)) {
+        fuse_reply_err(req, ENOENT);
+        return;
+    }
     TRACE_NODE(node);
-
-    if (!node) fuse_reply_err(req, ENOENT);
 
     struct stat s;
     memset(&s, 0, sizeof(s));
     if (lstat(path.c_str(), &s) < 0) {
         fuse_reply_err(req, errno);
     } else {
-        fuse_reply_attr(req, &s, get_attr_timeout(path, ctx->uid, fuse, nullptr));
+        fuse_reply_attr(req, &s, is_package_owned_path(path, fuse->path) ?
+                0 : std::numeric_limits<double>::max());
     }
 }
 
@@ -536,17 +611,19 @@ static void pf_setattr(fuse_req_t req,
                        struct fuse_file_info* fi) {
     ATRACE_CALL();
     struct fuse* fuse = get_fuse(req);
-    const struct fuse_ctx* ctx = fuse_req_ctx(req);
     node* node = fuse->FromInode(ino);
-    string path = node->BuildPath();
-    struct timespec times[2];
-
-    TRACE_NODE(node);
-
     if (!node) {
         fuse_reply_err(req, ENOENT);
         return;
     }
+    string path = node->BuildPath();
+    if (!is_app_accessible_path(fuse->mp, path, req->ctx.uid)) {
+        fuse_reply_err(req, ENOENT);
+        return;
+    }
+    struct timespec times[2];
+
+    TRACE_NODE(node);
 
     /* XXX: incomplete implementation on purpose.
      * chmod/chown should NEVER be implemented.*/
@@ -570,16 +647,15 @@ static void pf_setattr(fuse_req_t req,
             if (to_set & FATTR_ATIME_NOW) {
                 times[0].tv_nsec = UTIME_NOW;
             } else {
-                times[0].tv_sec = attr->st_atime;
-                // times[0].tv_nsec = attr->st_atime.tv_nsec;
+                times[0] = attr->st_atim;
             }
         }
+
         if (to_set & FATTR_MTIME) {
             if (to_set & FATTR_MTIME_NOW) {
                 times[1].tv_nsec = UTIME_NOW;
             } else {
-                times[1].tv_sec = attr->st_mtime;
-                // times[1].tv_nsec = attr->st_mtime.tv_nsec;
+                times[1] = attr->st_mtim;
             }
         }
 
@@ -591,16 +667,19 @@ static void pf_setattr(fuse_req_t req,
     }
 
     lstat(path.c_str(), attr);
-    fuse_reply_attr(req, attr, get_attr_timeout(path, ctx->uid, fuse, nullptr));
+    fuse_reply_attr(req, attr, is_package_owned_path(path, fuse->path) ?
+            0 : std::numeric_limits<double>::max());
 }
 
 static void pf_canonical_path(fuse_req_t req, fuse_ino_t ino)
 {
-    node* node = get_fuse(req)->FromInode(ino);
+    struct fuse* fuse = get_fuse(req);
+    node* node = fuse->FromInode(ino);
+    string path = node ? node->BuildPath() : "";
 
-    if (node) {
+    if (node && is_app_accessible_path(fuse->mp, path, req->ctx.uid)) {
         // TODO(b/147482155): Check that uid has access to |path| and its contents
-        fuse_reply_canonical_path(req, node->BuildPath().c_str());
+        fuse_reply_canonical_path(req, path.c_str());
         return;
     }
     fuse_reply_err(req, ENOENT);
@@ -613,16 +692,19 @@ static void pf_mknod(fuse_req_t req,
                      dev_t rdev) {
     ATRACE_CALL();
     struct fuse* fuse = get_fuse(req);
-    const struct fuse_ctx* ctx = fuse_req_ctx(req);
     node* parent_node = fuse->FromInode(parent);
-    string parent_path = parent_node->BuildPath();
-
-    TRACE_NODE(parent_node);
-
     if (!parent_node) {
         fuse_reply_err(req, ENOENT);
         return;
     }
+    string parent_path = parent_node->BuildPath();
+    if (!is_app_accessible_path(fuse->mp, parent_path, req->ctx.uid)) {
+        fuse_reply_err(req, ENOENT);
+        return;
+    }
+
+    TRACE_NODE(parent_node);
+
     const string child_path = parent_path + "/" + name;
 
     mode = (mode & (~0777)) | 0664;
@@ -647,9 +729,17 @@ static void pf_mkdir(fuse_req_t req,
                      mode_t mode) {
     ATRACE_CALL();
     struct fuse* fuse = get_fuse(req);
-    const struct fuse_ctx* ctx = fuse_req_ctx(req);
     node* parent_node = fuse->FromInode(parent);
+    if (!parent_node) {
+        fuse_reply_err(req, ENOENT);
+        return;
+    }
+    const struct fuse_ctx* ctx = fuse_req_ctx(req);
     const string parent_path = parent_node->BuildPath();
+    if (!is_app_accessible_path(fuse->mp, parent_path, ctx->uid)) {
+        fuse_reply_err(req, ENOENT);
+        return;
+    }
 
     TRACE_NODE(parent_node);
 
@@ -680,9 +770,17 @@ static void pf_mkdir(fuse_req_t req,
 static void pf_unlink(fuse_req_t req, fuse_ino_t parent, const char* name) {
     ATRACE_CALL();
     struct fuse* fuse = get_fuse(req);
-    const struct fuse_ctx* ctx = fuse_req_ctx(req);
     node* parent_node = fuse->FromInode(parent);
+    if (!parent_node) {
+        fuse_reply_err(req, ENOENT);
+        return;
+    }
+    const struct fuse_ctx* ctx = fuse_req_ctx(req);
     const string parent_path = parent_node->BuildPath();
+    if (!is_app_accessible_path(fuse->mp, parent_path, ctx->uid)) {
+        fuse_reply_err(req, ENOENT);
+        return;
+    }
 
     TRACE_NODE(parent_node);
 
@@ -706,15 +804,21 @@ static void pf_unlink(fuse_req_t req, fuse_ino_t parent, const char* name) {
 static void pf_rmdir(fuse_req_t req, fuse_ino_t parent, const char* name) {
     ATRACE_CALL();
     struct fuse* fuse = get_fuse(req);
-    const struct fuse_ctx* ctx = fuse_req_ctx(req);
     node* parent_node = fuse->FromInode(parent);
+    if (!parent_node) {
+        fuse_reply_err(req, ENOENT);
+        return;
+    }
     const string parent_path = parent_node->BuildPath();
-
+    if (!is_app_accessible_path(fuse->mp, parent_path, req->ctx.uid)) {
+        fuse_reply_err(req, ENOENT);
+        return;
+    }
     TRACE_NODE(parent_node);
 
     const string child_path = parent_path + "/" + name;
 
-    int status = fuse->mp->IsDeletingDirAllowed(child_path, ctx->uid);
+    int status = fuse->mp->IsDeletingDirAllowed(child_path, req->ctx.uid);
     if (status) {
         fuse_reply_err(req, status);
         return;
@@ -744,16 +848,25 @@ static int do_rename(fuse_req_t req, fuse_ino_t parent, const char* name, fuse_i
                      const char* new_name, unsigned int flags) {
     ATRACE_CALL();
     struct fuse* fuse = get_fuse(req);
-    const struct fuse_ctx* ctx = fuse_req_ctx(req);
 
     if (flags != 0) {
         return EINVAL;
     }
 
     node* old_parent_node = fuse->FromInode(parent);
+    if (!old_parent_node) return ENOENT;
+    const struct fuse_ctx* ctx = fuse_req_ctx(req);
     const string old_parent_path = old_parent_node->BuildPath();
+    if (!is_app_accessible_path(fuse->mp, old_parent_path, ctx->uid)) {
+        return ENOENT;
+    }
+
     node* new_parent_node = fuse->FromInode(new_parent);
+    if (!new_parent_node) return ENOENT;
     const string new_parent_path = new_parent_node->BuildPath();
+    if (!is_app_accessible_path(fuse->mp, new_parent_path, ctx->uid)) {
+        return ENOENT;
+    }
 
     if (!old_parent_node || !new_parent_node) {
         return ENOENT;
@@ -824,16 +937,19 @@ static handle* create_handle_for_node(struct fuse* fuse, const string& path, int
 static void pf_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info* fi) {
     ATRACE_CALL();
     struct fuse* fuse = get_fuse(req);
-    const struct fuse_ctx* ctx = fuse_req_ctx(req);
     node* node = fuse->FromInode(ino);
-    const string path = node->BuildPath();
-
-    TRACE_NODE(node) << (is_requesting_write(fi->flags) ? "write" : "read");
-
     if (!node) {
         fuse_reply_err(req, ENOENT);
         return;
     }
+    const struct fuse_ctx* ctx = fuse_req_ctx(req);
+    const string path = node->BuildPath();
+    if (!is_app_accessible_path(fuse->mp, path, ctx->uid)) {
+        fuse_reply_err(req, ENOENT);
+        return;
+    }
+
+    TRACE_NODE(node) << (is_requesting_write(fi->flags) ? "write" : "read");
 
     if (fi->flags & O_DIRECT) {
         fi->flags &= ~O_DIRECT;
@@ -865,7 +981,7 @@ static void pf_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info* fi) {
     if (is_requesting_write(fi->flags)) {
         ri = std::make_unique<RedactionInfo>();
     } else {
-        ri = fuse->mp->GetRedactionInfo(path, req->ctx.uid);
+        ri = fuse->mp->GetRedactionInfo(path, req->ctx.uid, req->ctx.pid);
     }
 
     if (!ri) {
@@ -1119,16 +1235,19 @@ static void pf_opendir(fuse_req_t req,
                        struct fuse_file_info* fi) {
     ATRACE_CALL();
     struct fuse* fuse = get_fuse(req);
-    const struct fuse_ctx* ctx = fuse_req_ctx(req);
     node* node = fuse->FromInode(ino);
-    const string path = node->BuildPath();
-
-    TRACE_NODE(node);
-
     if (!node) {
         fuse_reply_err(req, ENOENT);
         return;
     }
+    const struct fuse_ctx* ctx = fuse_req_ctx(req);
+    const string path = node->BuildPath();
+    if (!is_app_accessible_path(fuse->mp, path, ctx->uid)) {
+        fuse_reply_err(req, ENOENT);
+        return;
+    }
+
+    TRACE_NODE(node);
 
     int status = fuse->mp->IsOpendirAllowed(path, ctx->uid);
     if (status) {
@@ -1168,7 +1287,15 @@ static void do_readdir_common(fuse_req_t req,
     size_t entry_size = 0;
 
     node* node = fuse->FromInode(ino);
+    if (!node) {
+        fuse_reply_err(req, ENOENT);
+        return;
+    }
     const string path = node->BuildPath();
+    if (!is_app_accessible_path(fuse->mp, path, req->ctx.uid)) {
+        fuse_reply_err(req, ENOENT);
+        return;
+    }
 
     TRACE_NODE(node);
     // Get all directory entries from MediaProvider on first readdir() call of
@@ -1212,8 +1339,11 @@ static void do_readdir_common(fuse_req_t req,
                 return;
             }
         } else {
+            // This should never happen because we have readdir_plus enabled without adaptive
+            // readdir_plus, FUSE_CAP_READDIRPLUS_AUTO
+            LOG(WARNING) << "Handling plain readdir for " << de->d_name << ". Invalid d_ino";
             e.attr.st_ino = FUSE_UNKNOWN_INO;
-            e.attr.st_mode = de->d_type;
+            e.attr.st_mode = de->d_type << 12;
             entry_size = fuse_add_direntry(req, buf + used, len - used, de->d_name.c_str(), &e.attr,
                                            h->next_off);
         }
@@ -1256,6 +1386,7 @@ static void pf_releasedir(fuse_req_t req,
     struct fuse* fuse = get_fuse(req);
 
     node* node = fuse->FromInode(ino);
+
     dirhandle* h = reinterpret_cast<dirhandle*>(fi->fh);
     TRACE_NODE(node);
     if (node) {
@@ -1301,14 +1432,49 @@ static void pf_removexattr(fuse_req_t req, fuse_ino_t ino, const char* name)
 static void pf_access(fuse_req_t req, fuse_ino_t ino, int mask) {
     ATRACE_CALL();
     struct fuse* fuse = get_fuse(req);
-    const struct fuse_ctx* ctx = fuse_req_ctx(req);
 
     node* node = fuse->FromInode(ino);
+    if (!node) {
+        fuse_reply_err(req, ENOENT);
+        return;
+    }
     const string path = node->BuildPath();
+    if (!is_app_accessible_path(fuse->mp, path, req->ctx.uid)) {
+        fuse_reply_err(req, ENOENT);
+        return;
+    }
     TRACE_NODE(node);
 
-    int res = access(path.c_str(), F_OK);
-    fuse_reply_err(req, res ? errno : 0);
+    // exists() checks are always allowed.
+    if (mask == F_OK) {
+        int res = access(path.c_str(), F_OK);
+        fuse_reply_err(req, res ? errno : 0);
+        return;
+    }
+    struct stat stat;
+    if (lstat(path.c_str(), &stat)) {
+        // File doesn't exist
+        fuse_reply_err(req, ENOENT);
+        return;
+    }
+
+    // For read and write permission checks we go to MediaProvider.
+    int status = 0;
+    bool is_directory = S_ISDIR(stat.st_mode);
+    if (is_directory) {
+        status = fuse->mp->IsOpendirAllowed(path, req->ctx.uid);
+    } else {
+        if (mask & X_OK) {
+            // Fuse is mounted with MS_NOEXEC.
+            fuse_reply_err(req, EACCES);
+            return;
+        }
+
+        bool for_write = mask & W_OK;
+        status = fuse->mp->IsOpenAllowed(path, req->ctx.uid, for_write);
+    }
+
+    fuse_reply_err(req, status);
 }
 
 static void pf_create(fuse_req_t req,
@@ -1318,15 +1484,22 @@ static void pf_create(fuse_req_t req,
                       struct fuse_file_info* fi) {
     ATRACE_CALL();
     struct fuse* fuse = get_fuse(req);
-    const struct fuse_ctx* ctx = fuse_req_ctx(req);
     node* parent_node = fuse->FromInode(parent);
+    if (!parent_node) {
+        fuse_reply_err(req, ENOENT);
+        return;
+    }
     const string parent_path = parent_node->BuildPath();
+    if (!is_app_accessible_path(fuse->mp, parent_path, req->ctx.uid)) {
+        fuse_reply_err(req, ENOENT);
+        return;
+    }
 
     TRACE_NODE(parent_node);
 
     const string child_path = parent_path + "/" + name;
 
-    int mp_return_code = fuse->mp->InsertFile(child_path.c_str(), ctx->uid);
+    int mp_return_code = fuse->mp->InsertFile(child_path.c_str(), req->ctx.uid);
     if (mp_return_code) {
         fuse_reply_err(req, mp_return_code);
         return;
@@ -1346,10 +1519,14 @@ static void pf_create(fuse_req_t req,
         int error_code = errno;
         // We've already inserted the file into the MP database before the
         // failed open(), so that needs to be rolled back here.
-        fuse->mp->DeleteFile(child_path.c_str(), ctx->uid);
+        fuse->mp->DeleteFile(child_path.c_str(), req->ctx.uid);
         fuse_reply_err(req, error_code);
         return;
     }
+
+    // File was inserted to MP database with default mime type/media type values. ScanFile will
+    // update the db columns with appropriate values. This is used for hidden file handling.
+    fuse->mp->ScanFile(child_path.c_str());
 
     int error_code = 0;
     struct fuse_entry_param e;
@@ -1526,7 +1703,7 @@ bool FuseDaemon::IsStarted() const {
     return active.load(std::memory_order_acquire);
 }
 
-void FuseDaemon::Start(const int fd, const std::string& path) {
+void FuseDaemon::Start(android::base::unique_fd fd, const std::string& path) {
     struct fuse_args args;
     struct fuse_cmdline_opts opts;
 
@@ -1567,7 +1744,9 @@ void FuseDaemon::Start(const int fd, const std::string& path) {
     }
 
     // Custom logging for libfuse
-    fuse_set_log_func(fuse_logger);
+    if (android::base::GetBoolProperty("persist.sys.fuse.log", false)) {
+        fuse_set_log_func(fuse_logger);
+    }
 
     struct fuse_session
             * se = fuse_session_new(&args, &ops, sizeof(ops), &fuse_default);
@@ -1577,7 +1756,7 @@ void FuseDaemon::Start(const int fd, const std::string& path) {
     }
     fuse_default.se = se;
     fuse_default.active = &active;
-    se->fd = fd;
+    se->fd = fd.release();  // libfuse owns the FD now
     se->mountpoint = strdup(path.c_str());
 
     // Single thread. Useful for debugging

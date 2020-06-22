@@ -65,7 +65,15 @@ cc_library_shared {
 
 cc_test {
     name: "fuse_node_test",
-    test_suites: ["device-tests"],
+    test_suites: ["device-tests", "mts"],
+    test_config: "fuse_node_test.xml",
+
+    compile_multilib: "both",
+    multilib: {
+        lib32: { suffix: "32", },
+        lib64: { suffix: "64", },
+    },
+
     srcs: [
         "node_test.cpp",
         "node.cpp",
@@ -91,7 +99,15 @@ cc_test {
 
 cc_test {
     name: "RedactionInfoTest",
-    test_suites: ["device-tests"],
+    test_suites: ["device-tests", "mts"],
+    test_config: "RedactionInfoTest.xml",
+
+    compile_multilib: "both",
+    multilib: {
+        lib32: { suffix: "32", },
+        lib64: { suffix: "64", },
+    },
+
     srcs: [
         "RedactionInfoTest.cpp",
         "RedactionInfo.cpp",

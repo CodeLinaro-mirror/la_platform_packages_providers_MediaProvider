@@ -61,7 +61,7 @@ public class MediaProviderForFuseTest {
                 Manifest.permission.UPDATE_APP_OPS_STATS);
 
         final Context context = InstrumentationRegistry.getTargetContext();
-        sIsolatedContext = new IsolatedContext(context, "modern");
+        sIsolatedContext = new IsolatedContext(context, "modern", /*asFuseThread*/ true);
         sIsolatedResolver = sIsolatedContext.getContentResolver();
         sMediaProvider = (MediaProvider) sIsolatedResolver
                 .acquireContentProviderClient(MediaStore.AUTHORITY).getLocalContentProvider();
@@ -97,7 +97,7 @@ public class MediaProviderForFuseTest {
 
         // We should have no redaction
         Truth.assertThat(sMediaProvider.getRedactionRangesForFuse(
-                file.getPath(), sTestUid)).isEqualTo(new long[0]);
+                        file.getPath(), sTestUid, 0)).isEqualTo(new long[0]);
 
         // We can rename our file
         final File renamed = new File(sTestDir, "renamed" + System.nanoTime() + ".jpg");
@@ -124,6 +124,7 @@ public class MediaProviderForFuseTest {
         final File file = new File(sTestDir, "test" + System.nanoTime() + ".jpg");
         Truth.assertThat(sMediaProvider.insertFileIfNecessaryForFuse(
                 file.getPath(), sTestUid)).isEqualTo(0);
+        Truth.assertThat(file.createNewFile()).isTrue();
 
         // Rename directory should bring along files
         final File renamed = new File(sTestDir.getParentFile(), "renamed" + System.nanoTime());

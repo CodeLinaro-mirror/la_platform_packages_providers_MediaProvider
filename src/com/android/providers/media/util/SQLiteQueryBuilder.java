@@ -23,12 +23,15 @@ import static android.content.ContentResolver.QUERY_ARG_SQL_SELECTION;
 import static android.content.ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS;
 import static android.content.ContentResolver.QUERY_ARG_SQL_SORT_ORDER;
 
+import static com.android.providers.media.util.DatabaseUtils.bindSelection;
+
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.content.ContentValues;
 import android.database.Cursor;
 import android.database.DatabaseUtils;
 import android.database.sqlite.SQLiteDatabase;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.CancellationSignal;
 import android.os.OperationCanceledException;
@@ -37,6 +40,8 @@ import android.provider.MediaStore.MediaColumns;
 import android.text.TextUtils;
 import android.util.ArrayMap;
 import android.util.Log;
+
+import androidx.annotation.VisibleForTesting;
 
 import com.android.providers.media.DatabaseHelper;
 
@@ -61,6 +66,16 @@ public class SQLiteQueryBuilder {
     private static final Pattern sAggregationPattern = Pattern.compile(
             "(?i)(AVG|COUNT|MAX|MIN|SUM|TOTAL|GROUP_CONCAT|UNICODE)\\((.+)\\)");
 
+    /**
+     * Narrow concessions to support legacy apps that aren't using proper SQL
+     * string substitution; these values come from specific bugs.
+     */
+    private static final Pattern sPattern154193772 = Pattern.compile(
+            "(?i)%\\.(wmv|wm|wtv|asf|hls|mp4|m4v|mov|mp4v|3g2|3gp|3gp2|3gpp|mj2|qt|external|"
+                    + "mov|asf|avi|divx|mpg|mpeg|mkv|webm|mk3d|mks|3gp|mpegts|ts|m2ts|m2t)");
+    private static final Pattern sPattern156832140 = Pattern.compile(
+            "(?i)%com\\.gopro\\.smarty%");
+
     private Map<String, String> mProjectionMap = null;
     private Collection<Pattern> mProjectionGreylist = null;
 
@@ -74,17 +89,23 @@ public class SQLiteQueryBuilder {
 
     private int mStrictFlags;
 
+    private int mTargetSdkVersion = Build.VERSION_CODES.CUR_DEVELOPMENT;
+
+    public void setTargetSdkVersion(int targetSdkVersion) {
+        mTargetSdkVersion = targetSdkVersion;
+    }
+
     /**
      * Raw SQL clause to obtain the value of {@link MediaColumns#_ID} from custom database function
      * {@code _GET_ID} for INSERT operation.
      */
-    private static final String GET_ID_FOR_INSERT_CLAUSE = "_GET_ID('%s')";
+    private static final String GET_ID_FOR_INSERT_CLAUSE = "_GET_ID(?)";
 
     /**
      * Raw SQL clause to obtain the value of {@link MediaColumns#_ID} from custom database function
      * {@code _GET_ID} for UPDATE operation.
      */
-    private static final String GET_ID_FOR_UPDATE_CLAUSE = "ifnull(_GET_ID('%s'), _id)";
+    private static final String GET_ID_FOR_UPDATE_CLAUSE = "ifnull(_GET_ID(?), _id)";
 
     public SQLiteQueryBuilder() {
         mDistinct = false;
@@ -194,7 +215,14 @@ public class SQLiteQueryBuilder {
      * @param columnMap maps from the user column names to the database column names
      */
     public void setProjectionMap(@Nullable Map<String, String> columnMap) {
-        mProjectionMap = columnMap;
+        if (columnMap != null) {
+            mProjectionMap = new ArrayMap<String, String>();
+            for (Entry<String, String> entry : columnMap.entrySet()) {
+                mProjectionMap.put(entry.getKey().toLowerCase(Locale.ROOT), entry.getValue());
+            }
+        } else {
+            mProjectionMap = null;
+        }
     }
 
     /**
@@ -740,7 +768,8 @@ public class SQLiteQueryBuilder {
         }
     }
 
-    private void enforceStrictGrammar(@Nullable String selection, @Nullable String groupBy,
+    @VisibleForTesting
+    void enforceStrictGrammar(@Nullable String selection, @Nullable String groupBy,
             @Nullable String having, @Nullable String sortOrder, @Nullable String limit) {
         SQLiteTokenizer.tokenize(selection, SQLiteTokenizer.OPTION_NONE,
                 this::enforceStrictToken);
@@ -764,7 +793,7 @@ public class SQLiteQueryBuilder {
         // clauses or create subqueries, since they could leak data that should
         // have been filtered by the trusted where clause
         boolean isAllowedKeyword = SQLiteTokenizer.isKeyword(token);
-        switch (token.toUpperCase(Locale.US)) {
+        switch (token.toUpperCase(Locale.ROOT)) {
             case "SELECT":
             case "FROM":
             case "WHERE":
@@ -777,9 +806,16 @@ public class SQLiteQueryBuilder {
                 isAllowedKeyword = false;
                 break;
         }
-        if (!isAllowedKeyword) {
-            throw new IllegalArgumentException("Invalid token " + token);
+        if (isAllowedKeyword) return;
+
+        if (mTargetSdkVersion < Build.VERSION_CODES.R) {
+            // Narrow concessions to support legacy apps that aren't using
+            // proper SQL string substitution
+            if (sPattern154193772.matcher(token).matches()) return;
+            if (sPattern156832140.matcher(token).matches()) return;
         }
+
+        throw new IllegalArgumentException("Invalid token " + token);
     }
 
     /**
@@ -876,7 +912,8 @@ public class SQLiteQueryBuilder {
         }
         if (shouldAppendRowId(values)) {
             sql.append(',');
-            sql.append(String.format(GET_ID_FOR_INSERT_CLAUSE, values.get(MediaColumns.DATA)));
+            sql.append(bindSelection(GET_ID_FOR_INSERT_CLAUSE,
+                    values.getAsString(MediaColumns.DATA)));
         }
         sql.append(")");
         return sql.toString();
@@ -920,7 +957,8 @@ public class SQLiteQueryBuilder {
             sql.append(',');
             sql.append(MediaColumns._ID);
             sql.append('=');
-            sql.append(String.format(GET_ID_FOR_UPDATE_CLAUSE, values.get(MediaColumns.DATA)));
+            sql.append(bindSelection(GET_ID_FOR_UPDATE_CLAUSE,
+                    values.getAsString(MediaColumns.DATA)));
         }
 
         final String where = computeWhere(selection);
@@ -993,7 +1031,7 @@ public class SQLiteQueryBuilder {
         }
 
         String operator = null;
-        String column = mProjectionMap.get(userColumn);
+        String column = mProjectionMap.get(userColumn.toLowerCase(Locale.ROOT));
 
         // When no direct match found, look for aggregation
         if (column == null) {
@@ -1001,7 +1039,7 @@ public class SQLiteQueryBuilder {
             if (matcher.matches()) {
                 operator = matcher.group(1);
                 userColumn = matcher.group(2);
-                column = mProjectionMap.get(userColumn);
+                column = mProjectionMap.get(userColumn.toLowerCase(Locale.ROOT));
             }
         }
 

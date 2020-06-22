@@ -48,7 +48,9 @@ import android.util.Log;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
+import androidx.annotation.VisibleForTesting;
 
+import java.util.Locale;
 import java.util.function.Consumer;
 import java.util.function.Function;
 
@@ -125,7 +127,8 @@ public class DatabaseUtils {
                             res.append(((Boolean) arg).booleanValue() ? 1 : 0);
                         } else {
                             res.append('\'');
-                            res.append(arg.toString());
+                            // Escape single quote character while appending the string.
+                            res.append(arg.toString().replace("'", "''"));
                             res.append('\'');
                         }
                         break;
@@ -362,7 +365,7 @@ public class DatabaseUtils {
         final String origGroupBy = queryArgs.getString(QUERY_ARG_SQL_GROUP_BY);
 
         final int index = (origSelection != null)
-                ? origSelection.toUpperCase().indexOf(" GROUP BY ") : -1;
+                ? origSelection.toUpperCase(Locale.ROOT).indexOf(" GROUP BY ") : -1;
         if (index != -1) {
             String selection = origSelection.substring(0, index);
             String groupBy = origSelection.substring(index + " GROUP BY ".length());
@@ -394,7 +397,7 @@ public class DatabaseUtils {
         final String origLimit = queryArgs.getString(QUERY_ARG_SQL_LIMIT);
 
         final int index = (origSortOrder != null)
-                ? origSortOrder.toUpperCase().indexOf(" LIMIT ") : -1;
+                ? origSortOrder.toUpperCase(Locale.ROOT).indexOf(" LIMIT ") : -1;
         if (index != -1) {
             String sortOrder = origSortOrder.substring(0, index);
             String limit = origSortOrder.substring(index + " LIMIT ".length());
@@ -532,10 +535,27 @@ public class DatabaseUtils {
         return sb.toString();
     }
 
+    public static boolean parseBoolean(@Nullable Object value, boolean def) {
+        if (value instanceof Boolean) {
+            return (Boolean) value;
+        } else if (value instanceof Number) {
+            return ((Number) value).intValue() != 0;
+        } else if (value instanceof String) {
+            final String stringValue = ((String) value).toLowerCase(Locale.ROOT);
+            return (!"false".equals(stringValue) && !"0".equals(stringValue));
+        } else {
+            return def;
+        }
+    }
+
+    public static boolean getAsBoolean(@NonNull Bundle extras,
+            @NonNull String key, boolean def) {
+        return parseBoolean(extras.get(key), def);
+    }
+
     public static boolean getAsBoolean(@NonNull ContentValues values,
             @NonNull String key, boolean def) {
-        final Integer value = values.getAsInteger(key);
-        return (value != null) ? (value != 0) : def;
+        return parseBoolean(values.get(key), def);
     }
 
     public static long getAsLong(@NonNull ContentValues values,
