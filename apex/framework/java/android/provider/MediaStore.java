@@ -160,6 +160,9 @@ public final class MediaStore {
     public static final String VOLUME_EXTERNAL_PRIMARY = "external_primary";
 
     /** {@hide} */
+    public static final String VOLUME_DEMO = "demo";
+
+    /** {@hide} */
     public static final String RESOLVE_PLAYLIST_MEMBERS_CALL = "resolve_playlist_members";
     /** {@hide} */
     public static final String RUN_IDLE_MAINTENANCE_CALL = "run_idle_maintenance";
@@ -988,6 +991,17 @@ public final class MediaStore {
     public interface MediaColumns extends BaseColumns {
         /**
          * Absolute filesystem path to the media item on disk.
+         * <p>
+         * On Android 11, you can use this value when you access an existing
+         * media file using direct file paths. That's because this value has
+         * a valid file path. However, don't assume that the file is always
+         * available. Be prepared to handle any file-based I/O errors that
+         * could occur.
+         * <p>
+         * Don't use this value when you create or update a media file, even
+         * if you're on Android 11 and are using direct file paths. Instead,
+         * use the values of the {@link #DISPLAY_NAME} and
+         * {@link #RELATIVE_PATH} columns.
          * <p>
          * Note that apps may not have filesystem permissions to directly access
          * this path. Instead of trying to open this path directly, apps should
@@ -2597,7 +2611,7 @@ public final class MediaStore {
          */
         @Deprecated
         public static @Nullable String keyFor(@Nullable String name) {
-            if (TextUtils.isEmpty(name)) return null;
+            if (TextUtils.isEmpty(name)) return "";
 
             if (UNKNOWN_STRING.equals(name)) {
                 return "01";
@@ -2606,7 +2620,7 @@ public final class MediaStore {
             final boolean sortFirst = name.startsWith("\001");
 
             name = PATTERN_TRIM_BEFORE.matcher(name).replaceAll("");
-            if (TextUtils.isEmpty(name)) return null;
+            if (TextUtils.isEmpty(name)) return "";
 
             final Collator c = Collator.getInstance(Locale.ROOT);
             c.setStrength(Collator.PRIMARY);
@@ -3662,6 +3676,8 @@ public final class MediaStore {
         final StorageManager sm = context.getSystemService(StorageManager.class);
         final Set<String> res = new ArraySet<>();
         for (StorageVolume sv : sm.getStorageVolumes()) {
+            Log.v(TAG, "Examining volume " + sv.getId() + " with name "
+                    + sv.getMediaStoreVolumeName() + " and state " + sv.getState());
             switch (sv.getState()) {
                 case Environment.MEDIA_MOUNTED:
                 case Environment.MEDIA_MOUNTED_READ_ONLY: {
@@ -3727,6 +3743,8 @@ public final class MediaStore {
         } else if (VOLUME_EXTERNAL.equals(volumeName)) {
             return volumeName;
         } else if (VOLUME_EXTERNAL_PRIMARY.equals(volumeName)) {
+            return volumeName;
+        } else if (VOLUME_DEMO.equals(volumeName)) {
             return volumeName;
         }
 

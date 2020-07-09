@@ -58,11 +58,11 @@ static bool CheckForJniException(JNIEnv* env) {
 
 std::unique_ptr<RedactionInfo> getRedactionInfoInternal(JNIEnv* env, jobject media_provider_object,
                                                         jmethodID mid_get_redaction_ranges,
-                                                        uid_t uid, const string& path) {
+                                                        uid_t uid, pid_t tid, const string& path) {
     ScopedLocalRef<jstring> j_path(env, env->NewStringUTF(path.c_str()));
     ScopedLongArrayRO redaction_ranges(
             env, static_cast<jlongArray>(env->CallObjectMethod(
-                         media_provider_object, mid_get_redaction_ranges, j_path.get(), uid)));
+                         media_provider_object, mid_get_redaction_ranges, j_path.get(), uid, tid)));
 
     if (CheckForJniException(env)) {
         return nullptr;
@@ -217,6 +217,16 @@ int renameInternal(JNIEnv* env, jobject media_provider_object, jmethodID mid_ren
     }
     return res;
 }
+
+void onFileCreatedInternal(JNIEnv* env, jobject media_provider_object,
+                           jmethodID mid_on_file_created, const string& path) {
+    ScopedLocalRef<jstring> j_path(env, env->NewStringUTF(path.c_str()));
+
+    env->CallVoidMethod(media_provider_object, mid_on_file_created, j_path.get());
+    CheckForJniException(env);
+    return;
+}
+
 }  // namespace
 /*****************************************************************************************/
 /******************************* Public API Implementation *******************************/
@@ -246,7 +256,7 @@ MediaProviderWrapper::MediaProviderWrapper(JNIEnv* env, jobject media_provider) 
     media_provider_class_ = reinterpret_cast<jclass>(env->NewGlobalRef(media_provider_class_));
 
     // Cache methods - Before calling a method, make sure you cache it here
-    mid_get_redaction_ranges_ = CacheMethod(env, "getRedactionRanges", "(Ljava/lang/String;I)[J",
+    mid_get_redaction_ranges_ = CacheMethod(env, "getRedactionRanges", "(Ljava/lang/String;II)[J",
                                             /*is_static*/ false);
     mid_insert_file_ = CacheMethod(env, "insertFileIfNecessary", "(Ljava/lang/String;I)I",
                                    /*is_static*/ false);
@@ -266,6 +276,8 @@ MediaProviderWrapper::MediaProviderWrapper(JNIEnv* env, jobject media_provider) 
                               /*is_static*/ false);
     mid_is_uid_for_package_ = CacheMethod(env, "isUidForPackage", "(Ljava/lang/String;I)Z",
                               /*is_static*/ false);
+    mid_on_file_created_ = CacheMethod(env, "onFileCreated", "(Ljava/lang/String;)V",
+                                       /*is_static*/ false);
 }
 
 MediaProviderWrapper::~MediaProviderWrapper() {
@@ -274,8 +286,8 @@ MediaProviderWrapper::~MediaProviderWrapper() {
     env->DeleteGlobalRef(media_provider_class_);
 }
 
-std::unique_ptr<RedactionInfo> MediaProviderWrapper::GetRedactionInfo(const string& path,
-                                                                      uid_t uid) {
+std::unique_ptr<RedactionInfo> MediaProviderWrapper::GetRedactionInfo(const string& path, uid_t uid,
+                                                                      pid_t tid) {
     if (shouldBypassMediaProvider(uid) || !GetBoolProperty(kPropRedactionEnabled, true)) {
         return std::make_unique<RedactionInfo>();
     }
@@ -285,14 +297,14 @@ std::unique_ptr<RedactionInfo> MediaProviderWrapper::GetRedactionInfo(const stri
 
     JNIEnv* env = MaybeAttachCurrentThread();
     auto ri = getRedactionInfoInternal(env, media_provider_object_, mid_get_redaction_ranges_, uid,
-                                       path);
+                                       tid, path);
     res = std::move(ri);
 
     return res;
 }
 
 int MediaProviderWrapper::InsertFile(const string& path, uid_t uid) {
-    if (shouldBypassMediaProvider(uid)) {
+    if (uid == ROOT_UID) {
         return 0;
     }
 
@@ -301,9 +313,8 @@ int MediaProviderWrapper::InsertFile(const string& path, uid_t uid) {
 }
 
 int MediaProviderWrapper::DeleteFile(const string& path, uid_t uid) {
-    if (shouldBypassMediaProvider(uid)) {
+    if (uid == ROOT_UID) {
         int res = unlink(path.c_str());
-        ScanFile(path);
         return res;
     }
 
@@ -391,7 +402,9 @@ bool MediaProviderWrapper::IsUidForPackage(const string& pkg, uid_t uid) {
 }
 
 int MediaProviderWrapper::Rename(const string& old_path, const string& new_path, uid_t uid) {
-    if (shouldBypassMediaProvider(uid)) {
+    // Rename from SHELL_UID should go through MediaProvider to update database rows, so only bypass
+    // MediaProvider for ROOT_UID.
+    if (uid == ROOT_UID) {
         int res = rename(old_path.c_str(), new_path.c_str());
         if (res != 0) res = -errno;
         return res;
@@ -399,6 +412,12 @@ int MediaProviderWrapper::Rename(const string& old_path, const string& new_path,
 
     JNIEnv* env = MaybeAttachCurrentThread();
     return renameInternal(env, media_provider_object_, mid_rename_, old_path, new_path, uid);
+}
+
+void MediaProviderWrapper::OnFileCreated(const string& path) {
+    JNIEnv* env = MaybeAttachCurrentThread();
+
+    return onFileCreatedInternal(env, media_provider_object_, mid_on_file_created_, path);
 }
 
 /*****************************************************************************************/

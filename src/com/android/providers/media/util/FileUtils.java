@@ -807,8 +807,13 @@ public class FileUtils {
         }
 
         final Uri uri = MediaStore.Files.getContentUri(volumeName);
-        return context.getSystemService(StorageManager.class).getStorageVolume(uri)
+        final File path = context.getSystemService(StorageManager.class).getStorageVolume(uri)
                 .getDirectory();
+        if (path != null) {
+            return path;
+        } else {
+            throw new FileNotFoundException(volumeName + " has no associated path");
+        }
     }
 
     /**
@@ -840,7 +845,9 @@ public class FileUtils {
     public static final Pattern PATTERN_DOWNLOADS_DIRECTORY = Pattern.compile(
             "(?i)^/storage/[^/]+/(?:[0-9]+/)?(?:Android/sandbox/[^/]+/)?Download/?");
     public static final Pattern PATTERN_EXPIRES_FILE = Pattern.compile(
-            "(?i)^\\.(pending|trashed)-(\\d+)-(.+)$");
+            "(?i)^\\.(pending|trashed)-(\\d+)-([^/]+)$");
+    public static final Pattern PATTERN_PENDING_FILEPATH_FOR_SQL = Pattern.compile(
+            ".*/\\.pending-(\\d+)-([^/]+)$");
 
     /**
      * File prefix indicating that the file {@link MediaColumns#IS_PENDING}.
@@ -950,13 +957,29 @@ public class FileUtils {
     @VisibleForTesting
     public static @Nullable String extractRelativePathForDirectory(@Nullable String directoryPath) {
         if (directoryPath == null) return null;
+
+        if (directoryPath.equals("/storage/emulated") ||
+                directoryPath.equals("/storage/emulated/")) {
+            // This path is not reachable for MediaProvider.
+            return null;
+        }
+
+        // We are extracting relative path for the directory itself, we add "/" so that we can use
+        // same PATTERN_RELATIVE_PATH to match relative path for directory. For example, relative
+        // path of '/storage/<volume_name>' is null where as relative path for directory is "/", for
+        // PATTERN_RELATIVE_PATH to match '/storage/<volume_name>', it should end with "/".
+        if (!directoryPath.endsWith("/")) {
+            // Relative path for directory should end with "/".
+            directoryPath += "/";
+        }
+
         final Matcher matcher = PATTERN_RELATIVE_PATH.matcher(directoryPath);
         if (matcher.find()) {
-            if (matcher.end() == directoryPath.length() - 1) {
+            if (matcher.end() == directoryPath.length()) {
                 // This is the top-level directory, so relative path is "/"
                 return "/";
             }
-            return directoryPath.substring(matcher.end()) + "/";
+            return directoryPath.substring(matcher.end());
         }
         return null;
     }
@@ -1029,11 +1052,10 @@ public class FileUtils {
      * {@link MediaColumns#DATA}. This method performs no enforcement of
      * argument validity.
      */
-    public static void computeValuesFromData(@NonNull ContentValues values) {
+    public static void computeValuesFromData(@NonNull ContentValues values, boolean isForFuse) {
         // Worst case we have to assume no bucket details
         values.remove(MediaColumns.VOLUME_NAME);
         values.remove(MediaColumns.RELATIVE_PATH);
-        values.remove(MediaColumns.IS_PENDING);
         values.remove(MediaColumns.IS_TRASHED);
         values.remove(MediaColumns.DATE_EXPIRES);
         values.remove(MediaColumns.DISPLAY_NAME);
@@ -1058,7 +1080,14 @@ public class FileUtils {
             values.put(MediaColumns.DATE_EXPIRES, Long.parseLong(matcher.group(2)));
             values.put(MediaColumns.DISPLAY_NAME, matcher.group(3));
         } else {
-            values.put(MediaColumns.IS_PENDING, 0);
+            if (isForFuse) {
+                // Allow Fuse thread to set IS_PENDING when using DATA column.
+                // TODO(b/156867379) Unset IS_PENDING when Fuse thread doesn't explicitly specify
+                // IS_PENDING. It can't be done now because we scan after create. Scan doesn't
+                // explicitly specify the value of IS_PENDING.
+            } else {
+                values.put(MediaColumns.IS_PENDING, 0);
+            }
             values.put(MediaColumns.IS_TRASHED, 0);
             values.putNull(MediaColumns.DATE_EXPIRES);
             values.put(MediaColumns.DISPLAY_NAME, displayName);
@@ -1081,12 +1110,13 @@ public class FileUtils {
      * argument validity.
      */
     public static void computeDataFromValues(@NonNull ContentValues values,
-            @NonNull File volumePath) {
+            @NonNull File volumePath, boolean isForFuse) {
         values.remove(MediaColumns.DATA);
 
         final String displayName = values.getAsString(MediaColumns.DISPLAY_NAME);
         final String resolvedDisplayName;
-        if (getAsBoolean(values, MediaColumns.IS_PENDING, false)) {
+        // Pending file path shouldn't be rewritten for files inserted via filepath.
+        if (!isForFuse && getAsBoolean(values, MediaColumns.IS_PENDING, false)) {
             final long dateExpires = getAsLong(values, MediaColumns.DATE_EXPIRES,
                     (System.currentTimeMillis() + DEFAULT_DURATION_PENDING) / 1000);
             resolvedDisplayName = String.format(".%s-%d-%s",
@@ -1171,6 +1201,45 @@ public class FileUtils {
         } else {
             return buildValidFatFilename(name);
         }
+    }
+
+    /**
+     * Test if this given directory should be considered hidden.
+     */
+    @VisibleForTesting
+    public static boolean isDirectoryHidden(@NonNull File dir) {
+        final String name = dir.getName();
+        if (name.startsWith(".")) {
+            return true;
+        }
+
+        final File nomedia = new File(dir, ".nomedia");
+        // check for .nomedia presence
+        if (nomedia.exists()) {
+            Logging.logPersistent("Observed non-standard " + nomedia);
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * Test if this given file should be considered hidden.
+     */
+    @VisibleForTesting
+    public static boolean isFileHidden(@NonNull File file) {
+        final String name = file.getName();
+
+        // Handle well-known file names that are pending or trashed; they
+        // normally appear hidden, but we give them special treatment
+        if (PATTERN_EXPIRES_FILE.matcher(name).matches()) {
+            return false;
+        }
+
+        // Otherwise fall back to file name
+        if (name.startsWith(".")) {
+            return true;
+        }
+        return false;
     }
 
     /**

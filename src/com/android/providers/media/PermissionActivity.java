@@ -25,6 +25,7 @@ import static com.android.providers.media.util.Logging.TAG;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.ProgressDialog;
 import android.content.ContentProviderOperation;
 import android.content.ContentResolver;
 import android.content.ContentValues;
@@ -43,6 +44,7 @@ import android.graphics.ImageDecoder.Source;
 import android.net.Uri;
 import android.os.AsyncTask;
 import android.os.Bundle;
+import android.os.Handler;
 import android.provider.MediaStore;
 import android.provider.MediaStore.MediaColumns;
 import android.text.TextUtils;
@@ -95,7 +97,10 @@ public class PermissionActivity extends Activity {
     private String volumeName;
     private ApplicationInfo appInfo;
 
+    private ProgressDialog progressDialog;
     private TextView titleView;
+
+    private static final Long LEAST_SHOW_PROGRESS_TIME_MS = 300L;
 
     private static final String VERB_WRITE = "write";
     private static final String VERB_TRASH = "trash";
@@ -174,9 +179,17 @@ public class PermissionActivity extends Activity {
         titleView = (TextView) findViewByPredicate(dialog.getWindow().getDecorView(), (view) -> {
             return (view instanceof TextView) && view.isImportantForAccessibility();
         });
+
+        progressDialog = new ProgressDialog(this);
     }
 
     private void onPositiveAction(DialogInterface dialog, int which) {
+        // Disable the buttons
+        ((AlertDialog) dialog).getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(false);
+        ((AlertDialog) dialog).getButton(AlertDialog.BUTTON_NEGATIVE).setEnabled(false);
+
+        progressDialog.show();
+        final long startTime = System.currentTimeMillis();
         new AsyncTask<Void, Void, Void>() {
             @Override
             protected Void doInBackground(Void... params) {
@@ -226,7 +239,18 @@ public class PermissionActivity extends Activity {
             @Override
             protected void onPostExecute(Void result) {
                 setResult(Activity.RESULT_OK);
-                finish();
+                // Don't dismiss the progress dialog too quick, it will cause bad UX.
+                final long duration = System.currentTimeMillis() - startTime;
+                if (duration > LEAST_SHOW_PROGRESS_TIME_MS) {
+                    progressDialog.dismiss();
+                    finish();
+                } else {
+                    Handler handler = new Handler(getMainLooper());
+                    handler.postDelayed(() -> {
+                        progressDialog.dismiss();
+                        finish();
+                    }, LEAST_SHOW_PROGRESS_TIME_MS - duration);
+                }
             }
         }.execute();
     }
@@ -423,13 +447,40 @@ public class PermissionActivity extends Activity {
             final List<Uri> uris = params[0];
             final List<Description> res = new ArrayList<>();
 
+            // If the size is zero, return the res directly.
+            if (uris.isEmpty()) {
+                return res;
+            }
+
             // Default information that we'll load for each item
             int loadFlags = Description.LOAD_THUMBNAIL | Description.LOAD_CONTENT_DESCRIPTION;
             int neededThumbs = MAX_THUMBS;
 
             // If we're only asking for single item, load the full image
             if (uris.size() == 1) {
+                // Set visible to the thumb_full to avoid the size
+                // changed of the dialog in full decoding.
+                final ImageView thumbFull = bodyView.requireViewById(R.id.thumb_full);
+                thumbFull.setVisibility(View.VISIBLE);
                 loadFlags |= Description.LOAD_FULL;
+            } else {
+                // If the size equals 2, we will remove thumb1 later.
+                // Set visible to the thumb2 and thumb3 first to avoid
+                // the size changed of the dialog.
+                ImageView thumb = bodyView.requireViewById(R.id.thumb2);
+                thumb.setVisibility(View.VISIBLE);
+                thumb = bodyView.requireViewById(R.id.thumb3);
+                thumb.setVisibility(View.VISIBLE);
+                // If the count of thumbs equals to MAX_THUMBS, set visible to thumb1.
+                if (uris.size() == MAX_THUMBS) {
+                    thumb = bodyView.requireViewById(R.id.thumb1);
+                    thumb.setVisibility(View.VISIBLE);
+                } else if (uris.size() > MAX_THUMBS) {
+                    // If the count is larger than MAX_THUMBS, set visible to
+                    // thumb_more_container.
+                    final View container = bodyView.requireViewById(R.id.thumb_more_container);
+                    container.setVisibility(View.VISIBLE);
+                }
             }
 
             for (Uri uri : uris) {

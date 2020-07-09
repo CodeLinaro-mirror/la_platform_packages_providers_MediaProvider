@@ -17,8 +17,11 @@
 package com.android.providers.media;
 
 import static com.android.providers.media.scan.MediaScannerTest.stage;
+import static com.android.providers.media.util.FileUtils.extractRelativePathForDirectory;
 import static com.android.providers.media.util.FileUtils.isDownload;
 import static com.android.providers.media.util.FileUtils.isDownloadDir;
+
+import static com.google.common.truth.Truth.assertWithMessage;
 
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
@@ -97,7 +100,7 @@ public class MediaProviderTest {
                         Manifest.permission.READ_COMPAT_CHANGE_CONFIG);
 
         final Context context = InstrumentationRegistry.getTargetContext();
-        sIsolatedContext = new IsolatedContext(context, "modern");
+        sIsolatedContext = new IsolatedContext(context, "modern", /*asFuseThread*/ false);
         sIsolatedResolver = sIsolatedContext.getContentResolver();
     }
 
@@ -242,7 +245,7 @@ public class MediaProviderTest {
     public void testCanonicalize() throws Exception {
         // We might have old files lurking, so force a clean slate
         final Context context = InstrumentationRegistry.getTargetContext();
-        sIsolatedContext = new IsolatedContext(context, "modern");
+        sIsolatedContext = new IsolatedContext(context, "modern", /*asFuseThread*/ false);
         sIsolatedResolver = sIsolatedContext.getContentResolver();
 
         final File dir = Environment
@@ -503,6 +506,73 @@ public class MediaProviderTest {
     }
 
     @Test
+    public void testBuildData_InvalidSecondaryTypes() throws Exception {
+        assertEndsWith("/Pictures/foo.png",
+                buildFile(MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY),
+                        null, "foo.png", "image/*"));
+
+        assertThrows(IllegalArgumentException.class, () -> {
+            buildFile(MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY),
+                    null, "foo", "video/*");
+        });
+        assertThrows(IllegalArgumentException.class, () -> {
+            buildFile(MediaStore.Audio.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY),
+                    null, "foo.mp4", "audio/*");
+        });
+    }
+
+    @Test
+    public void testBuildData_EmptyTypes() throws Exception {
+        Uri uri = MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY);
+        assertEndsWith("/Pictures/foo.png",
+                buildFile(uri, null, "foo.png", ""));
+
+        uri = MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY);
+        assertEndsWith(".mp4",
+                buildFile(uri, null, "", ""));
+    }
+
+    @Test
+    public void testEnsureFileColumns_InvalidMimeType_targetSdkQ() throws Exception {
+        final MediaProvider provider = new MediaProvider() {
+            @Override
+            public boolean isFuseThread() {
+                return false;
+            }
+
+            @Override
+            public int getCallingPackageTargetSdkVersion() {
+                return Build.VERSION_CODES.Q;
+            }
+        };
+
+        final Uri uri = MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY);
+        final ContentValues values = new ContentValues();
+
+        values.put(MediaColumns.DISPLAY_NAME, "pngimage.png");
+        provider.ensureFileColumns(uri, values);
+        assertMimetype(values, "image/jpeg");
+        assertDisplayName(values, "pngimage.png.jpg");
+
+        values.clear();
+        values.put(MediaColumns.DISPLAY_NAME, "pngimage.png");
+        values.put(MediaColumns.MIME_TYPE, "");
+        provider.ensureFileColumns(uri, values);
+        assertMimetype(values, "image/jpeg");
+        assertDisplayName(values, "pngimage.png.jpg");
+
+        values.clear();
+        values.put(MediaColumns.MIME_TYPE, "");
+        provider.ensureFileColumns(uri, values);
+        assertMimetype(values, "image/jpeg");
+
+        values.clear();
+        values.put(MediaColumns.DISPLAY_NAME, "foo.foo");
+        provider.ensureFileColumns(uri, values);
+        assertMimetype(values, "image/jpeg");
+        assertDisplayName(values, "foo.foo.jpg");
+    }
+
     @Ignore("Enable as part of b/142561358")
     public void testBuildData_Charset() throws Exception {
         final Uri uri = MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY);
@@ -885,6 +955,11 @@ public class MediaProviderTest {
             public boolean isFuseThread() {
                 return false;
             }
+
+            @Override
+            public int getCallingPackageTargetSdkVersion() {
+                return Build.VERSION_CODES.CUR_DEVELOPMENT;
+            }
         };
         provider.ensureFileColumns(uri, values);
 
@@ -893,33 +968,43 @@ public class MediaProviderTest {
 
     @Test
     public void testRelativePathForInvalidDirectories() throws Exception {
-        for (String data : new String[] {
-            "/storage/IMG1024.JPG",
-            "/data/media/IMG1024.JPG",
-            "IMG1024.JPG",
-            "storage/emulated/",
+        for (String path : new String[] {
+                "/storage/emulated",
+                "/storage",
+                "/data/media/Foo.jpg",
+                "Foo.jpg",
+                "storage/Foo"
         }) {
-            assertEquals(FileUtils.extractRelativePathForDirectory(data), null);
+            assertEquals(null, FileUtils.extractRelativePathForDirectory(path));
         }
     }
 
     @Test
     public void testRelativePathForValidDirectories() throws Exception {
-        for (Pair<String, String> top : Arrays.asList(
-                Pair.create("/storage/emulated/0", new String("/")),
-                Pair.create("/storage/emulated/0/DCIM", "DCIM/"),
-                Pair.create("/storage/emulated/0/DCIM/Camera", "DCIM/Camera/"),
-                Pair.create("/storage/emulated/0/Android/media/com.example/Foo",
-                        "Android/media/com.example/Foo/"),
-                Pair.create("/storage/0000-0000/DCIM/Camera", "DCIM/Camera/"))) {
-            assertEquals(top.second, FileUtils.extractRelativePathForDirectory(top.first));
+        for (String prefix : new String[] {
+                "/storage/emulated/0",
+                "/storage/emulated/10",
+                "/storage/ABCD-1234"
+        }) {
+            assertRelativePathForDirectory(prefix, "/");
+            assertRelativePathForDirectory(prefix + "/DCIM", "DCIM/");
+            assertRelativePathForDirectory(prefix + "/DCIM/Camera", "DCIM/Camera/");
+            assertRelativePathForDirectory(prefix + "/Z", "Z/");
+            assertRelativePathForDirectory(prefix + "/Android/media/com.example/Foo",
+                    "Android/media/com.example/Foo/");
         }
+    }
+
+    private static void assertRelativePathForDirectory(String directoryPath, String relativePath) {
+        assertWithMessage("extractRelativePathForDirectory(" + directoryPath + ") :")
+                .that(extractRelativePathForDirectory(directoryPath))
+                .isEqualTo(relativePath);
     }
 
     private static ContentValues computeDataValues(String path) {
         final ContentValues values = new ContentValues();
         values.put(MediaColumns.DATA, path);
-        FileUtils.computeValuesFromData(values);
+        FileUtils.computeValuesFromData(values, /*forFuse*/ false);
         Log.v(TAG, "Computed values " + values);
         return values;
     }
@@ -948,6 +1033,10 @@ public class MediaProviderTest {
         assertEquals(type, values.get(MediaColumns.MIME_TYPE));
     }
 
+    private static void assertDisplayName(ContentValues values, String type) {
+        assertEquals(type, values.get(MediaColumns.DISPLAY_NAME));
+    }
+
     private static boolean isGreylistMatch(String raw) {
         for (Pattern p : MediaProvider.sGreylist) {
             if (p.matcher(raw).matches()) {
@@ -967,14 +1056,14 @@ public class MediaProviderTest {
         values.put(MediaColumns.MIME_TYPE, mimeType);
         try {
             ensureFileColumns(uri, values);
-        } catch (VolumeArgumentException e) {
+        } catch (VolumeArgumentException | VolumeNotFoundException e) {
             throw e.rethrowAsIllegalArgumentException();
         }
         return values.getAsString(MediaColumns.DATA);
     }
 
     private void ensureFileColumns(Uri uri, ContentValues values)
-            throws VolumeArgumentException {
+            throws VolumeArgumentException, VolumeNotFoundException {
         try (ContentProviderClient cpc = sIsolatedResolver
                 .acquireContentProviderClient(MediaStore.AUTHORITY)) {
             ((MediaProvider) cpc.getLocalContentProvider())

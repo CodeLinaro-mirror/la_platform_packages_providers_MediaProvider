@@ -16,6 +16,7 @@
 
 package com.android.providers.media.client;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
 import android.content.ContentProviderOperation;
@@ -24,6 +25,8 @@ import android.content.ContentResolver;
 import android.content.ContentValues;
 import android.database.ContentObserver;
 import android.net.Uri;
+import android.os.Bundle;
+import android.os.Environment;
 import android.os.SystemClock;
 import android.provider.MediaStore;
 import android.provider.MediaStore.MediaColumns;
@@ -35,9 +38,12 @@ import androidx.test.runner.AndroidJUnit4;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
+import java.io.File;
+import java.util.Arrays;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -70,7 +76,7 @@ public class PerformanceTest {
             doSingle(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, timers);
         }
 
-        timers.dump();
+        timers.dumpResults();
 
         // Verify that core actions finished within 30ms deadline
         final long actionDeadline = 30;
@@ -149,7 +155,7 @@ public class PerformanceTest {
             doBulk(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, timers);
         }
 
-        timers.dump();
+        timers.dumpResults();
 
         // Verify that core actions finished within 30ms deadline
         final long actionDeadline = 30 * COUNT_BULK;
@@ -231,6 +237,62 @@ public class PerformanceTest {
         MediaStore.waitForIdle(resolver);
     }
 
+    @Test
+    public void testDirOperations_10() throws Exception {
+        Timer createTimer = new Timer("mkdir");
+        Timer readTimer = new Timer("readdir");
+        Timer deleteTimer = new Timer("rmdir");
+        for (int i = 0; i < COUNT_REPEAT; i++ ){
+            doDirOperations(10, createTimer, readTimer, deleteTimer);
+        }
+        createTimer.dumpResults();
+        readTimer.dumpResults();
+        deleteTimer.dumpResults();
+    }
+
+    @Test
+    public void testDirOperations_100() throws Exception {
+        Timer createTimer = new Timer("mkdir");
+        Timer readTimer = new Timer("readdir");
+        Timer deleteTimer = new Timer("rmdir");
+        for (int i = 0; i < COUNT_REPEAT; i++ ){
+            doDirOperations(100, createTimer, readTimer, deleteTimer);
+        }
+        createTimer.dumpResults();
+        readTimer.dumpResults();
+        deleteTimer.dumpResults();
+    }
+
+    private void doDirOperations(int size, Timer createTimer, Timer readTimer, Timer deleteTimer)
+            throws Exception {
+        createTimer.start();
+        File testDir = new File(new File(Environment.getExternalStorageDirectory(),
+                "Download"), "test_dir_" + System.nanoTime());
+        testDir.mkdir();
+        List<File> files = new ArrayList<>();
+        for (int i = 0; i < size; i++) {
+            File file = new File(testDir, "file_" + System.nanoTime());
+            assertTrue(file.createNewFile());
+            files.add(file);
+        }
+        createTimer.stop();
+
+        try {
+            readTimer.start();
+            File[] result = testDir.listFiles();
+            readTimer.stop();
+            assertEquals(size, result.length);
+
+        } finally {
+            deleteTimer.start();
+            for (File file : files) {
+                assertTrue(file.delete());
+            }
+            assertTrue(testDir.delete());
+            deleteTimer.stop();
+        }
+    }
+
     private static Set<Uri> asSet(Collection<Uri> uris) {
         return new HashSet<>(uris);
     }
@@ -240,9 +302,14 @@ public class PerformanceTest {
      * averaged based on the number of times it was cycled.
      */
     private static class Timer {
+        private final String name;
         private int count;
         private long duration;
         private long start;
+
+        public Timer(String name) {
+            this.name = name;
+        }
 
         public void start() {
             if (start != 0) {
@@ -266,28 +333,31 @@ public class PerformanceTest {
             return TimeUnit.MILLISECONDS.convert(duration / count, TimeUnit.NANOSECONDS);
         }
 
-        @Override
-        public String toString() {
-            return String.format("count=%d duration=%dns average=%dms", count, duration,
-                    getAverageDurationMillis());
+        public void dumpResults() {
+            final long duration = getAverageDurationMillis();
+            Log.v(TAG, name + ": " + duration + "ms");
+
+            final Bundle results = new Bundle();
+            results.putLong(name, duration);
+            InstrumentationRegistry.getInstrumentation().sendStatus(0, results);
         }
     }
 
     private static class Timers {
-        public final Timer actionInsert = new Timer();
-        public final Timer actionUpdate = new Timer();
-        public final Timer actionDelete = new Timer();
-        public final Timer notifyInsert = new Timer();
-        public final Timer notifyUpdate = new Timer();
-        public final Timer notifyDelete = new Timer();
+        public final Timer actionInsert = new Timer("action_insert");
+        public final Timer actionUpdate = new Timer("action_update");
+        public final Timer actionDelete = new Timer("action_delete");
+        public final Timer notifyInsert = new Timer("notify_insert");
+        public final Timer notifyUpdate = new Timer("notify_update");
+        public final Timer notifyDelete = new Timer("notify_delete");
 
-        public void dump() {
-            Log.v(TAG, "actionInsert " + actionInsert);
-            Log.v(TAG, "actionUpdate " + actionUpdate);
-            Log.v(TAG, "actionDelete " + actionDelete);
-            Log.v(TAG, "notifyInsert " + notifyInsert);
-            Log.v(TAG, "notifyUpdate " + notifyUpdate);
-            Log.v(TAG, "notifyDelete " + notifyDelete);
+        public void dumpResults() {
+            actionInsert.dumpResults();
+            actionUpdate.dumpResults();
+            actionDelete.dumpResults();
+            notifyInsert.dumpResults();
+            notifyUpdate.dumpResults();
+            notifyDelete.dumpResults();
         }
     }
 
