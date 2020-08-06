@@ -633,23 +633,38 @@ static void pf_setattr(fuse_req_t req,
         fuse_reply_err(req, ENOENT);
         return;
     }
-    const struct fuse_ctx* ctx = fuse_req_ctx(req);
-    int status = fuse->mp->IsOpenAllowed(path, ctx->uid, true);
-    if (status) {
-        fuse_reply_err(req, EACCES);
-        return;
+
+    int fd = -1;
+    if (fi) {
+        // If we have a file_info, setattr was called with an fd so use the fd instead of path
+        handle* h = reinterpret_cast<handle*>(fi->fh);
+        fd = h->fd;
+    } else {
+        const struct fuse_ctx* ctx = fuse_req_ctx(req);
+        int status = fuse->mp->IsOpenAllowed(path, ctx->uid, true);
+        if (status) {
+            fuse_reply_err(req, EACCES);
+            return;
+        }
     }
     struct timespec times[2];
-
     TRACE_NODE(node, req);
 
     /* XXX: incomplete implementation on purpose.
      * chmod/chown should NEVER be implemented.*/
 
-    if ((to_set & FUSE_SET_ATTR_SIZE)
-            && truncate64(path.c_str(), attr->st_size) < 0) {
-        fuse_reply_err(req, errno);
-        return;
+    if ((to_set & FUSE_SET_ATTR_SIZE)) {
+        int res = 0;
+        if (fd == -1) {
+            res = truncate64(path.c_str(), attr->st_size);
+        } else {
+            res = ftruncate64(fd, attr->st_size);
+        }
+
+        if (res < 0) {
+            fuse_reply_err(req, errno);
+            return;
+        }
     }
 
     /* Handle changing atime and mtime.  If FATTR_ATIME_and FATTR_ATIME_NOW
@@ -678,7 +693,14 @@ static void pf_setattr(fuse_req_t req,
         }
 
         TRACE_NODE(node, req);
-        if (utimensat(-1, path.c_str(), times, 0) < 0) {
+        int res = 0;
+        if (fd == -1) {
+            res = utimensat(-1, path.c_str(), times, 0);
+        } else {
+            res = futimens(fd, times);
+        }
+
+        if (res < 0) {
             fuse_reply_err(req, errno);
             return;
         }
@@ -988,6 +1010,10 @@ static void pf_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info* fi) {
         open_flags |= O_RDWR;
     }
 
+    if (open_flags & O_APPEND) {
+        open_flags &= ~O_APPEND;
+    }
+
     const int fd = open(path.c_str(), open_flags);
     if (fd < 0) {
         fuse_reply_err(req, errno);
@@ -1267,7 +1293,7 @@ static void pf_opendir(fuse_req_t req,
 
     TRACE_NODE(node, req);
 
-    int status = fuse->mp->IsOpendirAllowed(path, ctx->uid);
+    int status = fuse->mp->IsOpendirAllowed(path, ctx->uid, /* forWrite */ false);
     if (status) {
         fuse_reply_err(req, status);
         return;
@@ -1478,9 +1504,10 @@ static void pf_access(fuse_req_t req, fuse_ino_t ino, int mask) {
 
     // For read and write permission checks we go to MediaProvider.
     int status = 0;
+    bool for_write = mask & W_OK;
     bool is_directory = S_ISDIR(stat.st_mode);
     if (is_directory) {
-        status = fuse->mp->IsOpendirAllowed(path, req->ctx.uid);
+        status = fuse->mp->IsOpendirAllowed(path, req->ctx.uid, for_write);
     } else {
         if (mask & X_OK) {
             // Fuse is mounted with MS_NOEXEC.
@@ -1488,7 +1515,6 @@ static void pf_access(fuse_req_t req, fuse_ino_t ino, int mask) {
             return;
         }
 
-        bool for_write = mask & W_OK;
         status = fuse->mp->IsOpenAllowed(path, req->ctx.uid, for_write);
     }
 
@@ -1529,6 +1555,10 @@ static void pf_create(fuse_req_t req,
     if (open_flags & O_WRONLY) {
         open_flags &= ~O_WRONLY;
         open_flags |= O_RDWR;
+    }
+
+    if (open_flags & O_APPEND) {
+        open_flags &= ~O_APPEND;
     }
 
     mode = (mode & (~0777)) | 0664;
