@@ -802,7 +802,8 @@ public class DatabaseHelper extends SQLiteOpenHelper implements AutoCloseable {
                 + "writer TEXT DEFAULT NULL, exposure_time TEXT DEFAULT NULL,"
                 + "f_number TEXT DEFAULT NULL, iso INTEGER DEFAULT NULL,"
                 + "scene_capture_type INTEGER DEFAULT NULL, generation_added INTEGER DEFAULT 0,"
-                + "generation_modified INTEGER DEFAULT 0, xmp BLOB DEFAULT NULL)");
+                + "generation_modified INTEGER DEFAULT 0, xmp BLOB DEFAULT NULL,"
+                + "_transcode_status INTEGER DEFAULT 0)");
 
         db.execSQL("CREATE TABLE log (time DATETIME, message TEXT)");
         if (!mInternal) {
@@ -1390,6 +1391,10 @@ public class DatabaseHelper extends SQLiteOpenHelper implements AutoCloseable {
                 + " AND " + MediaColumns.RELATIVE_PATH + " NOT LIKE '%/';");
     }
 
+    private static void updateAddTranscodeSatus(SQLiteDatabase db, boolean internal) {
+        db.execSQL("ALTER TABLE files ADD COLUMN _transcode_status INTEGER DEFAULT 0;");
+    }
+
     private static void updateClearDirectories(SQLiteDatabase db, boolean internal) {
         db.execSQL("UPDATE files SET primary_directory=NULL, secondary_directory=NULL;");
     }
@@ -1464,6 +1469,11 @@ public class DatabaseHelper extends SQLiteOpenHelper implements AutoCloseable {
         db.execSQL("ALTER TABLE files ADD COLUMN xmp BLOB DEFAULT NULL;");
     }
 
+    private static void updateAudioAlbumId(SQLiteDatabase db, boolean internal) {
+        // We change the logic for generating album id, rescan all audio files
+        db.execSQL("UPDATE files SET date_modified=0 WHERE media_type=2;");
+    }
+
     private static void recomputeDataValues(SQLiteDatabase db, boolean internal) {
         try (Cursor c = db.query("files", new String[] { FileColumns._ID, FileColumns.DATA },
                 null, null, null, null, null, null)) {
@@ -1519,8 +1529,11 @@ public class DatabaseHelper extends SQLiteOpenHelper implements AutoCloseable {
     static final int VERSION_O = 800;
     static final int VERSION_P = 900;
     static final int VERSION_Q = 1023;
-    static final int VERSION_R = 1114;
-    static final int VERSION_LATEST = VERSION_R;
+    static final int VERSION_R = 1115;
+    // Leave some gaps in database version tagging to allow R schema changes
+    // to go independent of S schema changes.
+    static final int VERSION_S = 1200;
+    static final int VERSION_LATEST = VERSION_S;
 
     /**
      * This method takes care of updating all the tables in the database to the
@@ -1661,6 +1674,12 @@ public class DatabaseHelper extends SQLiteOpenHelper implements AutoCloseable {
             }
             if (fromVersion < 1114) {
                 // Empty version bump to ensure triggers are recreated
+            }
+            if (fromVersion < 1115) {
+                updateAudioAlbumId(db, internal);
+            }
+            if (fromVersion < 1200) {
+                updateAddTranscodeSatus(db, internal);
             }
 
             // If this is the legacy database, it's not worth recomputing data

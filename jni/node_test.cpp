@@ -31,8 +31,14 @@ class NodeTest : public ::testing::Test {
 
     typedef std::unique_ptr<node, decltype(&NodeTest::destroy)> unique_node_ptr;
 
-    unique_node_ptr CreateNode(node* parent, const std::string& path) {
-        return unique_node_ptr(node::Create(parent, path, &lock_, &tracker_), &NodeTest::destroy);
+    unique_node_ptr CreateNode(node* parent, const std::string& path, const int transforms = 0) {
+        return unique_node_ptr(node::Create(parent, path, "", true, transforms, &lock_, &tracker_),
+                               &NodeTest::destroy);
+    }
+
+    static class node* ForChild(class node* node, const std::string& name,
+                                const std::function<bool(class node*)>& callback) {
+        return node->ForChild(name, callback);
     }
 
     // Expose NodeCompare for testing.
@@ -61,7 +67,7 @@ TEST_F(NodeTest, TestCreate_withParent) {
 }
 
 TEST_F(NodeTest, TestRelease) {
-    node* node = node::Create(nullptr, "/path", &lock_, &tracker_);
+    node* node = node::Create(nullptr, "/path", "", true, 0, &lock_, &tracker_);
     acquire(node);
     acquire(node);
     ASSERT_EQ(3, GetRefCount(node));
@@ -77,7 +83,7 @@ TEST_F(NodeTest, TestRelease) {
     ASSERT_TRUE(node->Release(2));
 }
 
-TEST_F(NodeTest, TestRenameWithName) {
+TEST_F(NodeTest, TestRenameName) {
     unique_node_ptr parent = CreateNode(nullptr, "/path");
 
     unique_node_ptr child = CreateNode(parent.get(), "subdir");
@@ -94,7 +100,7 @@ TEST_F(NodeTest, TestRenameWithName) {
     ASSERT_EQ(1, GetRefCount(child.get()));
 }
 
-TEST_F(NodeTest, TestRenameWithParent) {
+TEST_F(NodeTest, TestRenameParent) {
     unique_node_ptr parent1 = CreateNode(nullptr, "/path1");
     unique_node_ptr parent2 = CreateNode(nullptr, "/path2");
 
@@ -113,7 +119,7 @@ TEST_F(NodeTest, TestRenameWithParent) {
     ASSERT_EQ(1, GetRefCount(child.get()));
 }
 
-TEST_F(NodeTest, TestRenameWithNameAndParent) {
+TEST_F(NodeTest, TestRenameNameAndParent) {
     unique_node_ptr parent1 = CreateNode(nullptr, "/path1");
     unique_node_ptr parent2 = CreateNode(nullptr, "/path2");
 
@@ -131,6 +137,101 @@ TEST_F(NodeTest, TestRenameWithNameAndParent) {
 
     ASSERT_EQ("/path2/subdir_new", child->BuildPath());
     ASSERT_EQ(1, GetRefCount(child.get()));
+}
+
+TEST_F(NodeTest, TestRenameNameForChild) {
+    unique_node_ptr parent = CreateNode(nullptr, "/path");
+
+    unique_node_ptr child0 = CreateNode(parent.get(), "subdir", 0 /* transforms */);
+    unique_node_ptr child1 = CreateNode(parent.get(), "subdir", 1 /* transforms */);
+    ASSERT_EQ(3, GetRefCount(parent.get()));
+    ASSERT_EQ(child0.get(),
+              parent->LookupChildByName("subdir", false /* acquire */, 0 /* transforms */));
+    ASSERT_EQ(child1.get(),
+              parent->LookupChildByName("subdir", false /* acquire */, 1 /* transforms */));
+
+    parent->RenameChild("subdir", "subdir_new", parent.get());
+
+    ASSERT_EQ(3, GetRefCount(parent.get()));
+    ASSERT_EQ(nullptr,
+              parent->LookupChildByName("subdir", false /* acquire */, 0 /* transforms */));
+    ASSERT_EQ(nullptr,
+              parent->LookupChildByName("subdir", false /* acquire */, 1 /* transforms */));
+    ASSERT_EQ(child0.get(),
+              parent->LookupChildByName("subdir_new", false /* acquire */, 0 /* transforms */));
+    ASSERT_EQ(child1.get(),
+              parent->LookupChildByName("subdir_new", false /* acquire */, 1 /* transforms */));
+
+    ASSERT_EQ("/path/subdir_new", child0->BuildPath());
+    ASSERT_EQ("/path/subdir_new", child1->BuildPath());
+    ASSERT_EQ(1, GetRefCount(child0.get()));
+    ASSERT_EQ(1, GetRefCount(child1.get()));
+}
+
+TEST_F(NodeTest, TestRenameParentForChild) {
+    unique_node_ptr parent1 = CreateNode(nullptr, "/path1");
+    unique_node_ptr parent2 = CreateNode(nullptr, "/path2");
+
+    unique_node_ptr child0 = CreateNode(parent1.get(), "subdir", 0 /* transforms */);
+    unique_node_ptr child1 = CreateNode(parent1.get(), "subdir", 1 /* transforms */);
+    ASSERT_EQ(3, GetRefCount(parent1.get()));
+    ASSERT_EQ(child0.get(),
+              parent1->LookupChildByName("subdir", false /* acquire */, 0 /* transforms */));
+    ASSERT_EQ(child1.get(),
+              parent1->LookupChildByName("subdir", false /* acquire */, 1 /* transforms */));
+
+    parent1->RenameChild("subdir", "subdir", parent2.get());
+    ASSERT_EQ(1, GetRefCount(parent1.get()));
+    ASSERT_EQ(nullptr,
+              parent1->LookupChildByName("subdir", false /* acquire */, 0 /* transforms */));
+    ASSERT_EQ(nullptr,
+              parent1->LookupChildByName("subdir", false /* acquire */, 1 /* transforms */));
+
+    ASSERT_EQ(3, GetRefCount(parent2.get()));
+    ASSERT_EQ(child0.get(),
+              parent2->LookupChildByName("subdir", false /* acquire */, 0 /* transforms */));
+    ASSERT_EQ(child1.get(),
+              parent2->LookupChildByName("subdir", false /* acquire */, 1 /* transforms */));
+
+    ASSERT_EQ("/path2/subdir", child0->BuildPath());
+    ASSERT_EQ("/path2/subdir", child1->BuildPath());
+    ASSERT_EQ(1, GetRefCount(child0.get()));
+    ASSERT_EQ(1, GetRefCount(child1.get()));
+}
+
+TEST_F(NodeTest, TestRenameNameAndParentForChild) {
+    unique_node_ptr parent1 = CreateNode(nullptr, "/path1");
+    unique_node_ptr parent2 = CreateNode(nullptr, "/path2");
+
+    unique_node_ptr child0 = CreateNode(parent1.get(), "subdir", 0 /* transforms */);
+    unique_node_ptr child1 = CreateNode(parent1.get(), "subdir", 1 /* transforms */);
+    ASSERT_EQ(3, GetRefCount(parent1.get()));
+    ASSERT_EQ(child0.get(),
+              parent1->LookupChildByName("subdir", false /* acquire */, 0 /* transforms */));
+    ASSERT_EQ(child1.get(),
+              parent1->LookupChildByName("subdir", false /* acquire */, 1 /* transforms */));
+
+    parent1->RenameChild("subdir", "subdir_new", parent2.get());
+    ASSERT_EQ(1, GetRefCount(parent1.get()));
+    ASSERT_EQ(nullptr,
+              parent1->LookupChildByName("subdir", false /* acquire */, 0 /* transforms */));
+    ASSERT_EQ(nullptr,
+              parent1->LookupChildByName("subdir_new", false /* acquire */, 0 /* transforms */));
+    ASSERT_EQ(nullptr,
+              parent1->LookupChildByName("subdir", false /* acquire */, 1 /* transforms */));
+    ASSERT_EQ(nullptr,
+              parent1->LookupChildByName("subdir_new", false /* acquire */, 1 /* transforms */));
+
+    ASSERT_EQ(3, GetRefCount(parent2.get()));
+    ASSERT_EQ(nullptr,
+              parent1->LookupChildByName("subdir_new", false /* acquire */, 0 /* transforms */));
+    ASSERT_EQ(nullptr,
+              parent1->LookupChildByName("subdir_new", false /* acquire */, 1 /* transforms */));
+
+    ASSERT_EQ("/path2/subdir_new", child0->BuildPath());
+    ASSERT_EQ("/path2/subdir_new", child1->BuildPath());
+    ASSERT_EQ(1, GetRefCount(child0.get()));
+    ASSERT_EQ(1, GetRefCount(child1.get()));
 }
 
 TEST_F(NodeTest, TestBuildPath) {
@@ -156,14 +257,30 @@ TEST_F(NodeTest, TestSetDeleted) {
     ASSERT_EQ(nullptr, parent->LookupChildByName("subdir", false /* acquire */));
 }
 
+TEST_F(NodeTest, TestSetDeletedForChild) {
+    unique_node_ptr parent = CreateNode(nullptr, "/path");
+    unique_node_ptr child0 = CreateNode(parent.get(), "subdir", 0 /* transforms */);
+    unique_node_ptr child1 = CreateNode(parent.get(), "subdir", 1 /* transforms */);
+
+    ASSERT_EQ(child0.get(),
+              parent->LookupChildByName("subdir", false /* acquire */, 0 /* transforms */));
+    ASSERT_EQ(child1.get(),
+              parent->LookupChildByName("subdir", false /* acquire */, 1 /* transforms */));
+    parent->SetDeletedForChild("subdir");
+    ASSERT_EQ(nullptr,
+              parent->LookupChildByName("subdir", false /* acquire */, 0 /* transforms */));
+    ASSERT_EQ(nullptr,
+              parent->LookupChildByName("subdir", false /* acquire */, 1 /* transforms */));
+}
+
 TEST_F(NodeTest, DeleteTree) {
     unique_node_ptr parent = CreateNode(nullptr, "/path");
 
     // This is the tree that we intend to delete.
-    node* child = node::Create(parent.get(), "subdir", &lock_, &tracker_);
-    node::Create(child, "s1", &lock_, &tracker_);
-    node* subchild2 = node::Create(child, "s2", &lock_, &tracker_);
-    node::Create(subchild2, "sc2", &lock_, &tracker_);
+    node* child = node::Create(parent.get(), "subdir", "", true, 0, &lock_, &tracker_);
+    node::Create(child, "s1", "", true, 0, &lock_, &tracker_);
+    node* subchild2 = node::Create(child, "s2", "", true, 0, &lock_, &tracker_);
+    node::Create(subchild2, "sc2", "", true, 0, &lock_, &tracker_);
 
     ASSERT_EQ(child, parent->LookupChildByName("subdir", false /* acquire */));
     node::DeleteTree(child);
@@ -176,6 +293,20 @@ TEST_F(NodeTest, LookupChildByName_empty) {
 
     ASSERT_EQ(child.get(), parent->LookupChildByName("subdir", false /* acquire */));
     ASSERT_EQ(nullptr, parent->LookupChildByName("", false /* acquire */));
+}
+
+TEST_F(NodeTest, LookupChildByName_transforms) {
+    unique_node_ptr parent = CreateNode(nullptr, "/path");
+    unique_node_ptr child0 = CreateNode(parent.get(), "subdir", 0 /* transforms */);
+    unique_node_ptr child1 = CreateNode(parent.get(), "subdir", 1 /* transforms */);
+
+    ASSERT_EQ(child0.get(), parent->LookupChildByName("subdir", false /* acquire */));
+    ASSERT_EQ(child0.get(),
+              parent->LookupChildByName("subdir", false /* acquire */, 0 /* transforms */));
+    ASSERT_EQ(child1.get(),
+              parent->LookupChildByName("subdir", false /* acquire */, 1 /* transforms */));
+    ASSERT_EQ(nullptr,
+              parent->LookupChildByName("subdir", false /* acquire */, 2 /* transforms */));
 }
 
 TEST_F(NodeTest, LookupChildByName_refcounts) {
@@ -317,4 +448,45 @@ TEST_F(NodeTest, LookupChildByName_ChildrenWithSameName) {
     test_fn("foo", foo1.get(), foo2.get());
     test_fn("bAr", bar1.get(), bar2.get());
     test_fn("BaZ", baz1.get(), baz2.get());
+}
+
+TEST_F(NodeTest, ForChild) {
+    unique_node_ptr parent = CreateNode(nullptr, "/path");
+    unique_node_ptr foo1 = CreateNode(parent.get(), "FoO");
+    unique_node_ptr foo2 = CreateNode(parent.get(), "fOo");
+    unique_node_ptr foo3 = CreateNode(parent.get(), "foo");
+    foo3->SetDeleted();
+
+    std::vector<node*> match_all;
+    auto test_fn_match_all = [&](node* child) {
+        match_all.push_back(child);
+        return false;
+    };
+
+    std::vector<node*> match_first;
+    auto test_fn_match_first = [&](node* child) {
+        match_first.push_back(child);
+        return true;
+    };
+
+    std::vector<node*> match_none;
+    auto test_fn_match_none = [&](node* child) {
+        match_none.push_back(child);
+        return false;
+    };
+
+    node* node_all = ForChild(parent.get(), "foo", test_fn_match_all);
+    ASSERT_EQ(nullptr, node_all);
+    ASSERT_EQ(2, match_all.size());
+    ASSERT_EQ(std::min(foo1.get(), foo2.get()), match_all[0]);
+    ASSERT_EQ(std::max(foo1.get(), foo2.get()), match_all[1]);
+
+    node* node_first = ForChild(parent.get(), "foo", test_fn_match_first);
+    ASSERT_EQ(std::min(foo1.get(), foo2.get()), node_first);
+    ASSERT_EQ(1, match_first.size());
+    ASSERT_EQ(std::min(foo1.get(), foo2.get()), match_first[0]);
+
+    node* node_none = ForChild(parent.get(), "bar", test_fn_match_none);
+    ASSERT_EQ(nullptr, node_none);
+    ASSERT_TRUE(match_none.empty());
 }
