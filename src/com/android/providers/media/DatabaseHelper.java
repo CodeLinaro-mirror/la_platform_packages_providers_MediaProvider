@@ -118,15 +118,9 @@ public class DatabaseHelper extends SQLiteOpenHelper implements AutoCloseable {
     final @Nullable OnLegacyMigrationListener mMigrationListener;
     final @Nullable UnaryOperator<String> mIdGenerator;
     final Set<String> mFilterVolumeNames = new ArraySet<>();
+    private final String mMigrationFileName;
     long mScanStartTime;
     long mScanStopTime;
-
-    /**
-     * Flag indicating that this database should invoke
-     * {@link #migrateFromLegacy} to migrate from a legacy database, typically
-     * only set when this database is starting from scratch.
-     */
-    boolean mMigrateFromLegacy;
 
     /**
      * Lock used to guard against deadlocks in SQLite; the write lock is used to
@@ -195,6 +189,7 @@ public class DatabaseHelper extends SQLiteOpenHelper implements AutoCloseable {
         mFilesListener = filesListener;
         mMigrationListener = migrationListener;
         mIdGenerator = idGenerator;
+        mMigrationFileName = "." + mVolumeName;
 
         // Configure default filters until we hear differently
         if (mInternal) {
@@ -373,21 +368,25 @@ public class DatabaseHelper extends SQLiteOpenHelper implements AutoCloseable {
     @Override
     public void onOpen(final SQLiteDatabase db) {
         Log.v(TAG, "onOpen() for " + mName);
-        if (mMigrateFromLegacy) {
-            // Clear flag, since we should only attempt once
-            mMigrateFromLegacy = false;
-
-            mSchemaLock.writeLock().lock();
+        final File migration = new File(mContext.getFilesDir(), mMigrationFileName);
+        mSchemaLock.writeLock().lock();
+        try {
+            if (!migration.exists()) {
+                return;
+            }
             try {
                 // Temporarily drop indexes to improve migration performance
                 makePristineIndexes(db);
                 migrateFromLegacy(db);
                 createLatestIndexes(db, mInternal);
             } finally {
-                mSchemaLock.writeLock().unlock();
+                // Clear flag, since we should only attempt once
+                migration.delete();
             }
+        } finally {
+            mSchemaLock.writeLock().unlock();
+            Log.v(TAG, "onOpen() finished for " + mName);
         }
-        Log.v(TAG, "onOpen() finished for " + mName);
     }
 
     @GuardedBy("mProjectionMapCache")
@@ -519,6 +518,15 @@ public class DatabaseHelper extends SQLiteOpenHelper implements AutoCloseable {
         if (state == null) {
             throw new IllegalStateException("No transaction in progress");
         }
+        if (state.successful) {
+            // Run blocking tasks inside the same transaction. This optimizes
+            // the database operations from blocking tasks to run in same
+            // transaction and sends notifications resulting from these tasks
+            // in batch.
+            for (int i = 0; i < state.blockingTasks.size(); i++) {
+                state.blockingTasks.get(i).run();
+            }
+        }
         mTransactionState.remove();
 
         final SQLiteDatabase db = super.getWritableDatabase();
@@ -526,10 +534,6 @@ public class DatabaseHelper extends SQLiteOpenHelper implements AutoCloseable {
         mSchemaLock.readLock().unlock();
 
         if (state.successful) {
-            for (int i = 0; i < state.blockingTasks.size(); i++) {
-                state.blockingTasks.get(i).run();
-            }
-
             // We carefully "phase" our two sets of work here to ensure that we
             // completely finish dispatching all change notifications before we
             // process background tasks, to ensure that the background work
@@ -803,7 +807,7 @@ public class DatabaseHelper extends SQLiteOpenHelper implements AutoCloseable {
                 + "f_number TEXT DEFAULT NULL, iso INTEGER DEFAULT NULL,"
                 + "scene_capture_type INTEGER DEFAULT NULL, generation_added INTEGER DEFAULT 0,"
                 + "generation_modified INTEGER DEFAULT 0, xmp BLOB DEFAULT NULL,"
-                + "_transcode_status INTEGER DEFAULT 0)");
+                + "_transcode_status INTEGER DEFAULT 0, _video_codec_type TEXT DEFAULT NULL)");
 
         db.execSQL("CREATE TABLE log (time DATETIME, message TEXT)");
         if (!mInternal) {
@@ -819,7 +823,11 @@ public class DatabaseHelper extends SQLiteOpenHelper implements AutoCloseable {
         // Since this code is used by both the legacy and modern providers, we
         // only want to migrate when we're running as the modern provider
         if (!mLegacyProvider) {
-            mMigrateFromLegacy = true;
+            try {
+                new File(mContext.getFilesDir(), mMigrationFileName).createNewFile();
+            } catch (IOException e) {
+                Log.e(TAG, "Failed to create a migration file: ." + mVolumeName, e);
+            }
         }
     }
 
@@ -1105,12 +1113,15 @@ public class DatabaseHelper extends SQLiteOpenHelper implements AutoCloseable {
         sMigrateColumns.add(MediaStore.MediaColumns.OWNER_PACKAGE_NAME);
 
         sMigrateColumns.add(MediaStore.MediaColumns.ORIENTATION);
+        sMigrateColumns.add(MediaStore.Files.FileColumns.PARENT);
 
         sMigrateColumns.add(MediaStore.Audio.AudioColumns.BOOKMARK);
 
         sMigrateColumns.add(MediaStore.Video.VideoColumns.TAGS);
         sMigrateColumns.add(MediaStore.Video.VideoColumns.CATEGORY);
         sMigrateColumns.add(MediaStore.Video.VideoColumns.BOOKMARK);
+
+        sMigrateColumns.add(MediaStore.Video.VideoColumns.IS_PRIVATE);
 
         sMigrateColumns.add(MediaStore.DownloadColumns.DOWNLOAD_URI);
         sMigrateColumns.add(MediaStore.DownloadColumns.REFERER_URI);
@@ -1395,6 +1406,11 @@ public class DatabaseHelper extends SQLiteOpenHelper implements AutoCloseable {
         db.execSQL("ALTER TABLE files ADD COLUMN _transcode_status INTEGER DEFAULT 0;");
     }
 
+
+    private static void updateAddVideoCodecType(SQLiteDatabase db, boolean internal) {
+        db.execSQL("ALTER TABLE files ADD COLUMN _video_codec_type TEXT DEFAULT NULL;");
+    }
+
     private static void updateClearDirectories(SQLiteDatabase db, boolean internal) {
         db.execSQL("UPDATE files SET primary_directory=NULL, secondary_directory=NULL;");
     }
@@ -1532,7 +1548,7 @@ public class DatabaseHelper extends SQLiteOpenHelper implements AutoCloseable {
     static final int VERSION_R = 1115;
     // Leave some gaps in database version tagging to allow R schema changes
     // to go independent of S schema changes.
-    static final int VERSION_S = 1200;
+    static final int VERSION_S = 1201;
     static final int VERSION_LATEST = VERSION_S;
 
     /**
@@ -1680,6 +1696,9 @@ public class DatabaseHelper extends SQLiteOpenHelper implements AutoCloseable {
             }
             if (fromVersion < 1200) {
                 updateAddTranscodeSatus(db, internal);
+            }
+            if (fromVersion < 1201) {
+                updateAddVideoCodecType(db, internal);
             }
 
             // If this is the legacy database, it's not worth recomputing data

@@ -241,7 +241,8 @@ struct fuse {
           tracker(mediaprovider::fuse::NodeTracker(&lock)),
           root(node::CreateRoot(_path, &lock, &tracker)),
           mp(0),
-          zero_addr(0) {}
+          zero_addr(0),
+          disable_dentry_cache(false) {}
 
     inline bool IsRoot(const node* node) const { return node == root; }
 
@@ -295,6 +296,7 @@ struct fuse {
     FAdviser fadviser;
 
     std::atomic_bool* active;
+    std::atomic_bool disable_dentry_cache;
 };
 
 static inline string get_name(node* n) {
@@ -385,10 +387,11 @@ static void fuse_inval(fuse_session* se, fuse_ino_t parent_ino, fuse_ino_t child
 
 static double get_attr_timeout(const string& path, bool should_inval, node* node,
                                struct fuse* fuse) {
-    if (should_inval || is_package_owned_path(path, fuse->path)) {
+    if (fuse->disable_dentry_cache || should_inval || is_package_owned_path(path, fuse->path)) {
         // We set dentry timeout to 0 for the following reasons:
-        // 1. Case-insensitive lookups need to invalidate other case-insensitive dentry matches
-        // 2. With app data isolation enabled, app A should not guess existence of app B from the
+        // 1. The dentry cache was completely disabled
+        // 2. Case-insensitive lookups need to invalidate other case-insensitive dentry matches
+        // 3. With app data isolation enabled, app A should not guess existence of app B from the
         // Android/{data,obb}/<package> paths, hence we prevent the kernel from caching that
         // information.
         return 0;
@@ -463,7 +466,7 @@ static node* make_node_entry(fuse_req_t req, node* parent, const string& name, c
         }
     }
 
-    node = parent->LookupChildByName(name, true /* acquire */);
+    node = parent->LookupChildByName(name, true /* acquire */, transforms);
     if (!node) {
         node = ::node::Create(parent, name, io_path, transforms_complete, transforms, &fuse->lock,
                               &fuse->tracker);
@@ -1007,8 +1010,8 @@ static void pf_link(fuse_req_t req, fuse_ino_t ino, fuse_ino_t new_parent,
 }
 */
 
-static handle* create_handle_for_node(struct fuse* fuse, const string& path, int fd, node* node,
-                                      const RedactionInfo* ri, int* keep_cache) {
+static handle* create_handle_for_node(struct fuse* fuse, const string& path, int fd, uid_t uid,
+                                      node* node, const RedactionInfo* ri, int* keep_cache) {
     std::lock_guard<std::recursive_mutex> guard(fuse->lock);
     // We don't want to use the FUSE VFS cache in two cases:
     // 1. When redaction is needed because app A with EXIF access might access
@@ -1038,7 +1041,7 @@ static handle* create_handle_for_node(struct fuse* fuse, const string& path, int
     }
 
     bool direct_io = (is_cached_file_open && is_redaction_change) || is_file_locked(fd, path);
-    handle* h = new handle(fd, ri, !direct_io);
+    handle* h = new handle(fd, ri, !direct_io, uid);
     node->AddHandle(h);
     return h;
 }
@@ -1053,6 +1056,7 @@ static void pf_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info* fi) {
     }
     const struct fuse_ctx* ctx = fuse_req_ctx(req);
     const string& path = get_path(node);
+    const string& build_path = node->BuildPath();
     if (!is_app_accessible_path(fuse->mp, path, ctx->uid)) {
         fuse_reply_err(req, ENOENT);
         return;
@@ -1066,7 +1070,9 @@ static void pf_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info* fi) {
     }
 
     // TODO: If transform, disallow write
-    int status = fuse->mp->IsOpenAllowed(path, ctx->uid, is_requesting_write(fi->flags));
+    // Force permission check with the build path because the MediaProvider database might not be
+    // aware of the io_path
+    int status = fuse->mp->IsOpenAllowed(build_path, ctx->uid, is_requesting_write(fi->flags));
     if (status) {
         fuse_reply_err(req, status);
         return;
@@ -1095,6 +1101,8 @@ static void pf_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info* fi) {
     if (is_requesting_write(fi->flags)) {
         ri = std::make_unique<RedactionInfo>();
     } else {
+        // TODO(b/171953356): Pass build_path for use during query, otherwise, MediaProvider would
+        // find the transcoded path
         ri = fuse->mp->GetRedactionInfo(path, req->ctx.uid, req->ctx.pid);
     }
 
@@ -1105,7 +1113,8 @@ static void pf_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info* fi) {
     }
 
     int keep_cache = 1;
-    handle* h = create_handle_for_node(fuse, path, fd, node, ri.release(), &keep_cache);
+    handle* h =
+            create_handle_for_node(fuse, path, fd, req->ctx.uid, node, ri.release(), &keep_cache);
     fi->fh = ptr_to_id(h);
     fi->keep_cache = keep_cache;
     fi->direct_io = !h->cached;
@@ -1194,7 +1203,7 @@ static void pf_read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
 
     if (!node->IsTransformsComplete()) {
         if (!fuse->mp->Transform(node->BuildPath(), node->GetIoPath(), node->GetTransforms(),
-                                 req->ctx.uid)) {
+                                 h->uid)) {
             fuse_reply_err(req, EFAULT);
             return;
         }
@@ -1642,7 +1651,8 @@ static void pf_create(fuse_req_t req,
     // to the file before all the EXIF content is written. We could special case reads before the
     // first close after a file has just been created.
     int keep_cache = 1;
-    handle* h = create_handle_for_node(fuse, child_path, fd, node, new RedactionInfo(), &keep_cache);
+    handle* h = create_handle_for_node(fuse, child_path, fd, req->ctx.uid, node,
+                                       new RedactionInfo(), &keep_cache);
     fi->fh = ptr_to_id(h);
     fi->keep_cache = keep_cache;
     fi->direct_io = !h->cached;
@@ -1846,6 +1856,12 @@ void FuseDaemon::Start(android::base::unique_fd fd, const std::string& path) {
     // Custom logging for libfuse
     if (android::base::GetBoolProperty("persist.sys.fuse.log", false)) {
         fuse_set_log_func(fuse_logger);
+    }
+
+    uid_t userId = getuid() / PER_USER_RANGE;
+    if (userId != 0 && mp.IsAppCloneUser(userId)) {
+        // Disable dentry caching for the app clone user
+        fuse->disable_dentry_cache = true;
     }
 
     struct fuse_session
