@@ -23,6 +23,9 @@ import static android.app.PendingIntent.FLAG_IMMUTABLE;
 import static android.app.PendingIntent.FLAG_ONE_SHOT;
 import static android.content.ContentResolver.QUERY_ARG_SQL_SELECTION;
 import static android.content.ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS;
+import static android.content.pm.PackageManager.MATCH_ANY_USER;
+import static android.content.pm.PackageManager.MATCH_DIRECT_BOOT_AWARE;
+import static android.content.pm.PackageManager.MATCH_DIRECT_BOOT_UNAWARE;
 import static android.content.pm.PackageManager.PERMISSION_GRANTED;
 import static android.provider.MediaStore.EXTRA_ACCEPT_ORIGINAL_MEDIA_FORMAT;
 import static android.provider.MediaStore.MATCH_DEFAULT;
@@ -35,9 +38,6 @@ import static android.provider.MediaStore.QUERY_ARG_MATCH_TRASHED;
 import static android.provider.MediaStore.QUERY_ARG_RELATED_URI;
 import static android.provider.MediaStore.getVolumeName;
 
-import static android.content.pm.PackageManager.MATCH_ANY_USER;
-import static android.content.pm.PackageManager.MATCH_DIRECT_BOOT_AWARE;
-import static android.content.pm.PackageManager.MATCH_DIRECT_BOOT_UNAWARE;
 import static com.android.providers.media.DatabaseHelper.EXTERNAL_DATABASE_NAME;
 import static com.android.providers.media.DatabaseHelper.INTERNAL_DATABASE_NAME;
 import static com.android.providers.media.LocalCallingIdentity.PERMISSION_IS_DELEGATOR;
@@ -484,11 +484,11 @@ public class MediaProvider extends ContentProvider {
     private LocalCallingIdentity getCachedCallingIdentityForFuse(int uid) {
         synchronized (mCachedCallingIdentityForFuse) {
             PermissionUtils.setOpDescription("via FUSE");
-            LocalCallingIdentity ident = mCachedCallingIdentityForFuse.get(uid);
-            if (ident == null) {
-               ident = LocalCallingIdentity.fromExternal(getContext(), uid);
+            LocalCallingIdentity identity = mCachedCallingIdentityForFuse.get(uid);
+            if (identity == null) {
+               identity = LocalCallingIdentity.fromExternal(getContext(), uid);
                if (uid / PER_USER_RANGE == sUserId) {
-                   mCachedCallingIdentityForFuse.put(uid, ident);
+                   mCachedCallingIdentityForFuse.put(uid, identity);
                } else {
                    // In some app cloning designs, MediaProvider user 0 may
                    // serve requests for apps running as a "clone" user; in
@@ -496,7 +496,7 @@ public class MediaProvider extends ContentProvider {
                    // we don't get any invalidation events for these users.
                }
             }
-            return ident;
+            return identity;
         }
     }
 
@@ -782,7 +782,8 @@ public class MediaProvider extends ContentProvider {
                 break;
 
             case FileColumns.MEDIA_TYPE_PLAYLIST:
-                consumer.accept(Audio.Playlists.Members.getContentUri(volumeName, id));
+                consumer.accept(ContentUris.withAppendedId(
+                        MediaStore.Audio.Playlists.getContentUri(volumeName), id));
                 break;
         }
 
@@ -1198,6 +1199,15 @@ public class MediaProvider extends ContentProvider {
         return mMediaScanner.scanFile(file, reason, ownerPackage);
     }
 
+    private Uri scanFileAsMediaProvider(File file, int reason) {
+        final LocalCallingIdentity tokenInner = clearLocalCallingIdentity();
+        try {
+            return scanFile(file, REASON_DEMAND);
+        } finally {
+            restoreLocalCallingIdentity(tokenInner);
+        }
+    }
+
     /**
      * Makes MediaScanner scan the given file.
      * @param file path of the file to be scanned
@@ -1388,7 +1398,7 @@ public class MediaProvider extends ContentProvider {
         if (mTranscodeHelper.supportsTranscode(path)) {
             result |= FLAG_TRANSFORM_SUPPORTED;
 
-            if (mTranscodeHelper.shouldTranscode(path, uid)) {
+            if (mTranscodeHelper.shouldTranscode(path, uid, null /* bundle */)) {
                 result |= FLAG_TRANSFORM_TRANSCODING;
             }
         }
@@ -3652,6 +3662,7 @@ public class MediaProvider extends ContentProvider {
             return attachedVolume;
         }
 
+        final DatabaseHelper helper = getDatabaseForUri(uri);
         switch (match) {
             case AUDIO_PLAYLISTS_ID:
             case AUDIO_PLAYLISTS_ID_MEMBERS: {
@@ -3675,8 +3686,8 @@ public class MediaProvider extends ContentProvider {
                 // files on disk to ensure that we can reliably migrate between
                 // devices and recover from database corruption
                 final long id = addPlaylistMembers(playlistUri, initialValues);
-                final ContentResolver resolver = getContext().getContentResolver();
-                resolver.notifyChange(playlistUri, null, ContentResolver.NOTIFY_INSERT);
+                acceptWithExpansion(helper::notifyInsert, resolvedVolumeName, playlistId,
+                        FileColumns.MEDIA_TYPE_PLAYLIST, false);
                 return ContentUris.withAppendedId(MediaStore.Audio.Playlists.Members
                         .getContentUri(originalVolumeName, playlistId), id);
             }
@@ -3758,7 +3769,6 @@ public class MediaProvider extends ContentProvider {
         long rowId = -1;
         Uri newUri = null;
 
-        final DatabaseHelper helper = getDatabaseForUri(uri);
         final SQLiteQueryBuilder qb = getQueryBuilder(TYPE_INSERT, match, uri, extras, null);
 
         switch (match) {
@@ -3995,11 +4005,11 @@ public class MediaProvider extends ContentProvider {
     }
 
     /**
-     * Gets shared package names for the calling package
+     * Gets {@link LocalCallingIdentity} for the calling package
      * TODO(b/170465810) Change the method name after refactoring.
      */
-    String[] getSharedPackagesForUidForTranscoding(int uid) {
-        return getContext().getPackageManager().getPackagesForUid(uid);
+    LocalCallingIdentity getCachedCallingIdentityForTranscoding(int uid) {
+        return getCachedCallingIdentityForFuse(uid);
     }
 
     @Deprecated
@@ -4708,6 +4718,7 @@ public class MediaProvider extends ContentProvider {
             count = 1;
         }
 
+        final DatabaseHelper helper = getDatabaseForUri(uri);
         switch (match) {
             case AUDIO_PLAYLISTS_ID_MEMBERS_ID:
                 extras.putString(QUERY_ARG_SQL_SELECTION,
@@ -4723,14 +4734,13 @@ public class MediaProvider extends ContentProvider {
                 // devices and recover from database corruption
                 int numOfRemovedPlaylistMembers = removePlaylistMembers(playlistUri, extras);
                 if (numOfRemovedPlaylistMembers > 0) {
-                    final ContentResolver resolver = getContext().getContentResolver();
-                    resolver.notifyChange(playlistUri, null, ContentResolver.NOTIFY_DELETE);
+                    acceptWithExpansion(helper::notifyDelete, volumeName, playlistId,
+                            FileColumns.MEDIA_TYPE_PLAYLIST, false);
                 }
                 return numOfRemovedPlaylistMembers;
             }
         }
 
-        final DatabaseHelper helper = getDatabaseForUri(uri);
         final SQLiteQueryBuilder qb = getQueryBuilder(TYPE_DELETE, match, uri, extras, null);
 
         {
@@ -5410,6 +5420,7 @@ public class MediaProvider extends ContentProvider {
         final int targetSdkVersion = getCallingPackageTargetSdkVersion();
         final boolean allowHidden = isCallingPackageAllowedHidden();
         final int match = matchUri(uri, allowHidden);
+        final DatabaseHelper helper = getDatabaseForUri(uri);
 
         switch (match) {
             case AUDIO_PLAYLISTS_ID_MEMBERS_ID:
@@ -5452,13 +5463,12 @@ public class MediaProvider extends ContentProvider {
                     addPlaylistMembers(playlistUri, values);
                 }
 
-                final ContentResolver resolver = getContext().getContentResolver();
-                resolver.notifyChange(playlistUri, null, ContentResolver.NOTIFY_UPDATE);
+                acceptWithExpansion(helper::notifyUpdate, volumeName, playlistId,
+                        FileColumns.MEDIA_TYPE_PLAYLIST, false);
                 return 1;
             }
         }
 
-        final DatabaseHelper helper = getDatabaseForUri(uri);
         final SQLiteQueryBuilder qb = getQueryBuilder(TYPE_UPDATE, match, uri, extras, null);
 
         // Give callers interacting with a specific media item a chance to
@@ -5813,14 +5823,17 @@ public class MediaProvider extends ContentProvider {
                         try (Cursor c = queryForSingleItem(updatedUri,
                                 new String[] { FileColumns.DATA }, null, null, null)) {
                             final File file = new File(c.getString(0));
-                            helper.postBlocking(() -> {
-                                final LocalCallingIdentity tokenInner = clearLocalCallingIdentity();
-                                try {
-                                    mMediaScanner.scanFile(file, REASON_DEMAND);
-                                } finally {
-                                    restoreLocalCallingIdentity(tokenInner);
-                                }
-                            });
+                            boolean runScanFileInBackground =
+                                    extras.getBoolean(MediaStore.QUERY_ARG_DO_ASYNC_SCAN, false);
+                            if (runScanFileInBackground) {
+                                helper.postBackground(() -> {
+                                    scanFileAsMediaProvider(file, REASON_DEMAND);
+                                });
+                            } else {
+                                helper.postBlocking(() -> {
+                                    scanFileAsMediaProvider(file, REASON_DEMAND);
+                                });
+                            }
                         } catch (Exception e) {
                             Log.w(TAG, "Failed to update metadata for " + updatedUri, e);
                         }
@@ -6638,8 +6651,7 @@ public class MediaProvider extends ContentProvider {
             final ParcelFileDescriptor pfd;
             final String filePath = file.getPath();
             final int uid = Binder.getCallingUid();
-            final boolean shouldTranscode = !opts.containsKey(EXTRA_ACCEPT_ORIGINAL_MEDIA_FORMAT)
-                    && mTranscodeHelper.shouldTranscode(filePath, uid);
+            boolean shouldTranscode = mTranscodeHelper.shouldTranscode(filePath, uid, opts);
             if (redactionInfo.redactionRanges.length > 0) {
                 // If fuse is enabled, we can provide an fd that points to the fuse
                 // file system and handle redaction in the fuse handler when the caller reads.
@@ -6969,8 +6981,13 @@ public class MediaProvider extends ContentProvider {
      */
     @Keep
     @NonNull
-    public long[] getRedactionRangesForFuse(String path, int uid, int tid) throws IOException {
-        final File file = new File(path);
+    public long[] getRedactionRangesForFuse(String path, String ioPath, int uid, int tid)
+            throws IOException {
+        // |ioPath| might refer to a transcoded file path (which is not indexed in the db)
+        // |path| will always refer to a valid _data column
+        // We use |ioPath| for the filesystem access because in the case of transcoding,
+        // we want to get redaction ranges from the transcoded file and *not* the original file
+        final File file = new File(ioPath);
 
         // When we're calculating redaction ranges for MediaProvider, it means we're actually
         // calculating redaction ranges for another app that called to MediaProvider through Binder.
@@ -6989,12 +7006,10 @@ public class MediaProvider extends ContentProvider {
 
         final LocalCallingIdentity token =
                 clearLocalCallingIdentity(getCachedCallingIdentityForFuse(uid));
-
-        long[] res = new long[0];
         try {
             if (!isRedactionNeeded()
                     || shouldBypassFuseRestrictions(/*forWrite*/ false, path)) {
-                return res;
+                return new long[0];
             }
 
             final Uri contentUri = FileUtils.getContentUriForPath(path);
@@ -7020,17 +7035,21 @@ public class MediaProvider extends ContentProvider {
 
             final boolean callerIsOwner = Objects.equals(getCallingPackageOrSelf(),
                     ownerPackageName);
+            if (callerIsOwner) {
+                return new long[0];
+            }
+
             final boolean callerHasUriPermission = getContext().checkUriPermission(
                     item, mCallingIdentity.get().pid, mCallingIdentity.get().uid,
                     Intent.FLAG_GRANT_WRITE_URI_PERMISSION) == PERMISSION_GRANTED;
-
-            if (!callerIsOwner && !callerHasUriPermission) {
-                res = getRedactionRanges(file).redactionRanges;
+            if (callerHasUriPermission) {
+                return new long[0];
             }
+
+            return getRedactionRanges(file).redactionRanges;
         } finally {
             restoreLocalCallingIdentity(token);
         }
-        return res;
     }
 
     /**

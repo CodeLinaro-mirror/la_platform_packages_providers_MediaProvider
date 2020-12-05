@@ -78,7 +78,7 @@ using std::vector;
 // logging macros to avoid duplication.
 #define TRACE_NODE(__node, __req)                                                  \
     LOG(VERBOSE) << __FUNCTION__ << " : " << #__node << " = [" << get_name(__node) \
-                 << "] (uid=" << __req->ctx.uid << ") "
+                 << "] (uid=" << (__req)->ctx.uid << ") "
 
 #define ATRACE_NAME(name) ScopedTrace ___tracer(name)
 #define ATRACE_CALL() ATRACE_NAME(__FUNCTION__)
@@ -245,7 +245,8 @@ struct fuse {
           root(node::CreateRoot(_path, &lock, &tracker)),
           mp(0),
           zero_addr(0),
-          disable_dentry_cache(false) {}
+          disable_dentry_cache(false),
+          passthrough(false) {}
 
     inline bool IsRoot(const node* node) const { return node == root; }
 
@@ -300,6 +301,7 @@ struct fuse {
 
     std::atomic_bool* active;
     std::atomic_bool disable_dentry_cache;
+    std::atomic_bool passthrough;
 };
 
 static inline string get_name(node* n) {
@@ -528,15 +530,26 @@ namespace fuse {
  */
 
 static void pf_init(void* userdata, struct fuse_conn_info* conn) {
+    struct fuse* fuse = reinterpret_cast<struct fuse*>(userdata);
+
     // We don't want a getattr request with every read request
     conn->want &= ~FUSE_CAP_AUTO_INVAL_DATA & ~FUSE_CAP_READDIRPLUS_AUTO;
     unsigned mask = (FUSE_CAP_SPLICE_WRITE | FUSE_CAP_SPLICE_MOVE | FUSE_CAP_SPLICE_READ |
                      FUSE_CAP_ASYNC_READ | FUSE_CAP_ATOMIC_O_TRUNC | FUSE_CAP_WRITEBACK_CACHE |
                      FUSE_CAP_EXPORT_SUPPORT | FUSE_CAP_FLOCK_LOCKS);
+
+    if (fuse->passthrough) {
+        if (conn->capable & FUSE_CAP_PASSTHROUGH) {
+            mask |= FUSE_CAP_PASSTHROUGH;
+        } else {
+            LOG(WARNING) << "Passthrough feature not supported by the kernel";
+            fuse->passthrough = false;
+        }
+    }
+
     conn->want |= conn->capable & mask;
     conn->max_read = MAX_READ_SIZE;
 
-    struct fuse* fuse = reinterpret_cast<struct fuse*>(userdata);
     fuse->active->store(true, std::memory_order_release);
 }
 
@@ -1018,37 +1031,57 @@ static void pf_link(fuse_req_t req, fuse_ino_t ino, fuse_ino_t new_parent,
 static handle* create_handle_for_node(struct fuse* fuse, const string& path, int fd, uid_t uid,
                                       node* node, const RedactionInfo* ri, int* keep_cache) {
     std::lock_guard<std::recursive_mutex> guard(fuse->lock);
-    // We don't want to use the FUSE VFS cache in two cases:
-    // 1. When redaction is needed because app A with EXIF access might access
-    // a region that should have been redacted for app B without EXIF access, but app B on
-    // a subsequent read, will be able to see the EXIF data because the read request for
-    // that region will be served from cache and not get to the FUSE daemon
-    // 2. When the file has a read or write lock on it. This means that the MediaProvider
-    // has given an fd to the lower file system to an app. There are two cases where using
-    // the cache in this case can be a problem:
-    // a. Writing to a FUSE fd with caching enabled will use the write-back cache and a
-    // subsequent read from the lower fs fd will not see the write.
-    // b. Reading from a FUSE fd with caching enabled may not see the latest writes using
-    // the lower fs fd because those writes did not go through the FUSE layer and reads from
-    // FUSE after that write may be served from cache
-    bool has_redacted = node->HasRedactedCache();
-    bool redaction_needed = ri->isRedactionNeeded();
-    bool is_redaction_change =
-            (redaction_needed && !has_redacted) || (!redaction_needed && has_redacted);
-    bool is_cached_file_open = node->HasCachedHandle();
 
-    if (!is_cached_file_open && is_redaction_change) {
-        node->SetRedactedCache(redaction_needed);
-        // Purges stale page cache before open
-        *keep_cache = 0;
-    } else {
+    bool redaction_needed = ri->isRedactionNeeded();
+    handle* handle = nullptr;
+
+    if (fuse->passthrough) {
         *keep_cache = 1;
+        handle = new struct handle(fd, ri, true /* cached */, !redaction_needed /* passthrough */,
+                                   uid);
+    } else {
+        // Without fuse->passthrough, we don't want to use the FUSE VFS cache in two cases:
+        // 1. When redaction is needed because app A with EXIF access might access
+        // a region that should have been redacted for app B without EXIF access, but app B on
+        // a subsequent read, will be able to see the EXIF data because the read request for
+        // that region will be served from cache and not get to the FUSE daemon
+        // 2. When the file has a read or write lock on it. This means that the MediaProvider
+        // has given an fd to the lower file system to an app. There are two cases where using
+        // the cache in this case can be a problem:
+        // a. Writing to a FUSE fd with caching enabled will use the write-back cache and a
+        // subsequent read from the lower fs fd will not see the write.
+        // b. Reading from a FUSE fd with caching enabled may not see the latest writes using
+        // the lower fs fd because those writes did not go through the FUSE layer and reads from
+        // FUSE after that write may be served from cache
+        bool has_redacted = node->HasRedactedCache();
+        bool is_redaction_change =
+                (redaction_needed && !has_redacted) || (!redaction_needed && has_redacted);
+        bool is_cached_file_open = node->HasCachedHandle();
+        bool direct_io = (is_cached_file_open && is_redaction_change) || is_file_locked(fd, path);
+
+        if (!is_cached_file_open && is_redaction_change) {
+            node->SetRedactedCache(redaction_needed);
+            // Purges stale page cache before open
+            *keep_cache = 0;
+        } else {
+            *keep_cache = 1;
+        }
+        handle = new struct handle(fd, ri, !direct_io /* cached */, false /* passthrough */, uid);
     }
 
-    bool direct_io = (is_cached_file_open && is_redaction_change) || is_file_locked(fd, path);
-    handle* h = new handle(fd, ri, !direct_io, uid);
-    node->AddHandle(h);
-    return h;
+    node->AddHandle(handle);
+    return handle;
+}
+
+bool do_passthrough_enable(fuse_req_t req, struct fuse_file_info* fi, unsigned int fd) {
+    int passthrough_fh = fuse_passthrough_enable(req, fd);
+
+    if (passthrough_fh <= 0) {
+        return false;
+    }
+
+    fi->passthrough_fh = passthrough_fh;
+    return true;
 }
 
 static void pf_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info* fi) {
@@ -1060,9 +1093,9 @@ static void pf_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info* fi) {
         return;
     }
     const struct fuse_ctx* ctx = fuse_req_ctx(req);
-    const string& path = get_path(node);
+    const string& io_path = get_path(node);
     const string& build_path = node->BuildPath();
-    if (!is_app_accessible_path(fuse->mp, path, ctx->uid)) {
+    if (!is_app_accessible_path(fuse->mp, io_path, ctx->uid)) {
         fuse_reply_err(req, ENOENT);
         return;
     }
@@ -1095,7 +1128,7 @@ static void pf_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info* fi) {
         open_flags &= ~O_APPEND;
     }
 
-    const int fd = open(path.c_str(), open_flags);
+    const int fd = open(io_path.c_str(), open_flags);
     if (fd < 0) {
         fuse_reply_err(req, errno);
         return;
@@ -1106,9 +1139,7 @@ static void pf_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info* fi) {
     if (is_requesting_write(fi->flags)) {
         ri = std::make_unique<RedactionInfo>();
     } else {
-        // TODO(b/171953356): Pass build_path for use during query, otherwise, MediaProvider would
-        // find the transcoded path
-        ri = fuse->mp->GetRedactionInfo(path, req->ctx.uid, req->ctx.pid);
+        ri = fuse->mp->GetRedactionInfo(build_path, io_path, req->ctx.uid, req->ctx.pid);
     }
 
     if (!ri) {
@@ -1118,11 +1149,24 @@ static void pf_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info* fi) {
     }
 
     int keep_cache = 1;
-    handle* h =
-            create_handle_for_node(fuse, path, fd, req->ctx.uid, node, ri.release(), &keep_cache);
+    handle* h = create_handle_for_node(fuse, io_path, fd, req->ctx.uid, node, ri.release(),
+                                       &keep_cache);
     fi->fh = ptr_to_id(h);
     fi->keep_cache = keep_cache;
     fi->direct_io = !h->cached;
+
+    // TODO(b/173190192) ensuring that h->cached must be enabled in order to
+    // user FUSE passthrough is a conservative rule and might be dropped as
+    // soon as demonstrated its correctness.
+    if (h->passthrough) {
+        if (!do_passthrough_enable(req, fi, fd)) {
+            // TODO: Should we crash here so we can find errors easily?
+            PLOG(ERROR) << "Passthrough OPEN failed for " << io_path;
+            fuse_reply_err(req, EFAULT);
+            return;
+        }
+    }
+
     fuse_reply_open(req, fi);
 }
 
@@ -1661,6 +1705,18 @@ static void pf_create(fuse_req_t req,
     fi->fh = ptr_to_id(h);
     fi->keep_cache = keep_cache;
     fi->direct_io = !h->cached;
+
+    // TODO(b/173190192) ensuring that h->cached must be enabled in order to
+    // user FUSE passthrough is a conservative rule and might be dropped as
+    // soon as demonstrated its correctness.
+    if (h->passthrough) {
+        if (!do_passthrough_enable(req, fi, fd)) {
+            PLOG(ERROR) << "Passthrough CREATE failed for " << child_path;
+            fuse_reply_err(req, EFAULT);
+            return;
+        }
+    }
+
     fuse_reply_create(req, &e, fi);
 }
 /*
@@ -1767,6 +1823,13 @@ static void fuse_logger(enum fuse_log_level level, const char* fmt, va_list ap) 
 }
 
 bool FuseDaemon::ShouldOpenWithFuse(int fd, bool for_read, const std::string& path) {
+    if (fuse->passthrough) {
+        // Always open with FUSE if passthrough is enabled. This avoids the delicate file lock
+        // acquisition below to ensure VFS cache consistency and doesn't impact filesystem
+        // performance since read(2)/write(2) happen in the kernel
+        return true;
+    }
+
     bool use_fuse = false;
 
     if (active.load(std::memory_order_acquire)) {
@@ -1868,6 +1931,8 @@ void FuseDaemon::Start(android::base::unique_fd fd, const std::string& path) {
         // Disable dentry caching for the app clone user
         fuse->disable_dentry_cache = true;
     }
+
+    fuse->passthrough = android::base::GetBoolProperty("persist.sys.fuse.passthrough", false);
 
     struct fuse_session
             * se = fuse_session_new(&args, &ops, sizeof(ops), &fuse_default);
