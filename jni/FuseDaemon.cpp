@@ -580,8 +580,8 @@ static bool is_app_accessible_path(MediaProviderWrapper* mp, const string& path,
         if (pkg == ".nomedia") {
             return true;
         }
-        if (!mp->IsUidForPackage(pkg, uid)) {
-            PLOG(WARNING) << "Invalid other package file access from " << pkg << "(: " << path;
+        if (!mp->isUidAllowedAccessToDataOrObbPath(uid, path)) {
+            PLOG(WARNING) << "Invalid other package file access from " << uid << "(: " << path;
             return false;
         }
     }
@@ -1932,7 +1932,10 @@ void FuseDaemon::Start(android::base::unique_fd fd, const std::string& path) {
         fuse->disable_dentry_cache = true;
     }
 
-    fuse->passthrough = android::base::GetBoolProperty("persist.sys.fuse.passthrough", false);
+    fuse->passthrough = android::base::GetBoolProperty("persist.sys.fuse.passthrough.enable", false);
+    if (fuse->passthrough) {
+        LOG(INFO) << "Using FUSE passthrough";
+    }
 
     struct fuse_session
             * se = fuse_session_new(&args, &ops, sizeof(ops), &fuse_default);

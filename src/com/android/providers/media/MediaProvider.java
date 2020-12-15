@@ -40,6 +40,7 @@ import static android.provider.MediaStore.getVolumeName;
 
 import static com.android.providers.media.DatabaseHelper.EXTERNAL_DATABASE_NAME;
 import static com.android.providers.media.DatabaseHelper.INTERNAL_DATABASE_NAME;
+import static com.android.providers.media.LocalCallingIdentity.PERMISSION_INSTALL_PACKAGES;
 import static com.android.providers.media.LocalCallingIdentity.PERMISSION_IS_DELEGATOR;
 import static com.android.providers.media.LocalCallingIdentity.PERMISSION_IS_LEGACY_GRANTED;
 import static com.android.providers.media.LocalCallingIdentity.PERMISSION_IS_LEGACY_READ;
@@ -53,6 +54,7 @@ import static com.android.providers.media.LocalCallingIdentity.PERMISSION_READ_A
 import static com.android.providers.media.LocalCallingIdentity.PERMISSION_READ_IMAGES;
 import static com.android.providers.media.LocalCallingIdentity.PERMISSION_READ_VIDEO;
 import static com.android.providers.media.LocalCallingIdentity.PERMISSION_WRITE_AUDIO;
+import static com.android.providers.media.LocalCallingIdentity.PERMISSION_WRITE_EXTERNAL_STORAGE;
 import static com.android.providers.media.LocalCallingIdentity.PERMISSION_WRITE_IMAGES;
 import static com.android.providers.media.LocalCallingIdentity.PERMISSION_WRITE_VIDEO;
 import static com.android.providers.media.scan.MediaScanner.REASON_DEMAND;
@@ -70,6 +72,7 @@ import static com.android.providers.media.util.FileUtils.extractVolumeName;
 import static com.android.providers.media.util.FileUtils.extractVolumePath;
 import static com.android.providers.media.util.FileUtils.getAbsoluteSanitizedPath;
 import static com.android.providers.media.util.FileUtils.isDataOrObbPath;
+import static com.android.providers.media.util.FileUtils.isObbOrChildPath;
 import static com.android.providers.media.util.FileUtils.isDownload;
 import static com.android.providers.media.util.FileUtils.sanitizePath;
 import static com.android.providers.media.util.Logging.LOGV;
@@ -329,7 +332,7 @@ public class MediaProvider extends ContentProvider {
 
     private static final int sUserId = UserHandle.myUserId();
 
-    // WARNING/TODO: This will be replaced by signature APIs in S
+    // WARNING/TODO (b/173505864): This will be replaced by signature APIs in S
     private static final String DOWNLOADS_PROVIDER_AUTHORITY = "downloads";
 
     @GuardedBy("mShouldRedactThreadIds")
@@ -431,6 +434,8 @@ public class MediaProvider extends ContentProvider {
             return res;
         }
     }
+
+    private volatile Locale mLastLocale = Locale.getDefault();
 
     private StorageManager mStorageManager;
     private AppOpsManager mAppOpsManager;
@@ -1750,20 +1755,22 @@ public class MediaProvider extends ContentProvider {
                 clearLocalCallingIdentity(getCachedCallingIdentityForFuse(uid));
 
         try {
-            if (isPrivatePackagePathNotOwnedByCaller(path)) {
-                return new String[] {""};
-            }
-
-            // Do not allow apps to list Android/data or Android/obb dirs. Installer and
-            // MOUNT_EXTERNAL_ANDROID_WRITABLE apps won't be blocked by this, as their OBB dirs
-            // are mounted to lowerfs directly.
-            if (isDataOrObbPath(path)) {
+            if (isPrivatePackagePathNotAccessibleByCaller(path)) {
                 return new String[] {""};
             }
 
             if (shouldBypassFuseRestrictions(/*forWrite*/ false, path)) {
                 return new String[] {"/"};
             }
+
+            // Do not allow apps to list Android/data or Android/obb dirs.
+            // On primary volumes, apps that get special access to these directories get it via
+            // mount views of lowerfs. On secondary volumes, such apps would return early from
+            // shouldBypassFuseRestrictions above (except for MTP apps b/174347304).
+            if (isDataOrObbPath(path)) {
+                return new String[] {""};
+            }
+
             // Legacy apps that made is this far don't have the right storage permission and hence
             // are not allowed to access anything other than their external app directory
             if (isCallingPackageRequestingLegacy()) {
@@ -2312,8 +2319,8 @@ public class MediaProvider extends ContentProvider {
                 clearLocalCallingIdentity(getCachedCallingIdentityForFuse(uid));
 
         try {
-            if (isPrivatePackagePathNotOwnedByCaller(oldPath)
-                    || isPrivatePackagePathNotOwnedByCaller(newPath)) {
+            if (isPrivatePackagePathNotAccessibleByCaller(oldPath)
+                    || isPrivatePackagePathNotAccessibleByCaller(newPath)) {
                 return OsConstants.EACCES;
             }
 
@@ -2580,6 +2587,12 @@ public class MediaProvider extends ContentProvider {
                     return cursor;
                 }
             }
+        }
+
+        // Update locale if necessary.
+        if (helper == mInternalDatabase && !Locale.getDefault().equals(mLastLocale)) {
+            Log.i(TAG, "Updating locale within queryInternal");
+            onLocaleChanged(false);
         }
 
         final Cursor c = qb.query(helper, projection, queryArgs, signal);
@@ -3323,8 +3336,15 @@ public class MediaProvider extends ContentProvider {
     }
 
     public void onLocaleChanged() {
+        onLocaleChanged(true);
+    }
+
+    private void onLocaleChanged(boolean forceUpdate) {
         mInternalDatabase.runWithTransaction((db) -> {
-            localizeTitles(db);
+            if (forceUpdate || !mLastLocale.equals(Locale.getDefault())) {
+                localizeTitles(db);
+                mLastLocale = Locale.getDefault();
+            }
             return null;
         });
     }
@@ -4042,7 +4062,15 @@ public class MediaProvider extends ContentProvider {
      */
     @NonNull SQLiteQueryBuilder getQueryBuilderForTranscoding(int type, int match,
             @NonNull Uri uri, @NonNull Bundle extras, @Nullable Consumer<String> honored) {
-        return getQueryBuilder(type, match, uri, extras, honored);
+        // Force MediaProvider calling identity when accessing the db from transcoding to avoid
+        // generating 'strict' SQL e.g forcing owner_package_name matches
+        // We already handle the required permission checks for the app before we get here
+        final LocalCallingIdentity token = clearLocalCallingIdentity();
+        try {
+            return getQueryBuilder(type, match, uri, extras, honored);
+        } finally {
+            restoreLocalCallingIdentity(token);
+        }
     }
 
     /**
@@ -6515,6 +6543,7 @@ public class MediaProvider extends ContentProvider {
             Log.d(TAG, "Using FUSE with transcode cache for " + filePath + " Uid: " + uid);
             return FileUtils.openSafely(getFuseFile(transcodeFile), modeBits);
         } else if (mTranscodeHelper.transcode(filePath, transcodePath, uid)) {
+            // TODO(b/174655855): We should transcode lazily and just return the opened fd here
             Log.d(TAG, "Using FUSE with transcode for " + filePath + " Uid: " + uid);
             return FileUtils.openSafely(getFuseFile(transcodeFile), modeBits);
         } else {
@@ -6805,7 +6834,7 @@ public class MediaProvider extends ContentProvider {
      * <li>the calling identity is an app targeting Q or older versions AND is requesting legacy
      * storage
      * <li>the calling identity holds {@code MANAGE_EXTERNAL_STORAGE}
-     * <li>the calling identity owns filePath (eg /Android/data/com.foo)
+     * <li>the calling identity owns or has access to the filePath (eg /Android/data/com.foo)
      * <li>the calling identity has permission to write images and the given file is an image file
      * <li>the calling identity has permission to write video and the given file is an video file
      * </ul>
@@ -6821,9 +6850,8 @@ public class MediaProvider extends ContentProvider {
             return true;
         }
 
-        // Files under the apps own private directory
-        final String appSpecificDir = extractPathOwnerPackageName(filePath);
-        if (appSpecificDir != null && isCallingIdentitySharedPackageName(appSpecificDir)) {
+        // Check if the caller has access to private app directories.
+        if (isUidAllowedAccessToDataOrObbPathForFuse(mCallingIdentity.get().uid, filePath)) {
             return true;
         }
 
@@ -6838,9 +6866,10 @@ public class MediaProvider extends ContentProvider {
 
     /**
      * Returns true if the passed in path is an application-private data directory
-     * (such as Android/data/com.foo or Android/obb/com.foo) that does not belong to the caller.
+     * (such as Android/data/com.foo or Android/obb/com.foo) that does not belong to the caller and
+     * the caller does not have special access.
      */
-    private boolean isPrivatePackagePathNotOwnedByCaller(String path) {
+    private boolean isPrivatePackagePathNotAccessibleByCaller(String path) {
         // Files under the apps own private directory
         final String appSpecificDir = extractPathOwnerPackageName(path);
 
@@ -6854,44 +6883,36 @@ public class MediaProvider extends ContentProvider {
         if (relativePath.startsWith("Android/media")) {
             return false;
         }
-
-        // This is a private-package path; return true if not owned by the caller
-        return !isCallingIdentitySharedPackageName(appSpecificDir);
+        return !isUidAllowedAccessToDataOrObbPathForFuse(mCallingIdentity.get().uid, path);
     }
 
     private boolean shouldBypassDatabaseAndSetDirtyForFuse(int uid, String path) {
-        final LocalCallingIdentity token =
-                clearLocalCallingIdentity(getCachedCallingIdentityForFuse(uid));
-        try {
-            boolean shouldBypass = false;
-            if (uid != android.os.Process.SHELL_UID && isCallingPackageManager()) {
-                shouldBypass = true;
-            }  else if (isCallingPackageLegacyWrite() && isCallingPackageSystemGallery()) {
-                // We bypass db operations for legacy system galleries with W_E_S (see b/167307393).
-                // Tracking a longer term solution in b/168784136.
-                shouldBypass = true;
-            }
+        boolean shouldBypass = false;
+        if (uid != android.os.Process.SHELL_UID && isCallingPackageManager()) {
+            shouldBypass = true;
+        } else if (isCallingPackageLegacyWrite() && isCallingPackageSystemGallery()) {
+            // We bypass db operations for legacy system galleries with W_E_S (see b/167307393).
+            // Tracking a longer term solution in b/168784136.
+            shouldBypass = true;
+        }
 
-            if (shouldBypass) {
-                synchronized (mNonHiddenPaths) {
-                    File file = new File(path);
-                    String key = file.getParent();
-                    boolean maybeHidden = !mNonHiddenPaths.containsKey(key);
+        if (shouldBypass) {
+            synchronized (mNonHiddenPaths) {
+                File file = new File(path);
+                String key = file.getParent();
+                boolean maybeHidden = !mNonHiddenPaths.containsKey(key);
 
-                    if (maybeHidden) {
-                        File topNoMedia = FileUtils.getTopLevelNoMedia(new File(path));
-                        if (topNoMedia == null) {
-                            mNonHiddenPaths.put(key, 0);
-                        } else {
-                            mMediaScanner.onDirectoryDirty(topNoMedia);
-                        }
+                if (maybeHidden) {
+                    File topNoMedia = FileUtils.getTopLevelNoMedia(new File(path));
+                    if (topNoMedia == null) {
+                        mNonHiddenPaths.put(key, 0);
+                    } else {
+                        mMediaScanner.onDirectoryDirty(topNoMedia);
                     }
                 }
             }
-            return shouldBypass;
-        } finally {
-            restoreLocalCallingIdentity(token);
         }
+        return shouldBypass;
     }
 
     /**
@@ -7135,7 +7156,7 @@ public class MediaProvider extends ContentProvider {
                 clearLocalCallingIdentity(getCachedCallingIdentityForFuse(uid));
 
         try {
-            if (isPrivatePackagePathNotOwnedByCaller(path)) {
+            if (isPrivatePackagePathNotAccessibleByCaller(path)) {
                 Log.e(TAG, "Can't open a file in another app's external directory!");
                 return OsConstants.ENOENT;
             }
@@ -7337,7 +7358,7 @@ public class MediaProvider extends ContentProvider {
                 clearLocalCallingIdentity(getCachedCallingIdentityForFuse(uid));
 
         try {
-            if (isPrivatePackagePathNotOwnedByCaller(path)) {
+            if (isPrivatePackagePathNotAccessibleByCaller(path)) {
                 Log.e(TAG, "Can't create a file in another app's external directory");
                 return OsConstants.ENOENT;
             }
@@ -7461,7 +7482,7 @@ public class MediaProvider extends ContentProvider {
         final LocalCallingIdentity token =
                 clearLocalCallingIdentity(getCachedCallingIdentityForFuse(uid));
         try {
-            if (isPrivatePackagePathNotOwnedByCaller(path)) {
+            if (isPrivatePackagePathNotAccessibleByCaller(path)) {
                 Log.e(TAG, "Can't delete a file in another app's external directory!");
                 return OsConstants.ENOENT;
             }
@@ -7525,7 +7546,7 @@ public class MediaProvider extends ContentProvider {
 
         try {
             // App dirs are not indexed, so we don't create an entry for the file.
-            if (isPrivatePackagePathNotOwnedByCaller(path)) {
+            if (isPrivatePackagePathNotAccessibleByCaller(path)) {
                 Log.e(TAG, "Can't modify another app's external directory!");
                 return OsConstants.EACCES;
             }
@@ -7579,21 +7600,23 @@ public class MediaProvider extends ContentProvider {
             if ("/storage/emulated".equals(path)) {
                 return OsConstants.EPERM;
             }
-            if (isPrivatePackagePathNotOwnedByCaller(path)) {
+            if (isPrivatePackagePathNotAccessibleByCaller(path)) {
                 Log.e(TAG, "Can't access another app's external directory!");
                 return OsConstants.ENOENT;
-            }
-
-            // Do not allow apps to open Android/data or Android/obb dirs. Installer and
-            // MOUNT_EXTERNAL_ANDROID_WRITABLE apps won't be blocked by this, as their OBB dirs
-            // are mounted to lowerfs directly.
-            if (isDataOrObbPath(path)) {
-                return OsConstants.EACCES;
             }
 
             if (shouldBypassFuseRestrictions(forWrite, path)) {
                 return 0;
             }
+
+            // Do not allow apps to open Android/data or Android/obb dirs.
+            // On primary volumes, apps that get special access to these directories get it via
+            // mount views of lowerfs. On secondary volumes, such apps would return early from
+            // shouldBypassFuseRestrictions above (except for MTP apps b/174347304).
+            if (isDataOrObbPath(path)) {
+                return OsConstants.EACCES;
+            }
+
             // Legacy apps that made is this far don't have the right storage permission and hence
             // are not allowed to access anything other than their external app directory
             if (isCallingPackageRequestingLegacy()) {
@@ -7627,24 +7650,87 @@ public class MediaProvider extends ContentProvider {
     }
 
     @Keep
-    public boolean isUidForPackageForFuse(@NonNull String packageName, int uid) {
+    public boolean isUidAllowedAccessToDataOrObbPathForFuse(int uid, String path) {
         final LocalCallingIdentity token =
                 clearLocalCallingIdentity(getCachedCallingIdentityForFuse(uid));
         try {
-            return isCallingIdentitySharedPackageName(packageName) ||
-                    isCallingIdentityAllowedPrivAppAccess(uid);
+            // Files under the apps own private directory
+            final String appSpecificDir = extractPathOwnerPackageName(path);
+
+            if (appSpecificDir != null && isCallingIdentitySharedPackageName(appSpecificDir)) {
+                return true;
+            }
+            // This is a private-package path; return true if accessible by the caller
+            return isUidAllowedSpecialPrivatePathAccess(uid, path);
         } finally {
             restoreLocalCallingIdentity(token);
         }
     }
 
     /**
-     * External Storage Provider and Download Provider can access priv app directories.
+     * @return true iff the caller has installer privileges which gives write access to obb dirs.
+     * <p> Assumes that {@code mCallingIdentity} has been properly set to reflect the calling
+     * package.
+     */
+    private boolean isCallingIdentityAllowedInstallerAccess(int uid) {
+        final boolean hasWrite = mCallingIdentity.get().
+                hasPermission(PERMISSION_WRITE_EXTERNAL_STORAGE);
+
+        if (!hasWrite) {
+            return false;
+        }
+
+        // We're only willing to give out installer access if they also hold
+        // runtime permission; this is a firm CDD requirement
+        final boolean hasInstall = mCallingIdentity.get().
+                hasPermission(PERMISSION_INSTALL_PACKAGES);
+
+        if (hasInstall) {
+            return true;
+        }
+        // OPSTR_REQUEST_INSTALL_PACKAGES is granted/denied per package but vold can't
+        // update mountpoints of a specific package. So, check the appop for all packages
+        // sharing the uid and allow same level of storage access for all packages even if
+        // one of the packages has the appop granted.
+        // To maintain consistency of access in primary volume and secondary volumes use the same
+        // logic as we do for Zygote.MOUNT_EXTERNAL_INSTALLER view.
+        // TODO (b/173600911): Improve performance by caching this info.
+        for (String uidPackageName : mCallingIdentity.get().getSharedPackageNames()) {
+            if (mAppOpsManager.unsafeCheckOpRawNoThrow(AppOpsManager.OPSTR_REQUEST_INSTALL_PACKAGES,
+                    uid, uidPackageName) == AppOpsManager.MODE_ALLOWED) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean isCallingIdentityDownloadProvider(int uid) {
+        return uid == mDownloadsAuthorityAppId;
+    }
+
+    private boolean isCallingIdentityExternalStorageProvider(int uid) {
+        return uid == mExternalStorageAuthorityAppId;
+    }
+
+    /**
+     * ExternalStorageProvider and DownloadProvider can access all private-app directories.
+     * Installer apps can only access private-app directories on Android/obb.
+     * TODO (b/174347304): Allow MTP apps special access.
      *
      * @param uid UID of the calling package
      */
-    private boolean isCallingIdentityAllowedPrivAppAccess(int uid) {
-        return (uid == mExternalStorageAuthorityAppId) || (uid == mDownloadsAuthorityAppId);
+    private boolean isUidAllowedSpecialPrivatePathAccess(int uid, String path) {
+        final LocalCallingIdentity token =
+            clearLocalCallingIdentity(getCachedCallingIdentityForFuse(uid));
+        try {
+            if (isCallingIdentityDownloadProvider(uid) ||
+                    isCallingIdentityExternalStorageProvider(uid)) {
+                return true;
+            }
+            return (isObbOrChildPath(path) && isCallingIdentityAllowedInstallerAccess(uid));
+        } finally {
+            restoreLocalCallingIdentity(token);
+        }
     }
 
     private boolean checkCallingPermissionGlobal(Uri uri, boolean forWrite) {
