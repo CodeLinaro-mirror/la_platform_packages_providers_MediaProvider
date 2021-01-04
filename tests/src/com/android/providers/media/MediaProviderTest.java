@@ -26,6 +26,7 @@ import static com.google.common.truth.Truth.assertWithMessage;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
@@ -47,11 +48,12 @@ import android.os.Bundle;
 import android.os.CancellationSignal;
 import android.os.Environment;
 import android.provider.MediaStore;
+import android.provider.MediaStore.Audio.AudioColumns;
+import android.provider.MediaStore.Files.FileColumns;
 import android.provider.MediaStore.Images.ImageColumns;
 import android.provider.MediaStore.MediaColumns;
 import android.util.ArrayMap;
 import android.util.Log;
-import android.util.Pair;
 
 import androidx.test.InstrumentationRegistry;
 import androidx.test.runner.AndroidJUnit4;
@@ -432,8 +434,6 @@ public class MediaProviderTest {
                 getPathOwnerPackageName("/storage/emulated/0/Android/obb/com.example/foo.jpg"));
         assertEquals("com.example",
                 getPathOwnerPackageName("/storage/emulated/0/Android/media/com.example/foo.jpg"));
-        assertEquals("com.example",
-                getPathOwnerPackageName("/storage/emulated/0/Android/sandbox/com.example/foo.jpg"));
     }
 
     @Test
@@ -830,36 +830,19 @@ public class MediaProviderTest {
         assertTrue(isDownload("/storage/emulated/0/Download/test.pdf"));
         assertTrue(isDownload("/storage/emulated/0/Download/dir/foo.mp4"));
         assertTrue(isDownload("/storage/0000-0000/Download/foo.txt"));
-        assertTrue(isDownload(
-                "/storage/emulated/0/Android/sandbox/com.example/Download/colors.png"));
-        assertTrue(isDownload(
-                "/storage/emulated/0/Android/sandbox/shared-com.uid.shared/Download/colors.png"));
-        assertTrue(isDownload(
-                "/storage/0000-0000/Android/sandbox/com.example/Download/colors.png"));
-        assertTrue(isDownload(
-                "/storage/0000-0000/Android/sandbox/shared-com.uid.shared/Download/colors.png"));
-
 
         assertFalse(isDownload("/storage/emulated/0/Pictures/colors.png"));
         assertFalse(isDownload("/storage/emulated/0/Pictures/Download/colors.png"));
         assertFalse(isDownload("/storage/emulated/0/Android/data/com.example/Download/foo.txt"));
-        assertFalse(isDownload(
-                "/storage/emulated/0/Android/sandbox/com.example/dir/Download/foo.txt"));
         assertFalse(isDownload("/storage/emulated/0/Download"));
-        assertFalse(isDownload("/storage/emulated/0/Android/sandbox/com.example/Download"));
-        assertFalse(isDownload(
-                "/storage/0000-0000/Android/sandbox/shared-com.uid.shared/Download"));
     }
 
     @Test
     public void testIsDownloadDir() throws Exception {
         assertTrue(isDownloadDir("/storage/emulated/0/Download"));
-        assertTrue(isDownloadDir("/storage/emulated/0/Android/sandbox/com.example/Download"));
 
         assertFalse(isDownloadDir("/storage/emulated/0/Download/colors.png"));
         assertFalse(isDownloadDir("/storage/emulated/0/Download/dir/"));
-        assertFalse(isDownloadDir(
-                "/storage/emulated/0/Android/sandbox/com.example/Download/dir/foo.txt"));
     }
 
     @Test
@@ -920,7 +903,6 @@ public class MediaProviderTest {
 
         for (String top : new String[] {
                 "/storage/emulated/0",
-                "/storage/emulated/0/Android/sandbox/com.example",
         }) {
             values = computeDataValues(top + "/IMG1024.JPG");
             assertVolume(values, MediaStore.VOLUME_EXTERNAL_PRIMARY);
@@ -993,6 +975,124 @@ public class MediaProviderTest {
             assertRelativePathForDirectory(prefix + "/Android/media/com.example/Foo",
                     "Android/media/com.example/Foo/");
         }
+    }
+
+    @Test
+    public void testComputeAudioKeyValues_167339595_differentAlbumIds() throws Exception {
+        // same album name, different album artists
+        final ContentValues valuesOne = new ContentValues();
+        valuesOne.put(FileColumns.MEDIA_TYPE, FileColumns.MEDIA_TYPE_AUDIO);
+        valuesOne.put(FileColumns.VOLUME_NAME, MediaStore.VOLUME_EXTERNAL_PRIMARY);
+        valuesOne.put(FileColumns.DATA, "/storage/emulated/0/Clocks.mp3");
+        valuesOne.put(AudioColumns.TITLE, "Clocks");
+        valuesOne.put(AudioColumns.ALBUM, "A Rush of Blood");
+        valuesOne.put(AudioColumns.ALBUM_ARTIST, "Coldplay");
+        valuesOne.put(AudioColumns.GENRE, "Rock");
+        valuesOne.put(AudioColumns.IS_MUSIC, true);
+
+        final ContentValues valuesTwo = new ContentValues();
+        valuesTwo.put(FileColumns.MEDIA_TYPE, FileColumns.MEDIA_TYPE_AUDIO);
+        valuesTwo.put(FileColumns.VOLUME_NAME, MediaStore.VOLUME_EXTERNAL_PRIMARY);
+        valuesTwo.put(FileColumns.DATA, "/storage/emulated/0/Sounds.mp3");
+        valuesTwo.put(AudioColumns.TITLE, "Sounds");
+        valuesTwo.put(AudioColumns.ALBUM, "A Rush of Blood");
+        valuesTwo.put(AudioColumns.ALBUM_ARTIST, "ColdplayTwo");
+        valuesTwo.put(AudioColumns.GENRE, "Alternative rock");
+        valuesTwo.put(AudioColumns.IS_MUSIC, true);
+
+        MediaProvider.computeAudioKeyValues(valuesOne);
+        final long albumIdOne = valuesOne.getAsLong(AudioColumns.ALBUM_ID);
+        MediaProvider.computeAudioKeyValues(valuesTwo);
+        final long albumIdTwo = valuesTwo.getAsLong(AudioColumns.ALBUM_ID);
+
+        assertNotEquals(albumIdOne, albumIdTwo);
+
+        // same album name, different paths, no album artists
+        final ContentValues valuesThree = new ContentValues();
+        valuesThree.put(FileColumns.MEDIA_TYPE, FileColumns.MEDIA_TYPE_AUDIO);
+        valuesThree.put(FileColumns.VOLUME_NAME, MediaStore.VOLUME_EXTERNAL_PRIMARY);
+        valuesThree.put(FileColumns.DATA, "/storage/emulated/0/Silent.mp3");
+        valuesThree.put(AudioColumns.TITLE, "Silent");
+        valuesThree.put(AudioColumns.ALBUM, "Rainbow");
+        valuesThree.put(AudioColumns.ARTIST, "Sample1");
+        valuesThree.put(AudioColumns.GENRE, "Rock");
+        valuesThree.put(AudioColumns.IS_MUSIC, true);
+
+        final ContentValues valuesFour = new ContentValues();
+        valuesFour.put(FileColumns.MEDIA_TYPE, FileColumns.MEDIA_TYPE_AUDIO);
+        valuesFour.put(FileColumns.VOLUME_NAME, MediaStore.VOLUME_EXTERNAL_PRIMARY);
+        valuesFour.put(FileColumns.DATA, "/storage/emulated/0/123456/Rainbow.mp3");
+        valuesFour.put(AudioColumns.TITLE, "Rainbow");
+        valuesFour.put(AudioColumns.ALBUM, "Rainbow");
+        valuesFour.put(AudioColumns.ARTIST, "Sample2");
+        valuesFour.put(AudioColumns.GENRE, "Alternative rock");
+        valuesFour.put(AudioColumns.IS_MUSIC, true);
+
+        MediaProvider.computeAudioKeyValues(valuesThree);
+        final long albumIdThree = valuesThree.getAsLong(AudioColumns.ALBUM_ID);
+        MediaProvider.computeAudioKeyValues(valuesFour);
+        final long albumIdFour = valuesFour.getAsLong(AudioColumns.ALBUM_ID);
+
+        assertNotEquals(albumIdThree, albumIdFour);
+    }
+
+    @Test
+    public void testComputeAudioKeyValues_167339595_sameAlbumId() throws Exception {
+        // same album name, same path, no album artists
+        final ContentValues valuesOne = new ContentValues();
+        valuesOne.put(FileColumns.MEDIA_TYPE, FileColumns.MEDIA_TYPE_AUDIO);
+        valuesOne.put(FileColumns.VOLUME_NAME, MediaStore.VOLUME_EXTERNAL_PRIMARY);
+        valuesOne.put(FileColumns.DATA, "/storage/emulated/0/Clocks.mp3");
+        valuesOne.put(AudioColumns.TITLE, "Clocks");
+        valuesOne.put(AudioColumns.ALBUM, "A Rush of Blood");
+        valuesOne.put(AudioColumns.GENRE, "Rock");
+        valuesOne.put(AudioColumns.IS_MUSIC, true);
+
+        final ContentValues valuesTwo = new ContentValues();
+        valuesTwo.put(FileColumns.MEDIA_TYPE, FileColumns.MEDIA_TYPE_AUDIO);
+        valuesTwo.put(FileColumns.VOLUME_NAME, MediaStore.VOLUME_EXTERNAL_PRIMARY);
+        valuesTwo.put(FileColumns.DATA, "/storage/emulated/0/Sounds.mp3");
+        valuesTwo.put(AudioColumns.TITLE, "Sounds");
+        valuesTwo.put(AudioColumns.ALBUM, "A Rush of Blood");
+        valuesTwo.put(AudioColumns.GENRE, "Alternative rock");
+        valuesTwo.put(AudioColumns.IS_MUSIC, true);
+
+        MediaProvider.computeAudioKeyValues(valuesOne);
+        final long albumIdOne = valuesOne.getAsLong(AudioColumns.ALBUM_ID);
+        MediaProvider.computeAudioKeyValues(valuesTwo);
+        final long albumIdTwo = valuesTwo.getAsLong(AudioColumns.ALBUM_ID);
+
+        assertEquals(albumIdOne, albumIdTwo);
+
+        // same album name, same album artists, different artists
+        final ContentValues valuesThree = new ContentValues();
+        valuesThree.put(FileColumns.MEDIA_TYPE, FileColumns.MEDIA_TYPE_AUDIO);
+        valuesThree.put(FileColumns.VOLUME_NAME, MediaStore.VOLUME_EXTERNAL_PRIMARY);
+        valuesThree.put(FileColumns.DATA, "/storage/emulated/0/Silent.mp3");
+        valuesThree.put(AudioColumns.TITLE, "Silent");
+        valuesThree.put(AudioColumns.ALBUM, "Rainbow");
+        valuesThree.put(AudioColumns.ALBUM_ARTIST, "Various Artists");
+        valuesThree.put(AudioColumns.ARTIST, "Sample1");
+        valuesThree.put(AudioColumns.GENRE, "Rock");
+        valuesThree.put(AudioColumns.IS_MUSIC, true);
+
+        final ContentValues valuesFour = new ContentValues();
+        valuesFour.put(FileColumns.MEDIA_TYPE, FileColumns.MEDIA_TYPE_AUDIO);
+        valuesFour.put(FileColumns.VOLUME_NAME, MediaStore.VOLUME_EXTERNAL_PRIMARY);
+        valuesFour.put(FileColumns.DATA, "/storage/emulated/0/Rainbow.mp3");
+        valuesFour.put(AudioColumns.TITLE, "Rainbow");
+        valuesFour.put(AudioColumns.ALBUM, "Rainbow");
+        valuesFour.put(AudioColumns.ALBUM_ARTIST, "Various Artists");
+        valuesFour.put(AudioColumns.ARTIST, "Sample2");
+        valuesFour.put(AudioColumns.GENRE, "Alternative rock");
+        valuesFour.put(AudioColumns.IS_MUSIC, true);
+
+        MediaProvider.computeAudioKeyValues(valuesThree);
+        final long albumIdThree = valuesThree.getAsLong(AudioColumns.ALBUM_ID);
+        MediaProvider.computeAudioKeyValues(valuesFour);
+        final long albumIdFour = valuesFour.getAsLong(AudioColumns.ALBUM_ID);
+
+        assertEquals(albumIdThree, albumIdFour);
     }
 
     private static void assertRelativePathForDirectory(String directoryPath, String relativePath) {

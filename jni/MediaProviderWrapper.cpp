@@ -60,9 +60,10 @@ std::unique_ptr<RedactionInfo> getRedactionInfoInternal(JNIEnv* env, jobject med
                                                         jmethodID mid_get_redaction_ranges,
                                                         uid_t uid, pid_t tid, const string& path) {
     ScopedLocalRef<jstring> j_path(env, env->NewStringUTF(path.c_str()));
-    ScopedLongArrayRO redaction_ranges(
+    ScopedLocalRef<jlongArray> redaction_ranges_local_ref(
             env, static_cast<jlongArray>(env->CallObjectMethod(
                          media_provider_object, mid_get_redaction_ranges, j_path.get(), uid, tid)));
+    ScopedLongArrayRO redaction_ranges(env, redaction_ranges_local_ref.get());
 
     if (CheckForJniException(env)) {
         return nullptr;
@@ -280,6 +281,16 @@ MediaProviderWrapper::MediaProviderWrapper(JNIEnv* env, jobject media_provider) 
                               /*is_static*/ false);
     mid_on_file_created_ = CacheMethod(env, "onFileCreated", "(Ljava/lang/String;)V",
                                        /*is_static*/ false);
+    mid_should_allow_lookup_ = CacheMethod(env, "shouldAllowLookup", "(II)Z",
+                                           /*is_static*/ false);
+    mid_is_app_clone_user_ = CacheMethod(env, "isAppCloneUser", "(I)Z",
+                                         /*is_static*/ false);
+    mid_get_io_path_ = CacheMethod(env, "getIoPath", "(Ljava/lang/String;I)Ljava/lang/String;",
+                                   /*is_static*/ false);
+    mid_get_transforms_ = CacheMethod(env, "getTransforms", "(Ljava/lang/String;I)I",
+                                      /*is_static*/ false);
+    mid_transform_ = CacheMethod(env, "transform", "(Ljava/lang/String;Ljava/lang/String;II)Z",
+                                 /*is_static*/ false);
 }
 
 MediaProviderWrapper::~MediaProviderWrapper() {
@@ -421,6 +432,73 @@ void MediaProviderWrapper::OnFileCreated(const string& path) {
     JNIEnv* env = MaybeAttachCurrentThread();
 
     return onFileCreatedInternal(env, media_provider_object_, mid_on_file_created_, path);
+}
+
+bool MediaProviderWrapper::ShouldAllowLookup(uid_t uid, int path_user_id) {
+    JNIEnv* env = MaybeAttachCurrentThread();
+
+    bool res = env->CallBooleanMethod(media_provider_object_, mid_should_allow_lookup_, uid,
+                                      path_user_id);
+
+    if (CheckForJniException(env)) {
+        return false;
+    }
+    return res;
+}
+
+bool MediaProviderWrapper::IsAppCloneUser(uid_t userId) {
+    JNIEnv* env = MaybeAttachCurrentThread();
+
+    bool res = env->CallBooleanMethod(media_provider_object_, mid_is_app_clone_user_, userId);
+
+    if (CheckForJniException(env)) {
+        return false;
+    }
+    return res;
+}
+
+std::string MediaProviderWrapper::GetIoPath(const std::string& path, uid_t uid) {
+    JNIEnv* env = MaybeAttachCurrentThread();
+
+    ScopedLocalRef<jstring> j_path(env, env->NewStringUTF(path.c_str()));
+    ScopedLocalRef<jstring> j_res_path(
+            env, static_cast<jstring>(env->CallObjectMethod(media_provider_object_,
+                                                            mid_get_io_path_, j_path.get(), uid)));
+    ScopedUtfChars j_res_utf(env, j_res_path.get());
+    if (CheckForJniException(env)) {
+        return "";
+    }
+
+    return string(j_res_utf.c_str());
+}
+
+int MediaProviderWrapper::GetTransforms(const std::string& path, uid_t uid) {
+    JNIEnv* env = MaybeAttachCurrentThread();
+
+    ScopedLocalRef<jstring> j_path(env, env->NewStringUTF(path.c_str()));
+    int res = env->CallIntMethod(media_provider_object_, mid_get_transforms_, j_path.get(), uid);
+
+    if (CheckForJniException(env)) {
+        return -1;
+    }
+
+    return res;
+}
+
+bool MediaProviderWrapper::Transform(const std::string& src, const std::string& dst, int transforms,
+                                     uid_t uid) {
+    JNIEnv* env = MaybeAttachCurrentThread();
+
+    ScopedLocalRef<jstring> j_src(env, env->NewStringUTF(src.c_str()));
+    ScopedLocalRef<jstring> j_dst(env, env->NewStringUTF(dst.c_str()));
+    bool res = env->CallBooleanMethod(media_provider_object_, mid_transform_, j_src.get(),
+                                      j_dst.get(), transforms, uid);
+
+    if (CheckForJniException(env)) {
+        return false;
+    }
+
+    return res;
 }
 
 /*****************************************************************************************/

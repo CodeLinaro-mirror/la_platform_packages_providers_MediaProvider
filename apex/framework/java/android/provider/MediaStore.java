@@ -27,7 +27,6 @@ import android.annotation.SdkConstant;
 import android.annotation.SdkConstant.SdkConstantType;
 import android.annotation.SuppressLint;
 import android.annotation.SystemApi;
-import android.annotation.TestApi;
 import android.annotation.WorkerThread;
 import android.app.Activity;
 import android.app.PendingIntent;
@@ -49,6 +48,7 @@ import android.media.ExifInterface;
 import android.media.MediaFormat;
 import android.media.MediaMetadataRetriever;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.CancellationSignal;
 import android.os.Environment;
@@ -585,6 +585,26 @@ public final class MediaStore {
      * store the requested image or video.
      */
     public final static String EXTRA_OUTPUT = "output";
+
+    // TODO(b/158465539): Add API to explicitly specify media capabilities via Bundle
+    /**
+     * Specify that the caller wants to receive the original media format without transcoding.
+     *
+     * This is a very dangerous flag to use because apps can suddenly fail to play media after
+     * an OS upgrade. Clients should instead specify their supported media capabilities explicitly
+     * in their manifest.
+     *
+     * This is useful for apps that usually receive transcoded media, but want to have more granular
+     * control.
+     *
+     * <p>This option can be added to the {@code opts} {@link Bundle} in various
+     * {@link ContentResolver} {@code open} methods.
+     *
+     * @see ContentResolver#openTypedAssetFileDescriptor(Uri, String, Bundle)
+     * @see ContentResolver#openTypedAssetFile(Uri, String, Bundle, CancellationSignal)
+     */
+    public final static String EXTRA_ACCEPT_ORIGINAL_MEDIA_FORMAT =
+            "android.provider.extra.ACCEPT_ORIGINAL_MEDIA_FORMAT";
 
     /**
       * The string that is used when a media attribute is not known. For example,
@@ -1597,7 +1617,7 @@ public final class MediaStore {
              * The MTP storage ID of the file
              * @hide
              */
-            @UnsupportedAppUsage
+            @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
             @Deprecated
             // @Column(Cursor.FIELD_TYPE_INTEGER)
             public static final String STORAGE_ID = "storage_id";
@@ -1685,6 +1705,41 @@ public final class MediaStore {
              * Constant for the {@link #MEDIA_TYPE} column indicating that file is a document file.
              */
             public static final int MEDIA_TYPE_DOCUMENT = 6;
+
+            /**
+             * Status of the transcode file
+             *
+             * For apps that do not support modern media formats for video, we
+             * seamlessly transcode the file and return transcoded file for
+             * both file path and ContentResolver operations. This column tracks
+             * the status of the transcoded file.
+             *
+             * @hide
+             */
+            @Column(value = Cursor.FIELD_TYPE_INTEGER)
+            public static final String _TRANSCODE_STATUS = "_transcode_status";
+
+            /**
+             * Constant for the {@link #_TRANSCODE_STATUS} column indicating
+             * that the transcode file if exists is empty or never transcoded.
+             * @hide
+             */
+            public static final int TRANSCODE_EMPTY = 0;
+
+            /**
+             * Constant for the {@link #_TRANSCODE_STATUS} column indicating
+             * that the transcode file if exists contains transcoded video.
+             * @hide
+             */
+            public static final int TRANSCODE_COMPLETE = 1;
+
+            /**
+             * Indexed value of {@link MediaMetadataRetriever#METADATA_KEY_VIDEO_CODEC_TYPE}
+             * extracted from the video file. This value be null for non-video files.
+             * @hide
+             */
+            @Column(value = Cursor.FIELD_TYPE_INTEGER)
+            public static final String _VIDEO_CODEC_TYPE = "_video_codec_type";
         }
     }
 
@@ -3074,7 +3129,7 @@ public final class MediaStore {
              * Sub-directory of each artist containing all albums on which
              * a song by the artist appears.
              */
-            public static final class Albums implements AlbumColumns {
+            public static final class Albums implements BaseColumns, AlbumColumns {
                 public static final Uri getContentUri(String volumeName,long artistId) {
                     return ContentUris
                             .withAppendedId(Audio.Artists.getContentUri(volumeName), artistId)
@@ -3941,7 +3996,6 @@ public final class MediaStore {
      * @hide
      */
     @SystemApi
-    @TestApi
     @WorkerThread
     public static void waitForIdle(@NonNull ContentResolver resolver) {
         resolver.call(AUTHORITY, WAIT_FOR_IDLE_CALL, null, null);
@@ -3954,7 +4008,6 @@ public final class MediaStore {
      * @hide
      */
     @SystemApi
-    @TestApi
     @WorkerThread
     @SuppressLint("StreamFiles")
     public static @NonNull Uri scanFile(@NonNull ContentResolver resolver, @NonNull File file) {
@@ -3968,7 +4021,6 @@ public final class MediaStore {
      * @hide
      */
     @SystemApi
-    @TestApi
     @WorkerThread
     public static void scanVolume(@NonNull ContentResolver resolver, @NonNull String volumeName) {
         resolver.call(AUTHORITY, SCAN_VOLUME_CALL, volumeName, null);

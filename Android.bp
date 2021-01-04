@@ -39,6 +39,7 @@ android_app {
     ],
 
     sdk_version: "module_current",
+    min_sdk_version: "30",
 
     certificate: "media",
     privileged: true,
@@ -83,6 +84,7 @@ filegroup {
         "src/com/android/providers/media/util/HandlerExecutor.java",
         "src/com/android/providers/media/util/Logging.java",
         "src/com/android/providers/media/util/MimeUtils.java",
+        "src/com/android/providers/media/playlist/*.java",
     ],
 }
 

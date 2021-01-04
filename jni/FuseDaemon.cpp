@@ -105,10 +105,13 @@ constexpr size_t MAX_READ_SIZE = 128 * 1024;
 // Stolen from: UserHandle#getUserId
 constexpr int PER_USER_RANGE = 100000;
 
+// Stolen from: UserManagerService
+constexpr int MAX_USER_ID = UINT32_MAX / PER_USER_RANGE;
+
 // Regex copied from FileUtils.java in MediaProvider, but without media directory.
 const std::regex PATTERN_OWNED_PATH(
-    "^/storage/[^/]+/(?:[0-9]+/)?Android/(?:data|obb|sandbox)/([^/]+)(/?.*)?",
-    std::regex_constants::icase);
+        "^/storage/[^/]+/(?:[0-9]+/)?Android/(?:data|obb)/([^/]+)(/?.*)?",
+        std::regex_constants::icase);
 
 /*
  * In order to avoid double caching with fuse, call fadvise on the file handles
@@ -241,7 +244,8 @@ struct fuse {
           tracker(mediaprovider::fuse::NodeTracker(&lock)),
           root(node::CreateRoot(_path, &lock, &tracker)),
           mp(0),
-          zero_addr(0) {}
+          zero_addr(0),
+          disable_dentry_cache(false) {}
 
     inline bool IsRoot(const node* node) const { return node == root; }
 
@@ -295,6 +299,7 @@ struct fuse {
     FAdviser fadviser;
 
     std::atomic_bool* active;
+    std::atomic_bool disable_dentry_cache;
 };
 
 static inline string get_name(node* n) {
@@ -383,20 +388,35 @@ static void fuse_inval(fuse_session* se, fuse_ino_t parent_ino, fuse_ino_t child
     }
 }
 
-static double get_timeout(struct fuse* fuse, const string& path, bool should_inval) {
-    string media_path = fuse->GetEffectiveRootPath() + "/Android/media";
-    if (should_inval || path.find(media_path, 0) == 0 || is_package_owned_path(path, fuse->path)) {
+static double get_attr_timeout(const string& path, bool should_inval, node* node,
+                               struct fuse* fuse) {
+    if (fuse->disable_dentry_cache || should_inval || is_package_owned_path(path, fuse->path)) {
         // We set dentry timeout to 0 for the following reasons:
-        // 1. Case-insensitive lookups need to invalidate other case-insensitive dentry matches
-        // 2. Installd might delete Android/media/<package> dirs when app data is cleared.
-        // This can leave a stale entry in the kernel dcache, and break subsequent creation of the
-        // dir via FUSE.
+        // 1. The dentry cache was completely disabled
+        // 2. Case-insensitive lookups need to invalidate other case-insensitive dentry matches
         // 3. With app data isolation enabled, app A should not guess existence of app B from the
         // Android/{data,obb}/<package> paths, hence we prevent the kernel from caching that
         // information.
         return 0;
     }
     return std::numeric_limits<double>::max();
+}
+
+static double get_entry_timeout(const string& path, bool should_inval, node* node,
+                                struct fuse* fuse) {
+    string media_path = fuse->GetEffectiveRootPath() + "/Android/media";
+    if (path.find(media_path, 0) == 0) {
+        // Installd might delete Android/media/<package> dirs when app data is cleared.
+        // This can leave a stale entry in the kernel dcache, and break subsequent creation of the
+        // dir via FUSE.
+        return 0;
+    }
+    return get_attr_timeout(path, should_inval, node, fuse);
+}
+
+static std::string get_path(node* node) {
+    const string& io_path = node->GetIoPath();
+    return io_path.empty() ? node->BuildPath() : io_path;
 }
 
 static node* make_node_entry(fuse_req_t req, node* parent, const string& name, const string& path,
@@ -412,11 +432,49 @@ static node* make_node_entry(fuse_req_t req, node* parent, const string& name, c
     }
 
     bool should_inval = false;
-    node = parent->LookupChildByName(name, true /* acquire */);
+    bool transforms_complete = true;
+    int transforms = 0;
+    string io_path;
+
+    if (S_ISREG(e->attr.st_mode)) {
+        // Handle potential file transforms
+        transforms = fuse->mp->GetTransforms(path, req->ctx.uid);
+
+        if (transforms < 0) {
+            // Fail lookup if we can't fetch supported transforms for path
+            LOG(WARNING) << "Failed to fetch transforms for " << name;
+            *error_code = ENOENT;
+            return NULL;
+        }
+
+        // TODO(b/169412244): Improve JNI interaction
+        // Invalidate if there are any transforms so that we always get a lookup into userspace
+        should_inval = should_inval || transforms;
+        if (transforms) {
+            // If there are any transforms, fetch IO path
+            io_path = fuse->mp->GetIoPath(path, req->ctx.uid);
+            if (io_path.empty()) {
+                *error_code = EFAULT;
+                return NULL;
+            }
+
+            if (io_path != path) {
+                // Update size with io_path size
+                if (lstat(io_path.c_str(), &e->attr) < 0) {
+                    *error_code = errno;
+                    return NULL;
+                }
+                transforms_complete = false;
+            }
+        }
+    }
+
+    node = parent->LookupChildByName(name, true /* acquire */, transforms);
     if (!node) {
-        node = ::node::Create(parent, name, &fuse->lock, &fuse->tracker);
+        node = ::node::Create(parent, name, io_path, transforms_complete, transforms, &fuse->lock,
+                              &fuse->tracker);
     } else if (!mediaprovider::fuse::containsMount(path, std::to_string(getuid() / PER_USER_RANGE))) {
-        should_inval = true;
+        should_inval = should_inval || node->HasCaseInsensitiveMatch();
         // Only invalidate a path if it does not contain mount.
         // Invalidate both names to ensure there's no dentry left in the kernel after the following
         // operations:
@@ -427,10 +485,18 @@ static node* make_node_entry(fuse_req_t req, node* parent, const string& name, c
         // invalidate node_name if different case
         // Note that we invalidate async otherwise we will deadlock the kernel
         if (name != node->GetName()) {
-            std::thread t([=]() {
-                fuse_inval(fuse->se, fuse->ToInode(parent), fuse->ToInode(node), node->GetName(),
-                           path);
-            });
+            should_inval = true;
+            // Record that we have made a case insensitive lookup, this allows us invalidate nodes
+            // correctly on subsequent lookups for the case of |node|
+            node->SetCaseInsensitiveMatch();
+
+            // Make copies of the node name and path so we're not attempting to acquire
+            // any node locks from the invalidation thread. Depending on timing, we may end
+            // up invalidating the wrong inode but that shouldn't result in correctness issues.
+            const fuse_ino_t parent_ino = fuse->ToInode(parent);
+            const fuse_ino_t child_ino = fuse->ToInode(node);
+            const std::string& node_name = node->GetName();
+            std::thread t([=]() { fuse_inval(fuse->se, parent_ino, child_ino, node_name, path); });
             t.detach();
         }
     }
@@ -442,11 +508,8 @@ static node* make_node_entry(fuse_req_t req, node* parent, const string& name, c
     // reuse inode numbers.
     e->generation = 0;
     e->ino = fuse->ToInode(node);
-    e->entry_timeout = get_timeout(fuse, path, should_inval);
-    e->attr_timeout = is_package_owned_path(path, fuse->path) || should_inval
-                              ? 0
-                              : std::numeric_limits<double>::max();
-
+    e->entry_timeout = get_entry_timeout(path, should_inval, node, fuse);
+    e->attr_timeout = get_attr_timeout(path, should_inval, node, fuse);
     return node;
 }
 
@@ -535,10 +598,17 @@ static node* do_lookup(fuse_req_t req, fuse_ino_t parent, const char* name,
 
     std::smatch match;
     std::regex_search(child_path, match, storage_emulated_regex);
+
+    // Ensure the FuseDaemon user id matches the user id or cross-user lookups are allowed in
+    // requested path
     if (match.size() == 2 && std::to_string(getuid() / PER_USER_RANGE) != match[1].str()) {
-        // Ensure the FuseDaemon user id matches the user id in requested path
-        *error_code = EPERM;
-        return nullptr;
+        // If user id mismatch, check cross-user lookups
+        long userId = strtol(match[1].str().c_str(), nullptr, 10);
+        if (userId < 0 || userId > MAX_USER_ID ||
+            !fuse->mp->ShouldAllowLookup(req->ctx.uid, userId)) {
+            *error_code = EACCES;
+            return nullptr;
+        }
     }
     return make_node_entry(req, parent_node, name, child_path, e, error_code);
 }
@@ -599,7 +669,7 @@ static void pf_getattr(fuse_req_t req,
         fuse_reply_err(req, ENOENT);
         return;
     }
-    string path = node->BuildPath();
+    const string& path = get_path(node);
     if (!is_app_accessible_path(fuse->mp, path, req->ctx.uid)) {
         fuse_reply_err(req, ENOENT);
         return;
@@ -611,8 +681,10 @@ static void pf_getattr(fuse_req_t req,
     if (lstat(path.c_str(), &s) < 0) {
         fuse_reply_err(req, errno);
     } else {
-        fuse_reply_attr(req, &s, is_package_owned_path(path, fuse->path) ?
-                0 : std::numeric_limits<double>::max());
+        fuse_reply_attr(
+                req, &s,
+                get_attr_timeout(path, node->GetTransforms() || node->HasCaseInsensitiveMatch(),
+                                 node, fuse));
     }
 }
 
@@ -628,7 +700,7 @@ static void pf_setattr(fuse_req_t req,
         fuse_reply_err(req, ENOENT);
         return;
     }
-    string path = node->BuildPath();
+    const string& path = get_path(node);
     if (!is_app_accessible_path(fuse->mp, path, req->ctx.uid)) {
         fuse_reply_err(req, ENOENT);
         return;
@@ -707,15 +779,16 @@ static void pf_setattr(fuse_req_t req,
     }
 
     lstat(path.c_str(), attr);
-    fuse_reply_attr(req, attr, is_package_owned_path(path, fuse->path) ?
-            0 : std::numeric_limits<double>::max());
+    fuse_reply_attr(req, attr,
+                    get_attr_timeout(path, node->GetTransforms() || node->HasCaseInsensitiveMatch(),
+                                     node, fuse));
 }
 
 static void pf_canonical_path(fuse_req_t req, fuse_ino_t ino)
 {
     struct fuse* fuse = get_fuse(req);
     node* node = fuse->FromInode(ino);
-    string path = node ? node->BuildPath() : "";
+    const string& path = node ? get_path(node) : "";
 
     if (node && is_app_accessible_path(fuse->mp, path, req->ctx.uid)) {
         // TODO(b/147482155): Check that uid has access to |path| and its contents
@@ -832,12 +905,8 @@ static void pf_unlink(fuse_req_t req, fuse_ino_t parent, const char* name) {
         return;
     }
 
-    node* child_node = parent_node->LookupChildByName(name, false /* acquire */);
-    TRACE_NODE(child_node, req);
-    if (child_node) {
-        child_node->SetDeleted();
-    }
-
+    // TODO(b/169306422): Log each deleted node
+    parent_node->SetDeletedForChild(name);
     fuse_reply_err(req, 0);
 }
 
@@ -918,10 +987,7 @@ static int do_rename(fuse_req_t req, fuse_ino_t parent, const char* name, fuse_i
     TRACE_NODE(old_parent_node, req);
     TRACE_NODE(new_parent_node, req);
 
-    node* child_node = old_parent_node->LookupChildByName(name, true /* acquire */);
-    TRACE_NODE(child_node, req) << "old_child";
-
-    const string old_child_path = child_node->BuildPath();
+    const string old_child_path = old_parent_path + "/" + name;
     const string new_child_path = new_parent_path + "/" + new_name;
 
     // TODO(b/147408834): Check ENOTEMPTY & EEXIST error conditions before JNI call.
@@ -929,11 +995,9 @@ static int do_rename(fuse_req_t req, fuse_ino_t parent, const char* name, fuse_i
     // TODO(b/145663158): Lookups can go out of sync if file/directory is actually moved but
     // EFAULT/EIO is reported due to JNI exception.
     if (res == 0) {
-        child_node->Rename(new_name, new_parent_node);
+        // TODO(b/169306422): Log each renamed node
+        old_parent_node->RenameChild(name, new_name, new_parent_node);
     }
-    TRACE_NODE(child_node, req) << "new_child";
-
-    child_node->Release(1);
     return res;
 }
 
@@ -951,8 +1015,8 @@ static void pf_link(fuse_req_t req, fuse_ino_t ino, fuse_ino_t new_parent,
 }
 */
 
-static handle* create_handle_for_node(struct fuse* fuse, const string& path, int fd, node* node,
-                                      const RedactionInfo* ri) {
+static handle* create_handle_for_node(struct fuse* fuse, const string& path, int fd, uid_t uid,
+                                      node* node, const RedactionInfo* ri, int* keep_cache) {
     std::lock_guard<std::recursive_mutex> guard(fuse->lock);
     // We don't want to use the FUSE VFS cache in two cases:
     // 1. When redaction is needed because app A with EXIF access might access
@@ -967,9 +1031,22 @@ static handle* create_handle_for_node(struct fuse* fuse, const string& path, int
     // b. Reading from a FUSE fd with caching enabled may not see the latest writes using
     // the lower fs fd because those writes did not go through the FUSE layer and reads from
     // FUSE after that write may be served from cache
-    bool direct_io = ri->isRedactionNeeded() || is_file_locked(fd, path);
+    bool has_redacted = node->HasRedactedCache();
+    bool redaction_needed = ri->isRedactionNeeded();
+    bool is_redaction_change =
+            (redaction_needed && !has_redacted) || (!redaction_needed && has_redacted);
+    bool is_cached_file_open = node->HasCachedHandle();
 
-    handle* h = new handle(fd, ri, !direct_io);
+    if (!is_cached_file_open && is_redaction_change) {
+        node->SetRedactedCache(redaction_needed);
+        // Purges stale page cache before open
+        *keep_cache = 0;
+    } else {
+        *keep_cache = 1;
+    }
+
+    bool direct_io = (is_cached_file_open && is_redaction_change) || is_file_locked(fd, path);
+    handle* h = new handle(fd, ri, !direct_io, uid);
     node->AddHandle(h);
     return h;
 }
@@ -983,7 +1060,8 @@ static void pf_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info* fi) {
         return;
     }
     const struct fuse_ctx* ctx = fuse_req_ctx(req);
-    const string path = node->BuildPath();
+    const string& path = get_path(node);
+    const string& build_path = node->BuildPath();
     if (!is_app_accessible_path(fuse->mp, path, ctx->uid)) {
         fuse_reply_err(req, ENOENT);
         return;
@@ -996,7 +1074,10 @@ static void pf_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info* fi) {
         fi->direct_io = true;
     }
 
-    int status = fuse->mp->IsOpenAllowed(path, ctx->uid, is_requesting_write(fi->flags));
+    // TODO: If transform, disallow write
+    // Force permission check with the build path because the MediaProvider database might not be
+    // aware of the io_path
+    int status = fuse->mp->IsOpenAllowed(build_path, ctx->uid, is_requesting_write(fi->flags));
     if (status) {
         fuse_reply_err(req, status);
         return;
@@ -1025,6 +1106,8 @@ static void pf_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info* fi) {
     if (is_requesting_write(fi->flags)) {
         ri = std::make_unique<RedactionInfo>();
     } else {
+        // TODO(b/171953356): Pass build_path for use during query, otherwise, MediaProvider would
+        // find the transcoded path
         ri = fuse->mp->GetRedactionInfo(path, req->ctx.uid, req->ctx.pid);
     }
 
@@ -1034,9 +1117,11 @@ static void pf_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info* fi) {
         return;
     }
 
-    handle* h = create_handle_for_node(fuse, path, fd, node, ri.release());
+    int keep_cache = 1;
+    handle* h =
+            create_handle_for_node(fuse, path, fd, req->ctx.uid, node, ri.release(), &keep_cache);
     fi->fh = ptr_to_id(h);
-    fi->keep_cache = 1;
+    fi->keep_cache = keep_cache;
     fi->direct_io = !h->cached;
     fuse_reply_open(req, fi);
 }
@@ -1051,10 +1136,6 @@ static void do_read(fuse_req_t req, size_t size, off_t off, struct fuse_file_inf
             (enum fuse_buf_flags) (FUSE_BUF_IS_FD | FUSE_BUF_FD_SEEK);
 
     fuse_reply_data(req, &buf, (enum fuse_buf_copy_flags) 0);
-}
-
-static bool range_contains(const RedactionRange& rr, off_t off) {
-    return rr.first <= off && off <= rr.second;
 }
 
 /**
@@ -1083,24 +1164,17 @@ static void create_file_fuse_buf(size_t size, off_t pos, int fd, fuse_buf* buf) 
 
 static void do_read_with_redaction(fuse_req_t req, size_t size, off_t off, fuse_file_info* fi) {
     handle* h = reinterpret_cast<handle*>(fi->fh);
-    auto overlapping_rr = h->ri->getOverlappingRedactionRanges(size, off);
 
-    if (overlapping_rr->size() <= 0) {
-        // no relevant redaction ranges for this request
+    std::vector<ReadRange> ranges;
+    h->ri->getReadRanges(off, size, &ranges);
+
+    // As an optimization, return early if there are no ranges to redact.
+    if (ranges.size() == 0) {
         do_read(req, size, off, fi);
         return;
     }
-    // the number of buffers we need, if the read doesn't start or end with
-    //  a redaction range.
-    int num_bufs = overlapping_rr->size() * 2 + 1;
-    if (overlapping_rr->front().first <= off) {
-        // the beginning of the read request is redacted
-        num_bufs--;
-    }
-    if (overlapping_rr->back().second >= off + size) {
-        // the end of the read request is redacted
-        num_bufs--;
-    }
+
+    const size_t num_bufs = ranges.size();
     auto bufvec_ptr = std::unique_ptr<fuse_bufvec, decltype(free)*>{
             reinterpret_cast<fuse_bufvec*>(
                     malloc(sizeof(fuse_bufvec) + (num_bufs - 1) * sizeof(fuse_buf))),
@@ -1112,31 +1186,13 @@ static void do_read_with_redaction(fuse_req_t req, size_t size, off_t off, fuse_
     bufvec.idx = 0;
     bufvec.off = 0;
 
-    int rr_idx = 0;
-    off_t start = off;
-    // Add a dummy redaction range to make sure we don't go out of vector
-    // limits when computing the end of the last non-redacted range.
-    // This ranges is invalid because its starting point is larger than it's ending point.
-    overlapping_rr->push_back(RedactionRange(LLONG_MAX, LLONG_MAX - 1));
-
     for (int i = 0; i < num_bufs; ++i) {
-        off_t end;
-        if (range_contains(overlapping_rr->at(rr_idx), start)) {
-            // Handle a redacted range
-            // end should be the end of the redacted range, but can't be out of
-            // the read request bounds
-            end = std::min(static_cast<off_t>(off + size - 1), overlapping_rr->at(rr_idx).second);
-            create_mem_fuse_buf(/*size*/ end - start + 1, &(bufvec.buf[i]), get_fuse(req));
-            ++rr_idx;
+        const ReadRange& range = ranges[i];
+        if (range.is_redaction) {
+            create_mem_fuse_buf(range.size, &(bufvec.buf[i]), get_fuse(req));
         } else {
-            // Handle a non-redacted range
-            // end should be right before the next redaction range starts or
-            // the end of the read request
-            end = std::min(static_cast<off_t>(off + size - 1),
-                    overlapping_rr->at(rr_idx).first - 1);
-            create_file_fuse_buf(/*size*/ end - start + 1, start, h->fd, &(bufvec.buf[i]));
+            create_file_fuse_buf(range.size, range.start, h->fd, &(bufvec.buf[i]));
         }
-        start = end + 1;
     }
 
     fuse_reply_data(req, &bufvec, static_cast<fuse_buf_copy_flags>(0));
@@ -1147,6 +1203,17 @@ static void pf_read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
     ATRACE_CALL();
     handle* h = reinterpret_cast<handle*>(fi->fh);
     struct fuse* fuse = get_fuse(req);
+
+    node* node = fuse->FromInode(ino);
+
+    if (!node->IsTransformsComplete()) {
+        if (!fuse->mp->Transform(node->BuildPath(), node->GetIoPath(), node->GetTransforms(),
+                                 h->uid)) {
+            fuse_reply_err(req, EFAULT);
+            return;
+        }
+        node->SetTransformsComplete();
+    }
 
     fuse->fadviser.Record(h->fd, size);
 
@@ -1588,9 +1655,11 @@ static void pf_create(fuse_req_t req,
     // This prevents crashing during reads but can be a security hole if a malicious app opens an fd
     // to the file before all the EXIF content is written. We could special case reads before the
     // first close after a file has just been created.
-    handle* h = create_handle_for_node(fuse, child_path, fd, node, new RedactionInfo());
+    int keep_cache = 1;
+    handle* h = create_handle_for_node(fuse, child_path, fd, req->ctx.uid, node,
+                                       new RedactionInfo(), &keep_cache);
     fi->fh = ptr_to_id(h);
-    fi->keep_cache = 1;
+    fi->keep_cache = keep_cache;
     fi->direct_io = !h->cached;
     fuse_reply_create(req, &e, fi);
 }
@@ -1792,6 +1861,12 @@ void FuseDaemon::Start(android::base::unique_fd fd, const std::string& path) {
     // Custom logging for libfuse
     if (android::base::GetBoolProperty("persist.sys.fuse.log", false)) {
         fuse_set_log_func(fuse_logger);
+    }
+
+    uid_t userId = getuid() / PER_USER_RANGE;
+    if (userId != 0 && mp.IsAppCloneUser(userId)) {
+        // Disable dentry caching for the app clone user
+        fuse->disable_dentry_cache = true;
     }
 
     struct fuse_session
