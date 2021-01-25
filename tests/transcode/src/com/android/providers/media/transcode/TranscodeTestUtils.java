@@ -76,11 +76,23 @@ public class TranscodeTestUtils {
     private static final long POLLING_SLEEP_MILLIS = 100;
 
     public static Uri stageHEVCVideoFile(File videoFile) throws IOException {
+        return stageVideoFile(videoFile, R.raw.testvideo_HEVC);
+    }
+
+    public static Uri stageSmallHevcVideoFile(File videoFile) throws IOException {
+        return stageVideoFile(videoFile, R.raw.testVideo_HEVC_small);
+    }
+
+    public static Uri stageLegacyVideoFile(File videoFile) throws IOException {
+        return stageVideoFile(videoFile, R.raw.testVideo_Legacy);
+    }
+
+    private static Uri stageVideoFile(File videoFile, int resourceId) throws IOException {
         if (!videoFile.getParentFile().exists()) {
             assertTrue(videoFile.getParentFile().mkdirs());
         }
         try (InputStream in =
-                     getContext().getResources().openRawResource(R.raw.testvideo_HEVC);
+                     getContext().getResources().openRawResource(resourceId);
              FileOutputStream out = new FileOutputStream(videoFile)) {
             FileUtils.copy(in, out);
             // Sync file to disk to ensure file is fully written to the lower fs before scanning
@@ -108,22 +120,25 @@ public class TranscodeTestUtils {
     }
 
     public static void enableSeamlessTranscoding() throws Exception {
-        executeShellCommand("setprop persist.sys.fuse.transcode true");
+        // This is required so that MediaProvider handles device config changes
+        executeShellCommand("setprop sys.fuse.transcode_debug true");
+        // This is required so that setprop changes take precedence over device_config changes
+        executeShellCommand("setprop persist.sys.fuse.transcode_user_control true");
+        executeShellCommand("setprop persist.sys.fuse.transcode_enabled true");
+        executeShellCommand("setprop persist.sys.fuse.transcode_default false");
     }
 
     public static void disableSeamlessTranscoding() throws Exception {
-        executeShellCommand("setprop persist.sys.fuse.transcode false");
+        executeShellCommand("setprop sys.fuse.transcode_debug false");
+        executeShellCommand("setprop persist.sys.fuse.transcode_user_control true");
+        executeShellCommand("setprop persist.sys.fuse.transcode_enabled false");
+        executeShellCommand("setprop persist.sys.fuse.transcode_default false");
+        disableTranscodingForAllPackages();
     }
 
-    public static void enableTranscodingForUid(int uid) throws IOException {
-        final String command = "setprop persist.sys.fuse.transcode_uids "
-                + String.valueOf(uid);
-        executeShellCommand(command);
-    }
-
-    public static void enableTranscodingForPackage(String packageName) throws IOException {
-        final String command = "setprop persist.sys.fuse.transcode_packages " + packageName;
-        executeShellCommand(command);
+    public static void enableTranscodingForPackage(String packageName) throws Exception {
+        executeShellCommand("device_config put storage_native_boot transcode_compat_manifest "
+                + packageName + ",0");
     }
 
     public static void forceEnableAppCompatHevc(String packageName) throws IOException {
@@ -141,11 +156,8 @@ public class TranscodeTestUtils {
         executeShellCommand(command);
     }
 
-    public static void disableTranscodingForAllUids() throws IOException {
-        String command = "setprop persist.sys.fuse.transcode_uids -1";
-        executeShellCommand(command);
-        command = "setprop persist.sys.fuse.transcode_packages -1";
-        executeShellCommand(command);
+    public static void disableTranscodingForAllPackages() throws IOException {
+        executeShellCommand("device_config delete storage_native_boot transcode_compat_manifest");
     }
 
     /**

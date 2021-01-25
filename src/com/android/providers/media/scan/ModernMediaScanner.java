@@ -150,12 +150,17 @@ public class ModernMediaScanner implements MediaScanner {
     // TODO: deprecate playlist editing
     // TODO: deprecate PARENT column, since callers can't see directories
 
-    @GuardedBy("sDateFormat")
-    private static final SimpleDateFormat sDateFormat;
+    @GuardedBy("S_DATE_FORMAT")
+    private static final SimpleDateFormat S_DATE_FORMAT;
+    @GuardedBy("S_DATE_FORMAT_WITH_MILLIS")
+    private static final SimpleDateFormat S_DATE_FORMAT_WITH_MILLIS;
 
     static {
-        sDateFormat = new SimpleDateFormat("yyyyMMdd'T'HHmmss");
-        sDateFormat.setTimeZone(TimeZone.getTimeZone("UTC"));
+        S_DATE_FORMAT = new SimpleDateFormat("yyyyMMdd'T'HHmmss");
+        S_DATE_FORMAT.setTimeZone(TimeZone.getTimeZone("UTC"));
+
+        S_DATE_FORMAT_WITH_MILLIS = new SimpleDateFormat("yyyyMMdd'T'HHmmss.SSS");
+        S_DATE_FORMAT_WITH_MILLIS.setTimeZone(TimeZone.getTimeZone("UTC"));
     }
 
     private static final int BATCH_SIZE = 32;
@@ -163,7 +168,8 @@ public class ModernMediaScanner implements MediaScanner {
     // |excludeDirs * 2| < 1000 which is the max SQL expression size
     // Because we add |excludeDir| and |excludeDir/| in the SQL expression to match dir and subdirs
     // See SQLITE_MAX_EXPR_DEPTH in sqlite3.c
-    private static final int MAX_EXCLUDE_DIRS = 450;
+    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    static final int MAX_EXCLUDE_DIRS = 450;
 
     private static final Pattern PATTERN_VISIBLE = Pattern.compile(
             "(?i)^/storage/[^/]+(?:/[0-9]+)?$");
@@ -338,6 +344,12 @@ public class ModernMediaScanner implements MediaScanner {
          * indicates that one or more of the current file's parents is a hidden directory.
          */
         private int mHiddenDirCount;
+        /**
+         * Indicates if the nomedia directory tree is dirty. When a nomedia directory is dirty, we
+         * mark the top level nomedia as dirty. Hence if one of the sub directory in the nomedia
+         * directory is dirty, we consider the whole top level nomedia directory tree as dirty.
+         */
+        private boolean mIsDirectoryTreeDirty;
 
         public Scan(File root, int reason, @Nullable String ownerPackage)
                 throws FileNotFoundException {
@@ -620,7 +632,13 @@ public class ModernMediaScanner implements MediaScanner {
             }
 
             synchronized (mPendingCleanDirectories) {
-                if (FileUtils.isDirectoryDirty(dir.toFile())) {
+                if (mIsDirectoryTreeDirty) {
+                    // Directory tree is dirty, continue scanning subtree.
+                } else if (FileUtils.isDirectoryDirty(FileUtils.getTopLevelNoMedia(dir.toFile()))) {
+                    // Track the directory dirty status for directory tree in mIsDirectoryDirty.
+                    // This removes additional dirty state check for subdirectories of nomedia
+                    // directory.
+                    mIsDirectoryTreeDirty = true;
                     mPendingCleanDirectories.add(dir.toFile().getPath());
                 } else {
                     Log.d(TAG, "Skipping preVisitDirectory " + dir.toFile());
@@ -690,7 +708,7 @@ public class ModernMediaScanner implements MediaScanner {
             queryArgs.putInt(MediaStore.QUERY_ARG_MATCH_FAVORITE, MediaStore.MATCH_INCLUDE);
             final String[] projection = new String[] {FileColumns._ID, FileColumns.DATE_MODIFIED,
                     FileColumns.SIZE, FileColumns.MIME_TYPE, FileColumns.MEDIA_TYPE,
-                    FileColumns.IS_PENDING};
+                    FileColumns.IS_PENDING, FileColumns._MODIFIER};
 
             final Matcher matcher = FileUtils.PATTERN_EXPIRES_FILE.matcher(realFile.getName());
             // If IS_PENDING is set by FUSE, we should scan the file and update IS_PENDING to zero.
@@ -705,6 +723,8 @@ public class ModernMediaScanner implements MediaScanner {
                     final String mimeType = c.getString(3);
                     final int mediaType = c.getInt(4);
                     isPendingFromFuse &= c.getInt(5) != 0;
+                    final boolean isScanned =
+                            c.getInt(6) == FileColumns._MODIFIER_MEDIA_SCAN;
 
                     // Remember visiting this existing item, even if we skipped
                     // due to it being unchanged; this is needed so we don't
@@ -722,7 +742,7 @@ public class ModernMediaScanner implements MediaScanner {
                             mimeType.equalsIgnoreCase(actualMimeType);
                     final boolean sameMediaType = (actualMediaType == mediaType);
                     final boolean isSame = sameTime && sameSize && sameMediaType && sameMimeType
-                            && !isPendingFromFuse;
+                            && !isPendingFromFuse && isScanned;
                     if (attrs.isDirectory() || isSame) {
                         if (LOGV) Log.v(TAG, "Skipping unchanged " + file);
                         return FileVisitResult.CONTINUE;
@@ -741,6 +761,7 @@ public class ModernMediaScanner implements MediaScanner {
                 Trace.endSection();
             }
             if (op != null) {
+                op.withValue(FileColumns._MODIFIER, FileColumns._MODIFIER_MEDIA_SCAN);
                 // Add owner package name to new insertions when package name is provided.
                 if (op.build().isInsert() && !attrs.isDirectory() && mOwnerPackage != null) {
                     op.withValue(MediaColumns.OWNER_PACKAGE_NAME, mOwnerPackage);
@@ -777,10 +798,14 @@ public class ModernMediaScanner implements MediaScanner {
             // Now that we're finished scanning this directory, release lock to
             // allow other parallel scans to proceed
             releaseDirectoryLock(dir);
-            synchronized (mPendingCleanDirectories) {
-                if (mPendingCleanDirectories.remove(dir.toFile().getPath())) {
-                    // If |dir| is still clean, then persist
-                    FileUtils.setDirectoryDirty(dir.toFile(), false /* isDirty */);
+
+            if (mIsDirectoryTreeDirty) {
+                synchronized (mPendingCleanDirectories) {
+                    if (mPendingCleanDirectories.remove(dir.toFile().getPath())) {
+                        // If |dir| is still clean, then persist
+                        FileUtils.setDirectoryDirty(dir.toFile(), false /* isDirty */);
+                        mIsDirectoryTreeDirty = false;
+                    }
                 }
             }
             return FileVisitResult.CONTINUE;
@@ -1121,6 +1146,7 @@ public class ModernMediaScanner implements MediaScanner {
 
         op.withValue(MediaColumns.ARTIST, UNKNOWN_STRING);
         op.withValue(MediaColumns.ALBUM, file.getParentFile().getName());
+        op.withValue(AudioColumns.TRACK, null);
 
         final String lowPath = file.getAbsolutePath().toLowerCase(Locale.ROOT);
         boolean anyMatch = false;
@@ -1441,13 +1467,29 @@ public class ModernMediaScanner implements MediaScanner {
     static @NonNull Optional<Long> parseOptionalDate(@Nullable String date) {
         if (TextUtils.isEmpty(date)) return Optional.empty();
         try {
-            synchronized (sDateFormat) {
-                final long value = sDateFormat.parse(date).getTime();
-                return (value > 0) ? Optional.of(value) : Optional.empty();
+            synchronized (S_DATE_FORMAT_WITH_MILLIS) {
+                return parseDateWithFormat(date, S_DATE_FORMAT_WITH_MILLIS);
             }
         } catch (ParseException e) {
+            // Log and try without millis as well
+            Log.d(TAG, String.format(
+                    "Parsing date with millis failed for [%s]. We will retry without millis",
+                    date));
+        }
+        try {
+            synchronized (S_DATE_FORMAT) {
+                return parseDateWithFormat(date, S_DATE_FORMAT);
+            }
+        } catch (ParseException e) {
+            Log.d(TAG, String.format("Parsing date without millis failed for [%s]", date));
             return Optional.empty();
         }
+    }
+
+    private static Optional<Long> parseDateWithFormat(
+            @Nullable String date, SimpleDateFormat dateFormat) throws ParseException {
+        final long value = dateFormat.parse(date).getTime();
+        return (value > 0) ? Optional.of(value) : Optional.empty();
     }
 
     @VisibleForTesting

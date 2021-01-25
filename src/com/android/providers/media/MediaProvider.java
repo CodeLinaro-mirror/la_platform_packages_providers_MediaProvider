@@ -27,7 +27,6 @@ import static android.content.pm.PackageManager.MATCH_ANY_USER;
 import static android.content.pm.PackageManager.MATCH_DIRECT_BOOT_AWARE;
 import static android.content.pm.PackageManager.MATCH_DIRECT_BOOT_UNAWARE;
 import static android.content.pm.PackageManager.PERMISSION_GRANTED;
-import static android.provider.MediaStore.EXTRA_ACCEPT_ORIGINAL_MEDIA_FORMAT;
 import static android.provider.MediaStore.MATCH_DEFAULT;
 import static android.provider.MediaStore.MATCH_EXCLUDE;
 import static android.provider.MediaStore.MATCH_INCLUDE;
@@ -40,6 +39,8 @@ import static android.provider.MediaStore.getVolumeName;
 
 import static com.android.providers.media.DatabaseHelper.EXTERNAL_DATABASE_NAME;
 import static com.android.providers.media.DatabaseHelper.INTERNAL_DATABASE_NAME;
+import static com.android.providers.media.LocalCallingIdentity.APPOP_REQUEST_INSTALL_PACKAGES_FOR_SHARED_UID;
+import static com.android.providers.media.LocalCallingIdentity.PERMISSION_ACCESS_MTP;
 import static com.android.providers.media.LocalCallingIdentity.PERMISSION_INSTALL_PACKAGES;
 import static com.android.providers.media.LocalCallingIdentity.PERMISSION_IS_DELEGATOR;
 import static com.android.providers.media.LocalCallingIdentity.PERMISSION_IS_LEGACY_GRANTED;
@@ -143,6 +144,7 @@ import android.os.storage.StorageVolume;
 import android.preference.PreferenceManager;
 import android.provider.BaseColumns;
 import android.provider.Column;
+import android.provider.DeviceConfig;
 import android.provider.MediaStore;
 import android.provider.MediaStore.Audio;
 import android.provider.MediaStore.Audio.AudioColumns;
@@ -311,7 +313,7 @@ public class MediaProvider extends ContentProvider {
      */
     private static final ArrayMap<String, Object> sDataColumns = new ArrayMap<>();
 
-    {
+    static {
         sDataColumns.put(MediaStore.MediaColumns.DATA, null);
         sDataColumns.put(MediaStore.Images.Thumbnails.DATA, null);
         sDataColumns.put(MediaStore.Video.Thumbnails.DATA, null);
@@ -433,6 +435,16 @@ public class MediaProvider extends ContentProvider {
             sCachedVolumeScanPaths.put(volumeName, res);
             return res;
         }
+    }
+
+    /**
+     * Frees any cache held by MediaProvider.
+     *
+     * @param bytes number of bytes which need to be freed
+     */
+    public void freeCache(long bytes) {
+        // TODO(b/170481432): Implement cache clearing policies.
+        mTranscodeHelper.getTranscodeDirectory().delete();
     }
 
     private volatile Locale mLastLocale = Locale.getDefault();
@@ -1766,7 +1778,7 @@ public class MediaProvider extends ContentProvider {
             // Do not allow apps to list Android/data or Android/obb dirs.
             // On primary volumes, apps that get special access to these directories get it via
             // mount views of lowerfs. On secondary volumes, such apps would return early from
-            // shouldBypassFuseRestrictions above (except for MTP apps b/174347304).
+            // shouldBypassFuseRestrictions above.
             if (isDataOrObbPath(path)) {
                 return new String[] {""};
             }
@@ -2478,6 +2490,7 @@ public class MediaProvider extends ContentProvider {
 
     private Cursor query(Uri uri, String[] projection, Bundle queryArgs,
             CancellationSignal signal, boolean forSelf) {
+        Trace.beginSection("query");
         try {
             return queryInternal(uri, projection, queryArgs, signal, forSelf);
         } catch (FallbackException e) {
@@ -3440,6 +3453,15 @@ public class MediaProvider extends ContentProvider {
             }
         } else {
             values.put(FileColumns.MEDIA_TYPE, mediaType);
+        }
+
+        if (isCallingPackageSelf() && values.containsKey(FileColumns._MODIFIER)) {
+            // We can't identify if the call is coming from media scan, hence
+            // we let ModernMediaScanner send FileColumns._MODIFIER value.
+        } else if (isFuseThread()) {
+            values.put(FileColumns._MODIFIER, FileColumns._MODIFIER_FUSE);
+        } else {
+            values.put(FileColumns._MODIFIER, FileColumns._MODIFIER_CR);
         }
 
         final long rowId;
@@ -6155,11 +6177,6 @@ public class MediaProvider extends ContentProvider {
                 // This means either no playlist members match the query or VolumeNotFoundException
                 // was thrown. So we don't have anything to delete.
                 count = 0;
-            } else if (indexes.length > 1 &&
-                    getCallingPackageTargetSdkVersion() >= Build.VERSION_CODES.R) {
-                throw new FallbackException("Failed to update playlist",
-                        new IllegalStateException("Query matches more than one playlist member"),
-                        android.os.Build.VERSION_CODES.R);
             } else {
                 count = playlist.removeMultiple(indexes);
             }
@@ -6903,11 +6920,11 @@ public class MediaProvider extends ContentProvider {
                 boolean maybeHidden = !mNonHiddenPaths.containsKey(key);
 
                 if (maybeHidden) {
-                    File topNoMedia = FileUtils.getTopLevelNoMedia(new File(path));
-                    if (topNoMedia == null) {
+                    File topNoMediaDir = FileUtils.getTopLevelNoMedia(new File(path));
+                    if (topNoMediaDir == null) {
                         mNonHiddenPaths.put(key, 0);
                     } else {
-                        mMediaScanner.onDirectoryDirty(topNoMedia);
+                        mMediaScanner.onDirectoryDirty(topNoMediaDir);
                     }
                 }
             }
@@ -7612,7 +7629,7 @@ public class MediaProvider extends ContentProvider {
             // Do not allow apps to open Android/data or Android/obb dirs.
             // On primary volumes, apps that get special access to these directories get it via
             // mount views of lowerfs. On secondary volumes, such apps would return early from
-            // shouldBypassFuseRestrictions above (except for MTP apps b/174347304).
+            // shouldBypassFuseRestrictions above.
             if (isDataOrObbPath(path)) {
                 return OsConstants.EACCES;
             }
@@ -7694,14 +7711,7 @@ public class MediaProvider extends ContentProvider {
         // one of the packages has the appop granted.
         // To maintain consistency of access in primary volume and secondary volumes use the same
         // logic as we do for Zygote.MOUNT_EXTERNAL_INSTALLER view.
-        // TODO (b/173600911): Improve performance by caching this info.
-        for (String uidPackageName : mCallingIdentity.get().getSharedPackageNames()) {
-            if (mAppOpsManager.unsafeCheckOpRawNoThrow(AppOpsManager.OPSTR_REQUEST_INSTALL_PACKAGES,
-                    uid, uidPackageName) == AppOpsManager.MODE_ALLOWED) {
-                return true;
-            }
-        }
-        return false;
+        return mCallingIdentity.get().hasPermission(APPOP_REQUEST_INSTALL_PACKAGES_FOR_SHARED_UID);
     }
 
     private boolean isCallingIdentityDownloadProvider(int uid) {
@@ -7712,19 +7722,29 @@ public class MediaProvider extends ContentProvider {
         return uid == mExternalStorageAuthorityAppId;
     }
 
+    private boolean isCallingIdentityMtp(int uid) {
+        return mCallingIdentity.get().hasPermission(PERMISSION_ACCESS_MTP);
+    }
+
     /**
-     * ExternalStorageProvider and DownloadProvider can access all private-app directories.
+     * The following apps have access to all private-app directories on secondary volumes:
+     *    * ExternalStorageProvider
+     *    * DownloadProvider
+     *    * Signature/privileged apps with ACCESS_MTP permission granted
+     *      (TODO(b/175796984): Allow *only* signature apps with ACCESS_MTP to access all
+     *      private-app directories).
+     *
      * Installer apps can only access private-app directories on Android/obb.
-     * TODO (b/174347304): Allow MTP apps special access.
      *
      * @param uid UID of the calling package
+     * @param path the path of the file to access
      */
     private boolean isUidAllowedSpecialPrivatePathAccess(int uid, String path) {
         final LocalCallingIdentity token =
             clearLocalCallingIdentity(getCachedCallingIdentityForFuse(uid));
         try {
             if (isCallingIdentityDownloadProvider(uid) ||
-                    isCallingIdentityExternalStorageProvider(uid)) {
+                    isCallingIdentityExternalStorageProvider(uid) || isCallingIdentityMtp(uid)) {
                 return true;
             }
             return (isObbOrChildPath(path) && isCallingIdentityAllowedInstallerAccess(uid));
@@ -7773,6 +7793,28 @@ public class MediaProvider extends ContentProvider {
     @VisibleForTesting
     public boolean isFuseThread() {
         return FuseDaemon.native_is_fuse_thread();
+    }
+
+    @VisibleForTesting
+    public boolean getBooleanDeviceConfig(String key, boolean defaultValue) {
+        final long token = Binder.clearCallingIdentity();
+        try {
+            return DeviceConfig.getBoolean(DeviceConfig.NAMESPACE_STORAGE_NATIVE_BOOT, key,
+                    defaultValue);
+        } finally {
+            Binder.restoreCallingIdentity(token);
+        }
+    }
+
+    @VisibleForTesting
+    public String getStringDeviceConfig(String key, String defaultValue) {
+        final long token = Binder.clearCallingIdentity();
+        try {
+            return DeviceConfig.getString(DeviceConfig.NAMESPACE_STORAGE_NATIVE_BOOT, key,
+                    defaultValue);
+        } finally {
+            Binder.restoreCallingIdentity(token);
+        }
     }
 
     @Deprecated
@@ -8360,7 +8402,7 @@ public class MediaProvider extends ContentProvider {
      */
     private static final ArraySet<String> sMutableColumns = new ArraySet<>();
 
-    {
+    static {
         sMutableColumns.add(MediaStore.MediaColumns.DATA);
         sMutableColumns.add(MediaStore.MediaColumns.RELATIVE_PATH);
         sMutableColumns.add(MediaStore.MediaColumns.DISPLAY_NAME);
@@ -8391,7 +8433,7 @@ public class MediaProvider extends ContentProvider {
      */
     private static final ArraySet<String> sPlacementColumns = new ArraySet<>();
 
-    {
+    static {
         sPlacementColumns.add(MediaStore.MediaColumns.DATA);
         sPlacementColumns.add(MediaStore.MediaColumns.RELATIVE_PATH);
         sPlacementColumns.add(MediaStore.MediaColumns.DISPLAY_NAME);

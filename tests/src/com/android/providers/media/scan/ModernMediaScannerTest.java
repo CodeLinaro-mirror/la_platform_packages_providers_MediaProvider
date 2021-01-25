@@ -18,6 +18,7 @@ package com.android.providers.media.scan;
 
 import static com.android.providers.media.scan.MediaScanner.REASON_UNKNOWN;
 import static com.android.providers.media.scan.MediaScannerTest.stage;
+import static com.android.providers.media.scan.ModernMediaScanner.MAX_EXCLUDE_DIRS;
 import static com.android.providers.media.scan.ModernMediaScanner.shouldScanPathAndIsPathHidden;
 import static com.android.providers.media.scan.ModernMediaScanner.isFileAlbumArt;
 import static com.android.providers.media.scan.ModernMediaScanner.parseOptional;
@@ -35,6 +36,8 @@ import static com.android.providers.media.scan.ModernMediaScanner.parseOptionalY
 import static com.android.providers.media.scan.ModernMediaScanner.shouldScanDirectory;
 import static com.android.providers.media.util.FileUtils.isDirectoryHidden;
 import static com.android.providers.media.util.FileUtils.isFileHidden;
+
+import static com.google.common.truth.Truth.assertThat;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -58,6 +61,7 @@ import android.net.Uri;
 import android.os.Environment;
 import android.os.ParcelFileDescriptor;
 import android.provider.MediaStore;
+import android.provider.MediaStore.Audio.AudioColumns;
 import android.provider.MediaStore.Files.FileColumns;
 import android.provider.MediaStore.MediaColumns;
 import android.util.Log;
@@ -68,6 +72,7 @@ import androidx.test.runner.AndroidJUnit4;
 
 import com.android.providers.media.R;
 import com.android.providers.media.scan.MediaScannerTest.IsolatedContext;
+import com.android.providers.media.tests.utils.Timer;
 import com.android.providers.media.util.FileUtils;
 
 import com.google.common.io.ByteStreams;
@@ -90,6 +95,11 @@ public class ModernMediaScannerTest {
     // TODO: scan directory-vs-files and confirm identical results
 
     private static final String TAG = "ModernMediaScannerTest";
+    /**
+     * Number of times we should repeat an operation to get an average/max.
+     */
+    private static final int COUNT_REPEAT = 5;
+
     private File mDir;
 
     private Context mIsolatedContext;
@@ -228,7 +238,12 @@ public class ModernMediaScannerTest {
 
     @Test
     public void testParseOptionalDate() throws Exception {
-        assertEquals(1577836800000L, (long) parseOptionalDate("20200101T000000").get());
+        assertThat(parseOptionalDate("20200101T000000")).isEqualTo(Optional.of(1577836800000L));
+        assertThat(parseOptionalDate("20200101T211205")).isEqualTo(Optional.of(1577913125000L));
+        assertThat(parseOptionalDate("20200101T211205.000Z"))
+                .isEqualTo(Optional.of(1577913125000L));
+        assertThat(parseOptionalDate("20200101T211205.123Z"))
+                .isEqualTo(Optional.of(1577913125123L));
     }
 
     @Test
@@ -731,12 +746,12 @@ public class ModernMediaScannerTest {
 
     @Test
     public void testScan_Nomedia_Dir() throws Exception {
-        final File red = new File(mDir, "red");
-        final File blue = new File(mDir, "blue");
-        red.mkdirs();
-        blue.mkdirs();
-        stage(R.raw.test_image, new File(red, "red.jpg"));
-        stage(R.raw.test_image, new File(blue, "blue.jpg"));
+        final File redDir = new File(mDir, "red");
+        final File blueDir = new File(mDir, "blue");
+        redDir.mkdirs();
+        blueDir.mkdirs();
+        stage(R.raw.test_image, new File(redDir, "red.jpg"));
+        stage(R.raw.test_image, new File(blueDir, "blue.jpg"));
 
         mModern.scanDirectory(mDir, REASON_UNKNOWN);
 
@@ -744,7 +759,7 @@ public class ModernMediaScannerTest {
         assertQueryCount(2, MediaStore.Images.Media.EXTERNAL_CONTENT_URI);
 
         // Hide one directory, rescan, and confirm hidden
-        final File redNomedia = new File(red, ".nomedia");
+        final File redNomedia = new File(redDir, ".nomedia");
         redNomedia.createNewFile();
         mModern.scanDirectory(mDir, REASON_UNKNOWN);
         assertQueryCount(1, MediaStore.Images.Media.EXTERNAL_CONTENT_URI);
@@ -753,6 +768,35 @@ public class ModernMediaScannerTest {
         redNomedia.delete();
         mModern.scanDirectory(mDir, REASON_UNKNOWN);
         assertQueryCount(2, MediaStore.Images.Media.EXTERNAL_CONTENT_URI);
+    }
+
+    @Test
+    public void testScan_MaxExcludeNomediaDirs_DoesNotThrowException() throws Exception {
+        // Create MAX_EXCLUDE_DIRS + 50 nomedia dirs in mDir
+        // (Need to add 50 as MAX_EXCLUDE_DIRS is a safe limit;
+        // 499 would have been too close to the exception limit)
+        // Mark them as non-dirty so that they are excluded from scans
+        for (int i = 0 ; i < (MAX_EXCLUDE_DIRS + 50) ; i++) {
+            createCleanNomediaDir(mDir);
+        }
+
+        final File redDir = new File(mDir, "red");
+        redDir.mkdirs();
+        stage(R.raw.test_image, new File(redDir, "red.jpg"));
+
+        assertQueryCount(0, MediaStore.Images.Media.EXTERNAL_CONTENT_URI);
+        mModern.scanDirectory(mDir, REASON_UNKNOWN);
+        assertQueryCount(1, MediaStore.Images.Media.EXTERNAL_CONTENT_URI);
+    }
+
+    private void createCleanNomediaDir(File dir) throws Exception {
+        final File nomediaDir = new File(dir, "test_" + System.nanoTime());
+        nomediaDir.mkdirs();
+        final File nomedia = new File(nomediaDir, ".nomedia");
+        nomedia.createNewFile();
+
+        FileUtils.setDirectoryDirty(nomediaDir, false);
+        assertThat(FileUtils.isDirectoryDirty(nomediaDir)).isFalse();
     }
 
     @Test
@@ -1039,12 +1083,85 @@ public class ModernMediaScannerTest {
 
         mModern.scanDirectory(mDir, REASON_UNKNOWN);
 
+        try (Cursor cursor = mIsolatedResolver.query(MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+                new String[] { MediaColumns.XMP }, null, null, null)) {
+            assertEquals(1, cursor.getCount());
+            cursor.moveToFirst();
+            assertEquals(0, cursor.getBlob(0).length);
+        }
+    }
+
+    @Test
+    public void testNoOpScan_NoMediaDirs() throws Exception {
+        File nomedia = new File(mDir, ".nomedia");
+        assertThat(nomedia.createNewFile()).isTrue();
+        for (int i = 0; i < 100; i++) {
+            File file = new File(mDir, "file_" + System.nanoTime());
+            assertThat(file.createNewFile()).isTrue();
+        }
+        Timer firstDirScan = new Timer("firstDirScan");
+        firstDirScan.start();
+        // Time taken : preVisitDirectory + 100 visitFiles
+        mModern.scanDirectory(mDir, REASON_UNKNOWN);
+        firstDirScan.stop();
+        firstDirScan.dumpResults();
+
+        // Time taken : preVisitDirectory
+        Timer noOpDirScan = new Timer("noOpDirScan");
+        for (int i = 0; i < COUNT_REPEAT; i++) {
+            noOpDirScan.start();
+            mModern.scanDirectory(mDir, REASON_UNKNOWN);
+            noOpDirScan.stop();
+        }
+        noOpDirScan.dumpResults();
+        assertThat(noOpDirScan.getMaxDurationMillis()).isLessThan(
+                firstDirScan.getMaxDurationMillis());
+
+        // renaming directory for non-M_E_S apps does a scan of the directory as well;
+        // so subsequent scans should be noOp as the directory is not dirty.
+        File renamedTestDir = new File(mIsolatedContext.getExternalMediaDirs()[0],
+                "renamed_test_" + System.nanoTime());
+        assertThat(mDir.renameTo(renamedTestDir)).isTrue();
+
+        Timer renamedDirScan = new Timer("renamedDirScan");
+        renamedDirScan.start();
+        // Time taken : preVisitDirectory
+        mModern.scanDirectory(renamedTestDir, REASON_UNKNOWN);
+        renamedDirScan.stop();
+        renamedDirScan.dumpResults();
+        assertThat(renamedDirScan.getMaxDurationMillis()).isLessThan(
+                firstDirScan.getMaxDurationMillis());
+
+        // This is essential for folder cleanup in tearDown
+        mDir = renamedTestDir;
+    }
+
+    @Test
+    public void testScan_TrackNumber() throws Exception {
+        final File music = new File(mDir, "Music");
+        final File audio = new File(music, "audio.mp3");
+
+        music.mkdirs();
+        stage(R.raw.test_audio, audio);
+
+        mModern.scanFile(audio, REASON_UNKNOWN);
+
         try (Cursor cursor = mIsolatedResolver
-                .query(MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
-                 new String[] { MediaColumns.XMP }, null, null, null)) {
-             assertEquals(1, cursor.getCount());
-             cursor.moveToFirst();
-             assertEquals(0, cursor.getBlob(0).length);
+                .query(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, null, null, null, null)) {
+            assertEquals(1, cursor.getCount());
+            cursor.moveToFirst();
+            assertEquals(2, cursor.getInt(cursor.getColumnIndex(AudioColumns.TRACK)));
+        }
+
+        stage(R.raw.test_audio_empty_track_number, audio);
+
+        mModern.scanFile(audio, REASON_UNKNOWN);
+
+        try (Cursor cursor = mIsolatedResolver
+                .query(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, null, null, null, null)) {
+            assertEquals(1, cursor.getCount());
+            cursor.moveToFirst();
+            assertThat(cursor.getString(cursor.getColumnIndex(AudioColumns.TRACK))).isNull();
         }
     }
 }
