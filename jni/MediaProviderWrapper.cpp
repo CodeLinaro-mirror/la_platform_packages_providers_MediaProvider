@@ -58,11 +58,14 @@ static bool CheckForJniException(JNIEnv* env) {
 
 std::unique_ptr<RedactionInfo> getRedactionInfoInternal(JNIEnv* env, jobject media_provider_object,
                                                         jmethodID mid_get_redaction_ranges,
-                                                        uid_t uid, pid_t tid, const string& path) {
+                                                        uid_t uid, pid_t tid, const string& path,
+                                                        const string& io_path) {
     ScopedLocalRef<jstring> j_path(env, env->NewStringUTF(path.c_str()));
+    ScopedLocalRef<jstring> j_io_path(env, env->NewStringUTF(io_path.c_str()));
     ScopedLocalRef<jlongArray> redaction_ranges_local_ref(
-            env, static_cast<jlongArray>(env->CallObjectMethod(
-                         media_provider_object, mid_get_redaction_ranges, j_path.get(), uid, tid)));
+            env, static_cast<jlongArray>(
+                         env->CallObjectMethod(media_provider_object, mid_get_redaction_ranges,
+                                               j_path.get(), j_io_path.get(), uid, tid)));
     ScopedLongArrayRO redaction_ranges(env, redaction_ranges_local_ref.get());
 
     if (CheckForJniException(env)) {
@@ -149,11 +152,12 @@ int isOpendirAllowedInternal(JNIEnv* env, jobject media_provider_object,
     return res;
 }
 
-bool isUidForPackageInternal(JNIEnv* env, jobject media_provider_object,
-                             jmethodID mid_is_uid_for_package, const string& pkg, uid_t uid) {
-    ScopedLocalRef<jstring> j_pkg(env, env->NewStringUTF(pkg.c_str()));
-    bool res = env->CallBooleanMethod(media_provider_object, mid_is_uid_for_package, j_pkg.get(),
-            uid);
+bool isUidAllowedAccessToDataOrObbPathInternal(JNIEnv* env, jobject media_provider_object,
+                                               jmethodID mid_is_uid_allowed_path_access_, uid_t uid,
+                                               const string& path) {
+    ScopedLocalRef<jstring> j_path(env, env->NewStringUTF(path.c_str()));
+    bool res = env->CallBooleanMethod(media_provider_object, mid_is_uid_allowed_path_access_, uid,
+                                      j_path.get());
 
     if (CheckForJniException(env)) {
         return false;
@@ -259,8 +263,9 @@ MediaProviderWrapper::MediaProviderWrapper(JNIEnv* env, jobject media_provider) 
     media_provider_class_ = reinterpret_cast<jclass>(env->NewGlobalRef(media_provider_class_));
 
     // Cache methods - Before calling a method, make sure you cache it here
-    mid_get_redaction_ranges_ = CacheMethod(env, "getRedactionRanges", "(Ljava/lang/String;II)[J",
-                                            /*is_static*/ false);
+    mid_get_redaction_ranges_ =
+            CacheMethod(env, "getRedactionRanges", "(Ljava/lang/String;Ljava/lang/String;II)[J",
+                        /*is_static*/ false);
     mid_insert_file_ = CacheMethod(env, "insertFileIfNecessary", "(Ljava/lang/String;I)I",
                                    /*is_static*/ false);
     mid_delete_file_ = CacheMethod(env, "deleteFile", "(Ljava/lang/String;I)I", /*is_static*/ false);
@@ -277,8 +282,9 @@ MediaProviderWrapper::MediaProviderWrapper(JNIEnv* env, jobject media_provider) 
                         /*is_static*/ false);
     mid_rename_ = CacheMethod(env, "rename", "(Ljava/lang/String;Ljava/lang/String;I)I",
                               /*is_static*/ false);
-    mid_is_uid_for_package_ = CacheMethod(env, "isUidForPackage", "(Ljava/lang/String;I)Z",
-                              /*is_static*/ false);
+    mid_is_uid_allowed_access_to_data_or_obb_path_ =
+            CacheMethod(env, "isUidAllowedAccessToDataOrObbPath", "(ILjava/lang/String;)Z",
+                        /*is_static*/ false);
     mid_on_file_created_ = CacheMethod(env, "onFileCreated", "(Ljava/lang/String;)V",
                                        /*is_static*/ false);
     mid_should_allow_lookup_ = CacheMethod(env, "shouldAllowLookup", "(II)Z",
@@ -299,8 +305,9 @@ MediaProviderWrapper::~MediaProviderWrapper() {
     env->DeleteGlobalRef(media_provider_class_);
 }
 
-std::unique_ptr<RedactionInfo> MediaProviderWrapper::GetRedactionInfo(const string& path, uid_t uid,
-                                                                      pid_t tid) {
+std::unique_ptr<RedactionInfo> MediaProviderWrapper::GetRedactionInfo(const string& path,
+                                                                      const string& io_path,
+                                                                      uid_t uid, pid_t tid) {
     if (shouldBypassMediaProvider(uid) || !GetBoolProperty(kPropRedactionEnabled, true)) {
         return std::make_unique<RedactionInfo>();
     }
@@ -310,7 +317,7 @@ std::unique_ptr<RedactionInfo> MediaProviderWrapper::GetRedactionInfo(const stri
 
     JNIEnv* env = MaybeAttachCurrentThread();
     auto ri = getRedactionInfoInternal(env, media_provider_object_, mid_get_redaction_ranges_, uid,
-                                       tid, path);
+                                       tid, path, io_path);
     res = std::move(ri);
 
     return res;
@@ -406,13 +413,14 @@ int MediaProviderWrapper::IsOpendirAllowed(const string& path, uid_t uid, bool f
                                     forWrite);
 }
 
-bool MediaProviderWrapper::IsUidForPackage(const string& pkg, uid_t uid) {
+bool MediaProviderWrapper::isUidAllowedAccessToDataOrObbPath(uid_t uid, const string& path) {
     if (shouldBypassMediaProvider(uid)) {
         return true;
     }
 
     JNIEnv* env = MaybeAttachCurrentThread();
-    return isUidForPackageInternal(env, media_provider_object_, mid_is_uid_for_package_, pkg, uid);
+    return isUidAllowedAccessToDataOrObbPathInternal(
+            env, media_provider_object_, mid_is_uid_allowed_access_to_data_or_obb_path_, uid, path);
 }
 
 int MediaProviderWrapper::Rename(const string& old_path, const string& new_path, uid_t uid) {
