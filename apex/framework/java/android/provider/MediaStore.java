@@ -447,13 +447,17 @@ public final class MediaStore {
      * supply the uri through the EXTRA_OUTPUT field for compatibility with old applications.
      * If you don't set a ClipData, it will be copied there for you when calling
      * {@link Context#startActivity(Intent)}.
-     *
-     * <p>Note: if you app targets {@link android.os.Build.VERSION_CODES#M M} and above
+     * <p>
+     * Regardless of whether or not EXTRA_OUTPUT is present, when an image is captured via this
+     * intent, {@link android.hardware.Camera#ACTION_NEW_PICTURE} won't be broadcasted.
+     * <p>
+     * Note: if you app targets {@link android.os.Build.VERSION_CODES#M M} and above
      * and declares as using the {@link android.Manifest.permission#CAMERA} permission which
      * is not granted, then attempting to use this action will result in a {@link
      * java.lang.SecurityException}.
      *
      *  @see #EXTRA_OUTPUT
+     *  @see android.hardware.Camera#ACTION_NEW_PICTURE
      */
     @SdkConstant(SdkConstantType.ACTIVITY_INTENT_ACTION)
     public final static String ACTION_IMAGE_CAPTURE = "android.media.action.IMAGE_CAPTURE";
@@ -478,9 +482,13 @@ public final class MediaStore {
      * supply the uri through the EXTRA_OUTPUT field for compatibility with old applications.
      * If you don't set a ClipData, it will be copied there for you when calling
      * {@link Context#startActivity(Intent)}.
+     * <p>
+     * Regardless of whether or not EXTRA_OUTPUT is present, when an image is captured via this
+     * intent, {@link android.hardware.Camera#ACTION_NEW_PICTURE} won't be broadcasted.
      *
      * @see #ACTION_IMAGE_CAPTURE
      * @see #EXTRA_OUTPUT
+     * @see android.hardware.Camera#ACTION_NEW_PICTURE
      */
     @SdkConstant(SdkConstantType.ACTIVITY_INTENT_ACTION)
     public static final String ACTION_IMAGE_CAPTURE_SECURE =
@@ -493,14 +501,20 @@ public final class MediaStore {
      * The caller may pass in an extra EXTRA_VIDEO_QUALITY to control the video quality.
      * <p>
      * The caller may pass in an extra EXTRA_OUTPUT to control
-     * where the video is written. If EXTRA_OUTPUT is not present the video will be
-     * written to the standard location for videos, and the Uri of that location will be
-     * returned in the data field of the Uri.
-     * As of {@link android.os.Build.VERSION_CODES#LOLLIPOP}, this uri can also be supplied through
-     * {@link android.content.Intent#setClipData(ClipData)}. If using this approach, you still must
-     * supply the uri through the EXTRA_OUTPUT field for compatibility with old applications.
-     * If you don't set a ClipData, it will be copied there for you when calling
-     * {@link Context#startActivity(Intent)}.
+     * where the video is written.
+     * <ul>
+     * <li>If EXTRA_OUTPUT is not present, the video will be written to the standard location
+     * for videos, and the Uri of that location will be returned in the data field of the Uri.
+     * {@link android.hardware.Camera#ACTION_NEW_VIDEO} will also be broadcasted when the video
+     * is recorded.
+     * <li>If EXTRA_OUTPUT is assigned a Uri value, no
+     * {@link android.hardware.Camera#ACTION_NEW_VIDEO} will be broadcasted. As of
+     * {@link android.os.Build.VERSION_CODES#LOLLIPOP}, this uri can also be
+     * supplied through {@link android.content.Intent#setClipData(ClipData)}.  If using this
+     * approach, you still must supply the uri through the EXTRA_OUTPUT field for compatibility
+     * with old applications. If you don't set a ClipData, it will be copied there for you when
+     * calling {@link Context#startActivity(Intent)}.
+     * </ul>
      *
      * <p>Note: if you app targets {@link android.os.Build.VERSION_CODES#M M} and above
      * and declares as using the {@link android.Manifest.permission#CAMERA} permission which
@@ -511,6 +525,7 @@ public final class MediaStore {
      * @see #EXTRA_VIDEO_QUALITY
      * @see #EXTRA_SIZE_LIMIT
      * @see #EXTRA_DURATION_LIMIT
+     * @see android.hardware.Camera#ACTION_NEW_VIDEO
      */
     @SdkConstant(SdkConstantType.ACTIVITY_INTENT_ACTION)
     public final static String ACTION_VIDEO_CAPTURE = "android.media.action.VIDEO_CAPTURE";
@@ -1739,6 +1754,44 @@ public final class MediaStore {
              * Constant for the {@link #MEDIA_TYPE} column indicating that file is a document file.
              */
             public static final int MEDIA_TYPE_DOCUMENT = 6;
+
+            /**
+             * Modifier of the database row
+             *
+             * Specifies the last modifying operation of the database row. This
+             * does not give any information on the package that modified the
+             * database row.
+             * Initially, this column will be populated by
+             * {@link ContentResolver}#insert and media scan operations. And,
+             * the column will be used to identify if the file was previously
+             * scanned.
+             * @hide
+             */
+            @Column(value = Cursor.FIELD_TYPE_INTEGER)
+            public static final String _MODIFIER = "_modifier";
+
+            /**
+             * Constant for the {@link #_MODIFIER} column indicating
+             * that the last modifier of the database row is FUSE operation.
+             * @hide
+             */
+            public static final int _MODIFIER_FUSE = 1;
+
+            /**
+             * Constant for the {@link #_MODIFIER} column indicating
+             * that the last modifier of the database row is explicit
+             * {@link ContentResolver} operation from app.
+             * @hide
+             */
+            public static final int _MODIFIER_CR = 2;
+
+            /**
+             * Constant for the {@link #_MODIFIER} column indicating
+             * that the last modifier of the database row is a media scan
+             * operation.
+             * @hide
+             */
+            public static final int _MODIFIER_MEDIA_SCAN = 3;
 
             /**
              * Status of the transcode file
@@ -3441,7 +3494,7 @@ public final class MediaStore {
              * @deprecated location details are no longer indexed for privacy
              *             reasons, and this value is now always {@code null}.
              *             You can still manually obtain location metadata using
-             *             {@link ExifInterface#getLatLong(float[])}.
+             *             {@link MediaMetadataRetriever#METADATA_KEY_LOCATION}.
              */
             @Deprecated
             @Column(value = Cursor.FIELD_TYPE_FLOAT, readOnly = true)
@@ -3453,7 +3506,7 @@ public final class MediaStore {
              * @deprecated location details are no longer indexed for privacy
              *             reasons, and this value is now always {@code null}.
              *             You can still manually obtain location metadata using
-             *             {@link ExifInterface#getLatLong(float[])}.
+             *             {@link MediaMetadataRetriever#METADATA_KEY_LOCATION}.
              */
             @Deprecated
             @Column(value = Cursor.FIELD_TYPE_FLOAT, readOnly = true)
