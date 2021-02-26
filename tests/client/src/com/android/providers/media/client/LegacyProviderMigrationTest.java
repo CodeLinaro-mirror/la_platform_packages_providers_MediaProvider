@@ -44,6 +44,7 @@ import android.provider.MediaStore;
 import android.provider.MediaStore.Audio.AudioColumns;
 import android.provider.MediaStore.DownloadColumns;
 import android.provider.MediaStore.Files.FileColumns;
+import android.provider.MediaStore.Images.ImageColumns;
 import android.provider.MediaStore.MediaColumns;
 import android.provider.MediaStore.Video.VideoColumns;
 import android.system.ErrnoException;
@@ -52,6 +53,7 @@ import android.util.Log;
 import android.webkit.MimeTypeMap;
 
 import androidx.annotation.NonNull;
+import androidx.test.filters.FlakyTest;
 import androidx.test.InstrumentationRegistry;
 import androidx.test.runner.AndroidJUnit4;
 
@@ -81,6 +83,7 @@ import java.util.concurrent.TimeUnit;
  * {@link MediaColumns#IS_FAVORITE} should be retained.
  */
 @RunWith(AndroidJUnit4.class)
+@FlakyTest(bugId = 176977253)
 public class LegacyProviderMigrationTest {
     private static final String TAG = "LegacyTest";
 
@@ -183,6 +186,7 @@ public class LegacyProviderMigrationTest {
         values.put(VideoColumns.BOOKMARK, String.valueOf(42));
         values.put(VideoColumns.TAGS, "My Tags");
         values.put(VideoColumns.CATEGORY, "My Category");
+        values.put(VideoColumns.IS_PRIVATE, String.valueOf(1));
         doLegacy(mExternalVideo, values);
     }
 
@@ -190,6 +194,7 @@ public class LegacyProviderMigrationTest {
     public void testLegacy_Image() throws Exception {
         final ContentValues values = generateValues(FileColumns.MEDIA_TYPE_IMAGE,
                 "image/png", Environment.DIRECTORY_PICTURES);
+        values.put(ImageColumns.IS_PRIVATE, String.valueOf(1));
         doLegacy(mExternalImages, values);
     }
 

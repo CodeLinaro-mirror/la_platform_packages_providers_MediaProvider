@@ -78,6 +78,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Set;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
@@ -602,24 +603,29 @@ public final class MediaStore {
      */
     public final static String EXTRA_OUTPUT = "output";
 
-    /**
+    /*
      * Specify that the caller wants to receive the original media format without transcoding.
      *
-     * This is a very dangerous flag to use because apps can suddenly fail to play media after
-     * an OS upgrade. Clients should instead specify their supported media capabilities explicitly
-     * in their manifest or with the {@link #EXTRA_MEDIA_CAPABILITIES} open flag.
+     * <b>Caution: using this flag can cause app
+     * compatibility issues whenever Android adds support for new media formats.</b>
+     * Clients should instead specify their supported media capabilities explicitly
+     * in their manifest or with the {@link #EXTRA_MEDIA_CAPABILITIES} {@code open} flag.
+     *
+     * This option is useful for apps that don't attempt to parse the actual byte contents of media
+     * files, such as playback using {@link MediaPlayer} or for off-device backup. Note that the
+     * {@link android.Manifest.permission#ACCESS_MEDIA_LOCATION} permission will still be required
+     * to avoid sensitive metadata redaction, similar to {@link #setRequireOriginal(Uri)}.
+     * </ul>
      *
      * Note that this flag overrides any explicitly declared {@code media_capabilities.xml} or
      * {@link ApplicationMediaCapabilities} extras specified in the same {@code open} request.
-     *
-     * This is only useful for apps that are bundled with the system hence are guaranteed to
-     * always support any media capabilities released on the OS in the future.
      *
      * <p>This option can be added to the {@code opts} {@link Bundle} in various
      * {@link ContentResolver} {@code open} methods.
      *
      * @see ContentResolver#openTypedAssetFileDescriptor(Uri, String, Bundle)
      * @see ContentResolver#openTypedAssetFile(Uri, String, Bundle, CancellationSignal)
+     * @see #setRequireOriginal(Uri)
      */
     public final static String EXTRA_ACCEPT_ORIGINAL_MEDIA_FORMAT =
             "android.provider.extra.ACCEPT_ORIGINAL_MEDIA_FORMAT";
@@ -1767,7 +1773,7 @@ public final class MediaStore {
              * scanned.
              * @hide
              */
-            @Column(value = Cursor.FIELD_TYPE_INTEGER)
+            // @Column(value = Cursor.FIELD_TYPE_INTEGER)
             public static final String _MODIFIER = "_modifier";
 
             /**
@@ -1803,7 +1809,7 @@ public final class MediaStore {
              *
              * @hide
              */
-            @Column(value = Cursor.FIELD_TYPE_INTEGER)
+            // @Column(value = Cursor.FIELD_TYPE_INTEGER)
             public static final String _TRANSCODE_STATUS = "_transcode_status";
 
             /**
@@ -1825,7 +1831,7 @@ public final class MediaStore {
              * extracted from the video file. This value be null for non-video files.
              * @hide
              */
-            @Column(value = Cursor.FIELD_TYPE_INTEGER)
+            // @Column(value = Cursor.FIELD_TYPE_INTEGER)
             public static final String _VIDEO_CODEC_TYPE = "_video_codec_type";
         }
     }
@@ -1936,6 +1942,13 @@ public final class MediaStore {
     }
 
     /**
+     * Regex that matches paths under well-known storage paths.
+     * Copied from FileUtils.java
+     */
+    private static final Pattern PATTERN_VOLUME_NAME = Pattern.compile(
+            "(?i)^/storage/([^/]+)");
+
+    /**
      * @deprecated since this method doesn't have a {@link Context}, we can't
      *             find the actual {@link StorageVolume} for the given path, so
      *             only a vague guess is returned. Callers should use
@@ -1946,9 +1959,15 @@ public final class MediaStore {
     public static @NonNull String getVolumeName(@NonNull File path) {
         // Ideally we'd find the relevant StorageVolume, but we don't have a
         // Context to obtain it from, so the best we can do is assume
-        if (path.getAbsolutePath()
-                .startsWith(Environment.getStorageDirectory().getAbsolutePath())) {
-            return MediaStore.VOLUME_EXTERNAL;
+        // Borrowed the logic from FileUtils.extractVolumeName
+        final Matcher matcher = PATTERN_VOLUME_NAME.matcher(path.getAbsolutePath());
+        if (matcher.find()) {
+            final String volumeName = matcher.group(1);
+            if (volumeName.equals("emulated")) {
+                return MediaStore.VOLUME_EXTERNAL_PRIMARY;
+            } else {
+                return volumeName.toLowerCase(Locale.ROOT);
+            }
         } else {
             return MediaStore.VOLUME_INTERNAL;
         }
@@ -2034,7 +2053,7 @@ public final class MediaStore {
             public static final String PICASA_ID = "picasa_id";
 
             /**
-             * Whether the video should be published as public or private
+             * Whether the image should be published as public or private
              */
             @Column(Cursor.FIELD_TYPE_INTEGER)
             public static final String IS_PRIVATE = "isprivate";

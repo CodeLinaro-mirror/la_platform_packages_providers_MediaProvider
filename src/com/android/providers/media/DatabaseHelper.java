@@ -135,7 +135,8 @@ public class DatabaseHelper extends SQLiteOpenHelper implements AutoCloseable {
      */
     private final ReentrantReadWriteLock mSchemaLock = new ReentrantReadWriteLock();
 
-    private static Object sMigrationLock = new Object();
+    private static Object sMigrationLockInternal = new Object();
+    private static Object sMigrationLockExternal = new Object();
 
     public interface OnSchemaChangeListener {
         public void onSchemaChange(@NonNull String volumeName, int versionFrom, int versionTo,
@@ -370,10 +371,15 @@ public class DatabaseHelper extends SQLiteOpenHelper implements AutoCloseable {
     @Override
     public void onOpen(final SQLiteDatabase db) {
         Log.v(TAG, "onOpen() for " + mName);
+
+        tryMigrateFromLegacy(db, mInternal ? sMigrationLockInternal : sMigrationLockExternal);
+    }
+
+    private void tryMigrateFromLegacy(SQLiteDatabase db, Object migrationLock) {
         final File migration = new File(mContext.getFilesDir(), mMigrationFileName);
         // Another thread entering migration block will be blocked until the
         // migration is complete from current thread.
-        synchronized (sMigrationLock) {
+        synchronized (migrationLock) {
             if (!migration.exists()) {
                 Log.v(TAG, "onOpen() finished for " + mName);
                 return;
@@ -1128,6 +1134,8 @@ public class DatabaseHelper extends SQLiteOpenHelper implements AutoCloseable {
         sMigrateColumns.add(MediaStore.Video.VideoColumns.CATEGORY);
         sMigrateColumns.add(MediaStore.Video.VideoColumns.BOOKMARK);
 
+        // This also migrates MediaStore.Images.ImageColumns.IS_PRIVATE
+        // as they both have the same value "isprivate".
         sMigrateColumns.add(MediaStore.Video.VideoColumns.IS_PRIVATE);
 
         sMigrateColumns.add(MediaStore.DownloadColumns.DOWNLOAD_URI);
@@ -1202,7 +1210,8 @@ public class DatabaseHelper extends SQLiteOpenHelper implements AutoCloseable {
                 + ", COUNT(DISTINCT album_id) AS " + Audio.Artists.NUMBER_OF_ALBUMS
                 + ", COUNT(DISTINCT _id) AS " + Audio.Artists.NUMBER_OF_TRACKS
                 + " FROM audio"
-                + " WHERE is_music=1 AND is_pending=0 AND volume_name IN " + filterVolumeNames
+                + " WHERE is_music=1 AND is_pending=0 AND is_trashed=0"
+                + " AND volume_name IN " + filterVolumeNames
                 + " GROUP BY artist_id");
 
         db.execSQL("CREATE VIEW audio_albums AS SELECT "
@@ -1219,14 +1228,15 @@ public class DatabaseHelper extends SQLiteOpenHelper implements AutoCloseable {
                 + ", MAX(year) AS " + Audio.Albums.LAST_YEAR
                 + ", NULL AS " + Audio.Albums.ALBUM_ART
                 + " FROM audio"
-                + " WHERE is_music=1 AND is_pending=0 AND volume_name IN " + filterVolumeNames
+                + " WHERE is_music=1 AND is_pending=0 AND is_trashed=0"
+                + " AND volume_name IN " + filterVolumeNames
                 + " GROUP BY album_id");
 
         db.execSQL("CREATE VIEW audio_genres AS SELECT "
                 + "  genre_id AS " + Audio.Genres._ID
                 + ", MIN(genre) AS " + Audio.Genres.NAME
                 + " FROM audio"
-                + " WHERE is_pending=0 AND volume_name IN " + filterVolumeNames
+                + " WHERE is_pending=0 AND is_trashed=0 AND volume_name IN " + filterVolumeNames
                 + " GROUP BY genre_id");
     }
 
@@ -1563,7 +1573,7 @@ public class DatabaseHelper extends SQLiteOpenHelper implements AutoCloseable {
     static final int VERSION_R = 1115;
     // Leave some gaps in database version tagging to allow R schema changes
     // to go independent of S schema changes.
-    static final int VERSION_S = 1203;
+    static final int VERSION_S = 1204;
     static final int VERSION_LATEST = VERSION_S;
 
     /**
@@ -1719,6 +1729,9 @@ public class DatabaseHelper extends SQLiteOpenHelper implements AutoCloseable {
                 updateAddModifier(db, internal);
             }
             if (fromVersion < 1203) {
+                // Empty version bump to ensure views are recreated
+            }
+            if (fromVersion < 1204) {
                 // Empty version bump to ensure views are recreated
             }
 
