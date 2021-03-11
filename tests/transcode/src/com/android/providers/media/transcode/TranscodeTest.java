@@ -32,10 +32,10 @@ import android.Manifest;
 import android.media.ApplicationMediaCapabilities;
 import android.media.MediaFormat;
 import android.net.Uri;
-import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
 import android.os.ParcelFileDescriptor;
+import android.os.SystemProperties;
 import android.provider.MediaStore;
 
 import androidx.test.runner.AndroidJUnit4;
@@ -85,7 +85,7 @@ public class TranscodeTest {
     @Before
     public void setUp() throws Exception {
         // TODO(b/171789917): Cuttlefish doesn't support transcoding yet
-        Assume.assumeFalse(Build.MODEL.contains("Cuttlefish"));
+        Assume.assumeFalse(SystemProperties.get("ro.product.vendor.model").contains("Cuttlefish"));
 
         TranscodeTestUtils.pollForExternalStorageState();
         TranscodeTestUtils.grantPermission(getContext().getPackageName(),
@@ -735,6 +735,96 @@ public class TranscodeTest {
             assertFileContent(modernFile, modernFile, pfdOriginal, pfdTranscoded, false);
         } finally {
             modernFile.delete();
+        }
+    }
+
+    /**
+     * Tests that we transcode an HEVC file when a modern app passes the mediaCapabilitiesUid of a
+     * legacy app that cannot handle an HEVC file.
+     */
+    @Test
+    public void testOriginalCallingUid_modernAppPassLegacyAppUid()
+            throws Exception {
+        File modernFile = new File(DIR_CAMERA, HEVC_FILE_NAME);
+        ParcelFileDescriptor pfdModernApp = null;
+        ParcelFileDescriptor pfdModernAppPassingLegacyUid = null;
+        try {
+            installAppWithStoragePermissions(TEST_APP_SLOW_MOTION);
+            Uri uri = TranscodeTestUtils.stageHEVCVideoFile(modernFile);
+
+            // pfdModernApp is for original content (without transcoding) since this is a modern
+            // app.
+            pfdModernApp = open(modernFile, false);
+
+            // pfdModernAppPassingLegacyUid is for transcoded content since this modern app is
+            // passing the UID of a legacy app capable of handling HEVC files.
+            Bundle bundle = new Bundle();
+            bundle.putInt(MediaStore.EXTRA_MEDIA_CAPABILITIES_UID,
+                    getContext().getPackageManager().getPackageUid(
+                            TEST_APP_SLOW_MOTION.getPackageName(), 0));
+            pfdModernAppPassingLegacyUid = open(uri, false, bundle);
+
+            assertTranscode(pfdModernApp, false);
+            assertTranscode(pfdModernAppPassingLegacyUid, true);
+
+            // pfdModernApp and pfdModernAppPassingLegacyUid should be different.
+            assertFileContent(modernFile, modernFile, pfdModernApp, pfdModernAppPassingLegacyUid,
+                    false);
+        } finally {
+            if (pfdModernApp != null) {
+                pfdModernApp.close();
+            }
+
+            if (pfdModernAppPassingLegacyUid != null) {
+                pfdModernAppPassingLegacyUid.close();
+            }
+            modernFile.delete();
+            uninstallApp(TEST_APP_SLOW_MOTION);
+        }
+    }
+
+    /**
+     * Tests that we don't transcode an HEVC file when a legacy app passes the mediaCapabilitiesUid
+     * of a modern app that can handle an HEVC file.
+     */
+    @Test
+    public void testOriginalCallingUid_legacyAppPassModernAppUid()
+            throws Exception {
+        File modernFile = new File(DIR_CAMERA, HEVC_FILE_NAME);
+        ParcelFileDescriptor pfdLegacyApp = null;
+        ParcelFileDescriptor pfdLegacyAppPassingModernUid = null;
+        try {
+            installAppWithStoragePermissions(TEST_APP_HEVC);
+            Uri uri = TranscodeTestUtils.stageHEVCVideoFile(modernFile);
+
+            // pfdLegacyApp is for transcoded content since this is a legacy app.
+            TranscodeTestUtils.enableTranscodingForPackage(getContext().getPackageName());
+            pfdLegacyApp = open(modernFile, false);
+
+            // pfdLegacyAppPassingModernUid is for original content (without transcoding) since this
+            // legacy app is passing the UID of a modern app capable of handling HEVC files.
+            Bundle bundle = new Bundle();
+            bundle.putInt(MediaStore.EXTRA_MEDIA_CAPABILITIES_UID,
+                    getContext().getPackageManager().getPackageUid(TEST_APP_HEVC.getPackageName(),
+                            0));
+            pfdLegacyAppPassingModernUid = open(uri, false, bundle);
+
+            assertTranscode(pfdLegacyApp, true);
+            assertTranscode(pfdLegacyAppPassingModernUid, false);
+
+            // pfdLegacyApp and pfdLegacyAppPassingModernUid should be different.
+            assertFileContent(modernFile, modernFile, pfdLegacyApp, pfdLegacyAppPassingModernUid,
+                    false);
+        } finally {
+            if (pfdLegacyApp != null) {
+                pfdLegacyApp.close();
+            }
+
+            if (pfdLegacyAppPassingModernUid != null) {
+                pfdLegacyAppPassingModernUid.close();
+            }
+            modernFile.delete();
+            uninstallApp(TEST_APP_HEVC);
         }
     }
 }
