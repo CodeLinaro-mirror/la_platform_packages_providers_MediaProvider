@@ -24,6 +24,7 @@ import static android.provider.MediaStore.QUERY_ARG_MATCH_TRASHED;
 
 import static com.android.providers.media.MediaProvider.VolumeNotFoundException;
 import static com.android.providers.media.MediaProviderStatsLog.TRANSCODING_DATA;
+import static com.android.providers.media.MediaProviderStatsLog.TRANSCODING_DATA__FAILURE_CAUSE__CAUSE_UNKNOWN;
 import static com.android.providers.media.MediaProviderStatsLog.TRANSCODING_DATA__TRANSCODE_RESULT__FAIL;
 import static com.android.providers.media.MediaProviderStatsLog.TRANSCODING_DATA__TRANSCODE_RESULT__SUCCESS;
 import static com.android.providers.media.MediaProviderStatsLog.TRANSCODING_DATA__TRANSCODE_RESULT__UNDEFINED;
@@ -51,8 +52,8 @@ import android.media.MediaTranscodeManager;
 import android.media.MediaTranscodeManager.TranscodingRequest;
 import android.media.MediaTranscodeManager.TranscodingRequest.MediaFormatResolver;
 import android.media.MediaTranscodeManager.TranscodingSession;
-import android.media.MediaTranscodingException;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
@@ -60,6 +61,8 @@ import android.os.Process;
 import android.os.SystemClock;
 import android.os.SystemProperties;
 import android.os.UserHandle;
+import android.os.storage.StorageManager;
+import android.os.storage.StorageVolume;
 import android.provider.MediaStore;
 import android.provider.MediaStore.Files.FileColumns;
 import android.provider.MediaStore.MediaColumns;
@@ -76,6 +79,8 @@ import androidx.annotation.Nullable;
 import androidx.core.app.NotificationCompat;
 import androidx.core.app.NotificationManagerCompat;
 
+import com.android.internal.annotations.VisibleForTesting;
+import com.android.modules.utils.build.SdkLevel;
 import com.android.providers.media.util.BackgroundThread;
 import com.android.providers.media.util.FileUtils;
 import com.android.providers.media.util.ForegroundThread;
@@ -96,6 +101,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.Optional;
+import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
@@ -118,7 +124,6 @@ public class TranscodeHelper {
             "persist.sys.fuse.transcode_user_control";
     private static final String TRANSCODE_COMPAT_MANIFEST_KEY = "transcode_compat_manifest";
     private static final String TRANSCODE_COMPAT_STALE_KEY = "transcode_compat_stale";
-    private static final String TRANSCODE_ANR_DELAY_MS_KEY = "transcode_anr_delay_ms";
 
     private static final int MY_UID = android.os.Process.myUid();
 
@@ -156,8 +161,10 @@ public class TranscodeHelper {
     @Disabled
     private static final long FORCE_DISABLE_HEVC_SUPPORT = 174227820L;
 
-    private static final int FLAG_HEVC = 1 << 0;
-    private static final int FLAG_SLOW_MOTION = 1 << 1;
+    @VisibleForTesting
+    static final int FLAG_HEVC = 1 << 0;
+    @VisibleForTesting
+    static final int FLAG_SLOW_MOTION = 1 << 1;
     private static final int FLAG_HDR_10 = 1 << 2;
     private static final int FLAG_HDR_10_PLUS = 1 << 3;
     private static final int FLAG_HDR_HLG = 1 << 4;
@@ -192,12 +199,17 @@ public class TranscodeHelper {
     private static final int MAX_FINISHED_TRANSCODING_SESSION_STORE_COUNT = 16;
     private static final String DIRECTORY_CAMERA = "Camera";
 
+    private static final boolean IS_TRANSCODING_SUPPORTED = SdkLevel.isAtLeastS();
+
     private final Object mLock = new Object();
     private final Context mContext;
     private final MediaProvider mMediaProvider;
     private final PackageManager mPackageManager;
+    private final StorageManager mStorageManager;
     private final MediaTranscodeManager mMediaTranscodeManager;
     private final File mTranscodeDirectory;
+    @GuardedBy("mLock")
+    private UUID mTranscodeVolumeUuid;
 
     @GuardedBy("mLock")
     private final Map<String, StorageTranscodingSession> mStorageTranscodingSessions =
@@ -233,6 +245,7 @@ public class TranscodeHelper {
     public TranscodeHelper(Context context, MediaProvider mediaProvider) {
         mContext = context;
         mPackageManager = context.getPackageManager();
+        mStorageManager = context.getSystemService(StorageManager.class);
         mMediaTranscodeManager = context.getSystemService(MediaTranscodeManager.class);
         mMediaProvider = mediaProvider;
         mTranscodeDirectory = new File("/storage/emulated/" + UserHandle.myUserId(),
@@ -256,28 +269,51 @@ public class TranscodeHelper {
     /**
      * @return true if the file path matches transcode file path.
      */
-    public static boolean isTranscodeFile(@NonNull String path) {
+    private static boolean isTranscodeFile(@NonNull String path) {
         final Matcher matcher = PATTERN_TRANSCODE_PATH.matcher(path);
         return matcher.matches();
     }
 
-    @NonNull
-    public File getTranscodeDirectory() {
-        return mTranscodeDirectory;
+    public void freeCache(long bytes) {
+        // TODO(b/181846007): Implement cache clearing policies.
+        mTranscodeDirectory.delete();
+    }
+
+    private UUID getTranscodeVolumeUuid() {
+        synchronized (mLock) {
+            if (mTranscodeVolumeUuid != null) {
+                return mTranscodeVolumeUuid;
+            }
+        }
+
+        StorageVolume vol = mStorageManager.getStorageVolume(mTranscodeDirectory);
+        if (vol != null) {
+            synchronized (mLock) {
+                mTranscodeVolumeUuid = vol.getStorageUuid();
+                return mTranscodeVolumeUuid;
+            }
+        } else {
+            Log.w(TAG, "Failed to get storage volume UUID for: " + mTranscodeDirectory);
+            return null;
+        }
     }
 
     /**
      * @return transcode file's path for given {@code rowId}
      */
     @NonNull
-    public String getTranscodePath(long rowId) {
-        return new File(getTranscodeDirectory(), String.valueOf(rowId)).getAbsolutePath();
+    private String getTranscodePath(long rowId) {
+        return new File(mTranscodeDirectory, String.valueOf(rowId)).getAbsolutePath();
     }
 
-    public long getAnrDelayMillis(String packageName, int uid) {
+    public void onAnrDelayStarted(String packageName, int uid, int tid, int reason) {
+        if (!isTranscodeEnabled()) {
+            return;
+        }
+
         if (uid == MY_UID) {
-            Log.w(TAG, "Skipping ANR delay for MediaProvider");
-            return 0;
+            Log.w(TAG, "Skipping ANR delay handling for MediaProvider");
+            return;
         }
 
         logVerbose("Checking transcode status during ANR of " + packageName);
@@ -289,15 +325,12 @@ public class TranscodeHelper {
 
         for (StorageTranscodingSession session: sessions) {
             if (session.isUidBlocked(uid)) {
-                int delayMs = mMediaProvider.getIntDeviceConfig(TRANSCODE_ANR_DELAY_MS_KEY, 0);
+                session.setAnr();
                 Log.i(TAG, "Package: " + packageName + " with uid: " + uid
-                        + " is blocked on transcoding: " + session + ". Delaying ANR by " + delayMs
-                        + "ms");
-                return delayMs;
+                        + " and tid: " + tid + " is blocked on transcoding: " + session);
+                // TODO(b/170973510): Show UI
             }
         }
-
-        return 0;
     }
 
     // TODO(b/170974147): This should probably use a cache so we don't need to ask the
@@ -331,10 +364,11 @@ public class TranscodeHelper {
     }
 
     private void reportTranscodingResult(int uid, boolean success, long transcodingDurationMs,
-            int transcodingReason, String src, String dst) {
+            int transcodingReason, String src, String dst, boolean hasAnr) {
         BackgroundThread.getExecutor().execute(() -> {
             try (Cursor c = queryFileForTranscode(src,
-                            new String[] {MediaColumns.DURATION, MediaColumns.CAPTURE_FRAMERATE})) {
+                    new String[]{MediaColumns.DURATION, MediaColumns.CAPTURE_FRAMERATE,
+                            MediaColumns.WIDTH, MediaColumns.HEIGHT})) {
                 if (c != null && c.moveToNext()) {
                     MediaProviderStatsLog.write(
                             TRANSCODING_DATA,
@@ -342,22 +376,30 @@ public class TranscodeHelper {
                             MediaProviderStatsLog.TRANSCODING_DATA__ACCESS_TYPE__READ_TRANSCODE,
                             success ? new File(dst).length() : -1,
                             success ? TRANSCODING_DATA__TRANSCODE_RESULT__SUCCESS :
-                            TRANSCODING_DATA__TRANSCODE_RESULT__FAIL,
+                                    TRANSCODING_DATA__TRANSCODE_RESULT__FAIL,
                             transcodingDurationMs,
                             c.getLong(0) /* video_duration */,
                             c.getLong(1) /* capture_framerate */,
-                            transcodingReason);
+                            transcodingReason,
+                            c.getLong(2) /* width */,
+                            c.getLong(3) /* height */,
+                            hasAnr,
+                            TRANSCODING_DATA__FAILURE_CAUSE__CAUSE_UNKNOWN);
                 }
             }
         });
     }
 
     public boolean transcode(String src, String dst, int uid, int reason) {
+        // This can only happen when we are in a version that supports transcoding.
+        // So, no need to check for the SDK version here.
+
         StorageTranscodingSession storageSession = null;
         TranscodingSession transcodingSession = null;
         CountDownLatch latch = null;
         long startTime = SystemClock.elapsedRealtime();
         boolean result = false;
+        boolean hasAnr = false;
 
         try {
             synchronized (mLock) {
@@ -366,13 +408,15 @@ public class TranscodeHelper {
                     latch = new CountDownLatch(1);
                     try {
                         transcodingSession = enqueueTranscodingSession(src, dst, uid, latch);
-                    } catch (MediaTranscodingException | FileNotFoundException |
-                            UnsupportedOperationException e) {
+                        if (transcodingSession == null) {
+                            Log.e(TAG, "Failed to enqueue request due to Service unavailable");
+                            throw new IllegalStateException("Failed to enqueue request");
+                        }
+                    } catch (UnsupportedOperationException e) {
                         throw new IllegalStateException(e);
                     }
-
-                    mStorageTranscodingSessions.put(src, new StorageTranscodingSession(transcodingSession,
-                                    latch));
+                    storageSession = new StorageTranscodingSession(transcodingSession, latch);
+                    mStorageTranscodingSessions.put(src, storageSession);
                 } else {
                     latch = storageSession.latch;
                     transcodingSession = storageSession.session;
@@ -393,9 +437,10 @@ public class TranscodeHelper {
                 // Cancelling a deadlocked session seems to unblock the transcoder
                 finishTranscodingResult(uid, src, transcodingSession, latch);
             }
+            hasAnr = storageSession.hasAnr();
         } finally {
             reportTranscodingResult(uid, result, SystemClock.elapsedRealtime() - startTime, reason,
-                    src, dst);
+                    src, dst, hasAnr);
         }
         return result;
     }
@@ -411,6 +456,9 @@ public class TranscodeHelper {
      *
      */
     public String getIoPath(String path, int uid) {
+        // This can only happen when we are in a version that supports transcoding.
+        // So, no need to check for the SDK version here.
+
         Pair<Long, Integer> cacheInfo = getTranscodeCacheInfoFromDB(path);
         final long rowId = cacheInfo.first;
         if (rowId == -1) {
@@ -435,7 +483,7 @@ public class TranscodeHelper {
 
         final File file = new File(path);
         long maxFileSize = (long) (file.length() * 2);
-        getTranscodeDirectory().mkdirs();
+        mTranscodeDirectory.mkdirs();
         try (RandomAccessFile raf = new RandomAccessFile(transcodeFile, "rw")) {
             raf.setLength(maxFileSize);
         } catch (IOException e) {
@@ -447,16 +495,18 @@ public class TranscodeHelper {
     }
 
     private static int getMediaCapabilitiesUid(int uid, Bundle bundle) {
-        if (bundle == null) {
+        if (bundle == null || !bundle.containsKey(MediaStore.EXTRA_MEDIA_CAPABILITIES_UID)) {
             return uid;
         }
+
         int mediaCapabilitiesUid = bundle.getInt(MediaStore.EXTRA_MEDIA_CAPABILITIES_UID);
         if (mediaCapabilitiesUid >= Process.FIRST_APPLICATION_UID) {
             logVerbose(
                     "Media capabilities uid " + mediaCapabilitiesUid + ", passed for uid " + uid);
             return mediaCapabilitiesUid;
         }
-        Log.d(TAG, "Ignoring invalid Media capabilities uid " + mediaCapabilitiesUid);
+        Log.w(TAG, "Ignoring invalid media capabilities uid " + mediaCapabilitiesUid
+                + " for uid: " + uid);
         return uid;
     }
 
@@ -508,7 +558,8 @@ public class TranscodeHelper {
         return doesAppNeedTranscoding(uid, bundle, fileFlags);
     }
 
-    private int doesAppNeedTranscoding(int uid, Bundle bundle, int fileFlags) {
+    @VisibleForTesting
+    int doesAppNeedTranscoding(int uid, Bundle bundle, int fileFlags) {
         // Check explicit Bundle provided
         if (bundle != null) {
             if (bundle.getBoolean(MediaStore.EXTRA_ACCEPT_ORIGINAL_MEDIA_FORMAT, false)) {
@@ -678,6 +729,10 @@ public class TranscodeHelper {
                         || colorTransfer == MediaFormat.COLOR_TRANSFER_HLG);
     }
 
+    private static boolean isModernFormat(String mimeType, int colorStandard, int colorTransfer) {
+        return isHevc(mimeType) || isHdr10Plus(colorStandard, colorTransfer);
+    }
+
     public boolean supportsTranscode(String path) {
         File file = new File(path);
         String name = file.getName();
@@ -823,13 +878,15 @@ public class TranscodeHelper {
         }
 
         try (Cursor c = mMediaProvider.queryForSingleItem(uri,
-                new String[] {
-                    FileColumns._VIDEO_CODEC_TYPE,
-                    FileColumns.SIZE,
-                    FileColumns.OWNER_PACKAGE_NAME,
-                    FileColumns.DATA,
-                    MediaColumns.DURATION,
-                    MediaColumns.CAPTURE_FRAMERATE
+                new String[]{
+                        FileColumns._VIDEO_CODEC_TYPE,
+                        FileColumns.SIZE,
+                        FileColumns.OWNER_PACKAGE_NAME,
+                        FileColumns.DATA,
+                        MediaColumns.DURATION,
+                        MediaColumns.CAPTURE_FRAMERATE,
+                        MediaColumns.WIDTH,
+                        MediaColumns.HEIGHT
                 },
                 null, null, null)) {
             if (supportsTranscode(c.getString(3))) {
@@ -843,7 +900,11 @@ public class TranscodeHelper {
                             -1 /* transcoding_duration */,
                             c.getLong(4) /* video_duration */,
                             c.getLong(5) /* capture_framerate */,
-                            -1 /* transcode_reason */);
+                            -1 /* transcode_reason */,
+                            c.getLong(6) /* width */,
+                            c.getLong(7) /* height */,
+                            false /* hit_anr */,
+                            TRANSCODING_DATA__FAILURE_CAUSE__CAUSE_UNKNOWN);
 
                 } else {
                     MediaProviderStatsLog.write(
@@ -855,7 +916,11 @@ public class TranscodeHelper {
                             -1 /* transcoding_duration */,
                             c.getLong(4) /* video_duration */,
                             c.getLong(5) /* capture_framerate */,
-                            -1 /* transcode_reason */);
+                            -1 /* transcode_reason */,
+                            c.getLong(6) /* width */,
+                            c.getLong(7) /* height */,
+                            false /* hit_anr */,
+                            TRANSCODING_DATA__FAILURE_CAUSE__CAUSE_UNKNOWN);
                 }
             }
         } catch (Exception e) {
@@ -872,12 +937,17 @@ public class TranscodeHelper {
                     FileColumns._VIDEO_CODEC_TYPE,
                     FileColumns.SIZE,
                     MediaColumns.DURATION,
-                    MediaColumns.CAPTURE_FRAMERATE
+                    MediaColumns.CAPTURE_FRAMERATE,
+                    MediaColumns.WIDTH,
+                    MediaColumns.HEIGHT,
+                    VideoColumns.COLOR_STANDARD,
+                    VideoColumns.COLOR_TRANSFER
         };
 
         try (Cursor c = queryFileForTranscode(path, resolverInfoProjection)) {
             if (c != null && c.moveToNext()) {
-                if (isHevc(c.getString(0)) && supportsTranscode(path)) {
+                if (supportsTranscode(path)
+                        && isModernFormat(c.getString(0), c.getInt(6), c.getInt(7))) {
                     if (transformsReason == 0) {
                         MediaProviderStatsLog.write(
                                 TRANSCODING_DATA,
@@ -888,7 +958,11 @@ public class TranscodeHelper {
                                 -1 /* transcoding_duration */,
                                 c.getLong(2) /* video_duration */,
                                 c.getLong(3) /* capture_framerate */,
-                                -1 /* transcode_reason */);
+                                -1 /* transcode_reason */,
+                                c.getLong(4) /* width */,
+                                c.getLong(5) /* height */,
+                                false /*hit_anr*/,
+                                TRANSCODING_DATA__FAILURE_CAUSE__CAUSE_UNKNOWN);
                     } else if (isTranscodeFileCached(path, ioPath)) {
                             MediaProviderStatsLog.write(
                                     TRANSCODING_DATA,
@@ -899,7 +973,11 @@ public class TranscodeHelper {
                                     -1 /* transcoding_duration */,
                                     c.getLong(2) /* video_duration */,
                                     c.getLong(3) /* capture_framerate */,
-                                    transformsReason /* transcode_reason */);
+                                    transformsReason /* transcode_reason */,
+                                    c.getLong(4) /* width */,
+                                    c.getLong(5) /* height */,
+                                    false /*hit_anr*/,
+                                    TRANSCODING_DATA__FAILURE_CAUSE__CAUSE_UNKNOWN);
                     } // else if file is not in cache, we'll log at read(2) when we transcode
                 }
             }
@@ -909,6 +987,9 @@ public class TranscodeHelper {
     }
 
     public boolean isTranscodeFileCached(String path, String transcodePath) {
+        // This can only happen when we are in a version that supports transcoding.
+        // So, no need to check for the SDK version here.
+
         if (SystemProperties.getBoolean("sys.fuse.disable_transcode_cache", false)) {
             // Caching is disabled. Hence, delete the cached transcode file.
             return false;
@@ -966,9 +1047,7 @@ public class TranscodeHelper {
     }
 
     private TranscodingSession enqueueTranscodingSession(String src, String dst, int uid,
-            final CountDownLatch latch)
-            throws FileNotFoundException, MediaTranscodingException, UnsupportedOperationException {
-
+            final CountDownLatch latch) throws UnsupportedOperationException {
         File file = new File(src);
         File transcodeFile = new File(dst);
 
@@ -1004,7 +1083,14 @@ public class TranscodeHelper {
 
     private boolean waitTranscodingResult(int uid, String src, TranscodingSession session,
             CountDownLatch latch) {
+        UUID uuid = getTranscodeVolumeUuid();
         try {
+            if (uuid != null) {
+                // tid is 0 since we can't really get the apps tid over binder
+                mStorageManager.notifyAppIoBlocked(uuid, uid, 0 /* tid */,
+                        StorageManager.APP_IO_BLOCKED_REASON_TRANSCODING);
+            }
+
             int timeout = getTranscodeTimeoutSeconds(src);
 
             String waitStartLog = "Transcoding wait start: " + src + ". Uid: " + uid + ". Timeout: "
@@ -1023,6 +1109,12 @@ public class TranscodeHelper {
             Thread.currentThread().interrupt();
             Log.w(TAG, "Transcoding latch interrupted." + session);
             return false;
+        } finally {
+            if (uuid != null) {
+                // tid is 0 since we can't really get the apps tid over binder
+                mStorageManager.notifyAppIoResumed(uuid, uid, 0 /* tid */,
+                        StorageManager.APP_IO_BLOCKED_REASON_TRANSCODING);
+            }
         }
     }
 
@@ -1079,7 +1171,7 @@ public class TranscodeHelper {
     }
 
     public boolean deleteCachedTranscodeFile(long rowId) {
-        return new File(getTranscodeDirectory(), String.valueOf(rowId)).delete();
+        return new File(mTranscodeDirectory, String.valueOf(rowId)).delete();
     }
 
     private DatabaseHelper getDatabaseHelperForUri(Uri uri) {
@@ -1116,7 +1208,7 @@ public class TranscodeHelper {
     }
 
     private boolean isTranscodeEnabled() {
-        return getBooleanProperty(TRANSCODE_ENABLED_SYS_PROP_KEY,
+        return IS_TRANSCODING_SUPPORTED && getBooleanProperty(TRANSCODE_ENABLED_SYS_PROP_KEY,
                 TRANSCODE_ENABLED_DEVICE_CONFIG_KEY, true /* defaultValue */);
     }
 
@@ -1312,10 +1404,16 @@ public class TranscodeHelper {
         };
     }
 
+    @VisibleForTesting
+    static int getMyUid() {
+        return MY_UID;
+    }
+
     private static class StorageTranscodingSession {
         public final TranscodingSession session;
         public final CountDownLatch latch;
         private final Set<Integer> mBlockedUids = new ArraySet<>();
+        private boolean hasAnr;
 
         public StorageTranscodingSession(TranscodingSession session, CountDownLatch latch) {
             this.session = session;
@@ -1331,6 +1429,18 @@ public class TranscodeHelper {
         public boolean isUidBlocked(int uid) {
             synchronized (latch) {
                 return mBlockedUids.contains(uid);
+            }
+        }
+
+        public void setAnr() {
+            synchronized (latch) {
+                hasAnr = true;
+            }
+        }
+
+        public boolean hasAnr() {
+            synchronized (latch) {
+                return hasAnr;
             }
         }
 
@@ -1350,6 +1460,11 @@ public class TranscodeHelper {
                 "native_transcode_progress_channel";
         private static final String TRANSCODE_PROGRESS_CHANNEL_NAME = "Native Transcode Progress";
 
+        // Related to notification settings
+        private static final String TRANSCODE_NOTIFICATION_SYS_PROP_KEY =
+                "persist.sys.fuse.transcode_notification";
+        private static final boolean NOTIFICATION_ALLOWED_DEFAULT_VALUE = true;
+
         private final NotificationManagerCompat mNotificationManager;
         // Builder for creating alert notifications.
         private final NotificationCompat.Builder mAlertBuilder;
@@ -1367,6 +1482,9 @@ public class TranscodeHelper {
         }
 
         void start(TranscodingSession session, String filePath) {
+            if (!notificationEnabled()) {
+                return;
+            }
             ForegroundThread.getHandler().post(() -> {
                 mAlertBuilder.setContentTitle("Transcoding started");
                 mAlertBuilder.setContentText(FileUtils.extractDisplayName(filePath));
@@ -1376,11 +1494,17 @@ public class TranscodeHelper {
         }
 
         void stop(TranscodingSession session, String filePath) {
+            if (!notificationEnabled()) {
+                return;
+            }
             endSessionWithMessage(session, filePath, getResultMessageForSession(session));
         }
 
         void setProgress(TranscodingSession session, String filePath,
                 @IntRange(from = 0, to = PROGRESS_MAX) int progress) {
+            if (!notificationEnabled()) {
+                return;
+            }
             if (shouldShowProgress(session)) {
                 mProgressBuilder.setContentText(FileUtils.extractDisplayName(filePath));
                 mProgressBuilder.setProgress(PROGRESS_MAX, progress, /* indeterminate= */ false);
@@ -1455,6 +1579,11 @@ public class TranscodeHelper {
                 default:
                     return "Transcoding result unknown";
             }
+        }
+
+        private static boolean notificationEnabled() {
+            return SystemProperties.getBoolean(TRANSCODE_NOTIFICATION_SYS_PROP_KEY,
+                    NOTIFICATION_ALLOWED_DEFAULT_VALUE);
         }
     }
 

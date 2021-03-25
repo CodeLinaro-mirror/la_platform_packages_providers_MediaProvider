@@ -26,6 +26,7 @@ import android.content.ContentUris;
 import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.ProviderInfo;
@@ -103,6 +104,8 @@ public class DatabaseHelper extends SQLiteOpenHelper implements AutoCloseable {
      * {@link MediaColumns#GENERATION_MODIFIED}.
      */
     public static final String CURRENT_GENERATION_CLAUSE = "SELECT generation FROM local_metadata";
+
+    static final String PREF_DB_FROM_VERSION = "db_from_version";
 
     private static final int NOTIFY_BATCH_SIZE = 256;
 
@@ -355,6 +358,8 @@ public class DatabaseHelper extends SQLiteOpenHelper implements AutoCloseable {
             updateDatabase(db, oldV, newV);
         } finally {
             mSchemaLock.writeLock().unlock();
+            SharedPreferences prefs = mContext.getSharedPreferences(TAG, Context.MODE_PRIVATE);
+            prefs.edit().putInt(PREF_DB_FROM_VERSION, oldV).commit();
         }
     }
 
@@ -429,7 +434,7 @@ public class DatabaseHelper extends SQLiteOpenHelper implements AutoCloseable {
                     } catch (ReflectiveOperationException e) {
                         throw new RuntimeException(e);
                     }
-                   mProjectionMapCache.put(clazz, map);
+                    mProjectionMapCache.put(clazz, map);
                 }
                 result.putAll(map);
             }
@@ -908,7 +913,7 @@ public class DatabaseHelper extends SQLiteOpenHelper implements AutoCloseable {
                             } catch (Exception e) {
                                 // We only have one shot to migrate data, so log and
                                 // keep marching forward.
-                                Log.wtf(TAG, "Couldn't migrate playlist file " + data);
+                                Log.w(TAG, "Couldn't migrate playlist file " + data);
                             }
 
                             values.put(FileColumns.DATA, playlistFilePath);
@@ -929,7 +934,7 @@ public class DatabaseHelper extends SQLiteOpenHelper implements AutoCloseable {
                             } catch (IOException e) {
                                 // We only have one shot to migrate data, so log and
                                 // keep marching forward
-                                Log.wtf(TAG, "Failed to rename " + values + "; continuing", e);
+                                Log.w(TAG, "Failed to rename " + values + "; continuing", e);
                                 FileUtils.computeValuesFromData(values, /*isForFuse*/ false);
                             }
                         }
@@ -962,7 +967,7 @@ public class DatabaseHelper extends SQLiteOpenHelper implements AutoCloseable {
             } catch (Exception e) {
                 // We have to guard ourselves against any weird behavior of the
                 // legacy provider by trying to catch everything
-                Log.wtf(TAG, "Failed migration from legacy provider", e);
+                Log.w(TAG, "Failed migration from legacy provider", e);
             }
 
             // We tried our best above to migrate everything we could, and we
@@ -1083,7 +1088,7 @@ public class DatabaseHelper extends SQLiteOpenHelper implements AutoCloseable {
             } catch (IOException e) {
                 // We only have one shot to migrate data, so log and
                 // keep marching forward.
-                Log.wtf(TAG, "Couldn't migrate playlist file " + playlistFile);
+                Log.w(TAG, "Couldn't migrate playlist file " + playlistFile);
             }
         } catch (RemoteException e) {
             throw new IllegalStateException(e);
@@ -1099,7 +1104,7 @@ public class DatabaseHelper extends SQLiteOpenHelper implements AutoCloseable {
                 return c.getString(0);
             }
         } catch (Exception e) {
-            Log.wtf(TAG, "Exception occurred while querying for data file for " + uri, e);
+            Log.w(TAG, "Exception occurred while querying for data file for " + uri, e);
         }
         return null;
     }
@@ -1168,7 +1173,7 @@ public class DatabaseHelper extends SQLiteOpenHelper implements AutoCloseable {
 
         if (!internal) {
             db.execSQL("CREATE VIEW audio_playlists AS SELECT "
-                    + String.join(",", getProjectionMap(Audio.Playlists.class).keySet())
+                    + getColumnsForCollection(Audio.Playlists.class)
                     + " FROM files WHERE media_type=4");
         }
 
@@ -1192,16 +1197,16 @@ public class DatabaseHelper extends SQLiteOpenHelper implements AutoCloseable {
                 + "3 AS grouporder FROM searchhelpertitle WHERE (title != '')");
 
         db.execSQL("CREATE VIEW audio AS SELECT "
-                + String.join(",", getProjectionMap(Audio.Media.class).keySet())
+                + getColumnsForCollection(Audio.Media.class)
                 + " FROM files WHERE media_type=2");
         db.execSQL("CREATE VIEW video AS SELECT "
-                + String.join(",", getProjectionMap(Video.Media.class).keySet())
+                + getColumnsForCollection(Video.Media.class)
                 + " FROM files WHERE media_type=3");
         db.execSQL("CREATE VIEW images AS SELECT "
-                + String.join(",", getProjectionMap(Images.Media.class).keySet())
+                + getColumnsForCollection(Images.Media.class)
                 + " FROM files WHERE media_type=1");
         db.execSQL("CREATE VIEW downloads AS SELECT "
-                + String.join(",", getProjectionMap(Downloads.class).keySet())
+                + getColumnsForCollection(Downloads.class)
                 + " FROM files WHERE is_download=1");
 
         db.execSQL("CREATE VIEW audio_artists AS SELECT "
@@ -1239,6 +1244,10 @@ public class DatabaseHelper extends SQLiteOpenHelper implements AutoCloseable {
                 + " FROM audio"
                 + " WHERE is_pending=0 AND is_trashed=0 AND volume_name IN " + filterVolumeNames
                 + " GROUP BY genre_id");
+    }
+
+    private String getColumnsForCollection(Class<?> collection) {
+        return String.join(",", getProjectionMap(collection).keySet()) + ",_modifier";
     }
 
     private static void makePristineTriggers(SQLiteDatabase db) {
@@ -1373,10 +1382,7 @@ public class DatabaseHelper extends SQLiteOpenHelper implements AutoCloseable {
 
     private static void updateAddRecording(SQLiteDatabase db, boolean internal) {
         db.execSQL("ALTER TABLE files ADD COLUMN is_recording INTEGER DEFAULT 0;");
-        if (SdkLevel.isAtLeastS()) {
-            // We add the column is_recording, rescan all music files
-            db.execSQL("UPDATE files SET date_modified=0 WHERE is_music=1;");
-        }
+        updateRecordingForSUpdate(db, internal);
     }
 
     private static void updateClearLocation(SQLiteDatabase db, boolean internal) {
@@ -1573,6 +1579,13 @@ public class DatabaseHelper extends SQLiteOpenHelper implements AutoCloseable {
         }
     }
 
+    static void updateRecordingForSUpdate(SQLiteDatabase db, boolean internal) {
+        if (SdkLevel.isAtLeastS()) {
+            // Rescan all music files to update is_recording type
+            db.execSQL("UPDATE files SET date_modified=0 WHERE is_music=1;");
+        }
+    }
+
     static final int VERSION_J = 509;
     static final int VERSION_K = 700;
     static final int VERSION_L = 700;
@@ -1584,7 +1597,7 @@ public class DatabaseHelper extends SQLiteOpenHelper implements AutoCloseable {
     static final int VERSION_R = 1115;
     // Leave some gaps in database version tagging to allow R schema changes
     // to go independent of S schema changes.
-    static final int VERSION_S = 1205;
+    static final int VERSION_S = 1206;
     static final int VERSION_LATEST = VERSION_S;
 
     /**
@@ -1747,6 +1760,9 @@ public class DatabaseHelper extends SQLiteOpenHelper implements AutoCloseable {
             }
             if (fromVersion < 1205) {
                 updateAddRecording(db, internal);
+            }
+            if (fromVersion < 1206) {
+                // Empty version bump to ensure views are recreated
             }
 
             // If this is the legacy database, it's not worth recomputing data
