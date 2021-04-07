@@ -819,7 +819,8 @@ public class DatabaseHelper extends SQLiteOpenHelper implements AutoCloseable {
                 + "scene_capture_type INTEGER DEFAULT NULL, generation_added INTEGER DEFAULT 0,"
                 + "generation_modified INTEGER DEFAULT 0, xmp BLOB DEFAULT NULL,"
                 + "_transcode_status INTEGER DEFAULT 0, _video_codec_type TEXT DEFAULT NULL,"
-                + "_modifier INTEGER DEFAULT 0, is_recording INTEGER DEFAULT 0)");
+                + "_modifier INTEGER DEFAULT 0, is_recording INTEGER DEFAULT 0,"
+                + "redacted_uri_id TEXT DEFAULT NULL)");
 
         db.execSQL("CREATE TABLE log (time DATETIME, message TEXT)");
         if (!mInternal) {
@@ -884,8 +885,16 @@ public class DatabaseHelper extends SQLiteOpenHelper implements AutoCloseable {
                     final String data = c.getString(c.getColumnIndex(MediaColumns.DATA));
                     values.put(MediaColumns.DATA, data);
                     FileUtils.computeValuesFromData(values, /*isForFuse*/ false);
+                    final String volumeNameFromPath = values.getAsString(MediaColumns.VOLUME_NAME);
                     for (String column : sMigrateColumns) {
                         DatabaseUtils.copyFromCursorToContentValues(column, c, values);
+                    }
+                    final String volumeNameMigrated = values.getAsString(MediaColumns.VOLUME_NAME);
+                    // While upgrading from P OS or below, VOLUME_NAME can be NULL in legacy
+                    // database. When VOLUME_NAME is NULL, extract VOLUME_NAME from
+                    // MediaColumns.DATA
+                    if (volumeNameMigrated == null || volumeNameMigrated.isEmpty()) {
+                        values.put(MediaColumns.VOLUME_NAME, volumeNameFromPath);
                     }
 
                     final String volumePath = FileUtils.extractVolumePath(data);
@@ -1385,6 +1394,10 @@ public class DatabaseHelper extends SQLiteOpenHelper implements AutoCloseable {
         updateRecordingForSUpdate(db, internal);
     }
 
+    private static void updateAddRedactedUriId(SQLiteDatabase db) {
+        db.execSQL("ALTER TABLE files ADD COLUMN redacted_uri_id TEXT DEFAULT NULL;");
+    }
+
     private static void updateClearLocation(SQLiteDatabase db, boolean internal) {
         db.execSQL("UPDATE files SET latitude=NULL, longitude=NULL;");
     }
@@ -1597,7 +1610,7 @@ public class DatabaseHelper extends SQLiteOpenHelper implements AutoCloseable {
     static final int VERSION_R = 1115;
     // Leave some gaps in database version tagging to allow R schema changes
     // to go independent of S schema changes.
-    static final int VERSION_S = 1206;
+    static final int VERSION_S = 1207;
     static final int VERSION_LATEST = VERSION_S;
 
     /**
@@ -1763,6 +1776,9 @@ public class DatabaseHelper extends SQLiteOpenHelper implements AutoCloseable {
             }
             if (fromVersion < 1206) {
                 // Empty version bump to ensure views are recreated
+            }
+            if (fromVersion < 1207) {
+                updateAddRedactedUriId(db);
             }
 
             // If this is the legacy database, it's not worth recomputing data

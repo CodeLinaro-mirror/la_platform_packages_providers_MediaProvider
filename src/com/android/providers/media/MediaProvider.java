@@ -138,12 +138,14 @@ import android.os.Environment;
 import android.os.IBinder;
 import android.os.ParcelFileDescriptor;
 import android.os.ParcelFileDescriptor.OnCloseListener;
+import android.os.Parcelable;
 import android.os.Process;
 import android.os.RemoteException;
 import android.os.SystemClock;
 import android.os.SystemProperties;
 import android.os.Trace;
 import android.os.UserHandle;
+import android.os.UserManager;
 import android.os.storage.StorageManager;
 import android.os.storage.StorageManager.StorageVolumeCallback;
 import android.os.storage.StorageVolume;
@@ -151,6 +153,7 @@ import android.preference.PreferenceManager;
 import android.provider.BaseColumns;
 import android.provider.Column;
 import android.provider.DeviceConfig;
+import android.provider.DocumentsContract;
 import android.provider.MediaStore;
 import android.provider.MediaStore.Audio;
 import android.provider.MediaStore.Audio.AudioColumns;
@@ -181,6 +184,7 @@ import androidx.annotation.GuardedBy;
 import androidx.annotation.Keep;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
+import androidx.annotation.RequiresApi;
 import androidx.annotation.VisibleForTesting;
 
 import com.android.modules.utils.build.SdkLevel;
@@ -223,6 +227,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -230,6 +235,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.UUID;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 import java.util.function.UnaryOperator;
@@ -283,6 +289,7 @@ public class MediaProvider extends ContentProvider {
     private static final String DIRECTORY_MEDIA = "media";
     private static final String DIRECTORY_THUMBNAILS = ".thumbnails";
     private static final List<String> PRIVATE_SUBDIRECTORIES_ANDROID = Arrays.asList("data", "obb");
+    private static final String REDACTED_URI_ID_PREFIX = "RUID";
 
     /**
      * Hard-coded filename where the current value of
@@ -331,6 +338,13 @@ public class MediaProvider extends ContentProvider {
     @EnabledAfter(targetSdkVersion = android.os.Build.VERSION_CODES.R)
     static final long ENABLE_DEFERRED_SCAN = 180326732L;
 
+    /**
+     * Enable option to include database rows of files from recently unmounted
+     * volume in MediaProvider#query
+     */
+    @ChangeId
+    @EnabledAfter(targetSdkVersion = Build.VERSION_CODES.R)
+    static final long ENABLE_INCLUDE_ALL_VOLUMES = 182734110L;
 
     // Stolen from: UserHandle#getUserId
     private static final int PER_USER_RANGE = 100000;
@@ -366,7 +380,9 @@ public class MediaProvider extends ContentProvider {
 
     private static final int sUserId = UserHandle.myUserId();
 
-    // WARNING/TODO (b/173505864): This will be replaced by signature APIs in S
+    /**
+     * Please use {@link getDownloadsProviderAuthority()} instead of using this directly.
+     */
     private static final String DOWNLOADS_PROVIDER_AUTHORITY = "downloads";
 
     @GuardedBy("mPendingOpenInfo")
@@ -488,6 +504,7 @@ public class MediaProvider extends ContentProvider {
     private AppOpsManager mAppOpsManager;
     private PackageManager mPackageManager;
     private DevicePolicyManager mDevicePolicyManager;
+    private UserManager mUserManager;
 
     private int mExternalStorageAuthorityAppId;
     private int mDownloadsAuthorityAppId;
@@ -859,7 +876,8 @@ public class MediaProvider extends ContentProvider {
     }
 
     private static boolean isCrossUserEnabled() {
-        return PROP_CROSS_USER_ALLOWED && Build.VERSION.SDK_INT <= Build.VERSION_CODES.R;
+        return ((PROP_CROSS_USER_ALLOWED && Build.VERSION.SDK_INT <= Build.VERSION_CODES.R) ||
+                SdkLevel.isAtLeastS());
     }
 
     /**
@@ -964,6 +982,7 @@ public class MediaProvider extends ContentProvider {
         mAppOpsManager = context.getSystemService(AppOpsManager.class);
         mPackageManager = context.getPackageManager();
         mDevicePolicyManager = context.getSystemService(DevicePolicyManager.class);
+        mUserManager = context.getSystemService(UserManager.class);
 
         // Reasonable thumbnail size is half of the smallest screen edge width
         final DisplayMetrics metrics = context.getResources().getDisplayMetrics();
@@ -1038,15 +1057,14 @@ public class MediaProvider extends ContentProvider {
         }
 
         ProviderInfo provider = mPackageManager.resolveContentProvider(
-            DOWNLOADS_PROVIDER_AUTHORITY, PackageManager.MATCH_DIRECT_BOOT_AWARE
+                getDownloadsProviderAuthority(), PackageManager.MATCH_DIRECT_BOOT_AWARE
                 | PackageManager.MATCH_DIRECT_BOOT_UNAWARE);
         if (provider != null) {
             mDownloadsAuthorityAppId = UserHandle.getAppId(provider.applicationInfo.uid);
         }
 
-        provider = mPackageManager.resolveContentProvider(
-            MediaStore.EXTERNAL_STORAGE_PROVIDER_AUTHORITY, PackageManager.MATCH_DIRECT_BOOT_AWARE
-                | PackageManager.MATCH_DIRECT_BOOT_UNAWARE);
+        provider = mPackageManager.resolveContentProvider(getExternalStorageProviderAuthority(),
+                PackageManager.MATCH_DIRECT_BOOT_AWARE | PackageManager.MATCH_DIRECT_BOOT_UNAWARE);
         if (provider != null) {
             mExternalStorageAuthorityAppId = UserHandle.getAppId(provider.applicationInfo.uid);
         }
@@ -1285,10 +1303,31 @@ public class MediaProvider extends ContentProvider {
 
     private boolean isAppCloneUserPair(int userId1, int userId2) {
         try {
+            UserHandle user1 = UserHandle.of(userId1);
+            UserHandle user2 = UserHandle.of(userId2);
+
+            // Need to create system package context here as the clone profile user doesn't run
+            // a MediaProvider instance of its own, and hence we can't use
+            // createContextAsUser which uses the current MediaProvider module package.
+            final Context userContext1 = getContext().createPackageContextAsUser("system", 0,
+                    user1);
+            boolean sharesMediaWithParentUser1 = userContext1.getSystemService(
+                    UserManager.class).sharesMediaWithParent();
+            final Context userContext2 = getContext().createPackageContextAsUser("system", 0,
+                    user2);
+            boolean sharesMediaWithParentUser2 = userContext2.getSystemService(
+                    UserManager.class).sharesMediaWithParent();
+
+            // Clone profiles share media with the parent user
+            if (SdkLevel.isAtLeastS() && (sharesMediaWithParentUser1
+                    || sharesMediaWithParentUser2)) {
+                return mUserManager.isSameProfileGroup(user1, user2);
+            }
             Method isAppCloneUserPair = StorageManager.class.getMethod("isAppCloneUserPair",
                     int.class, int.class);
             return (Boolean) isAppCloneUserPair.invoke(mStorageManager, userId1, userId2);
-        } catch (NoSuchMethodException | IllegalAccessException | InvocationTargetException e) {
+        } catch (NoSuchMethodException | IllegalAccessException | InvocationTargetException |
+                NameNotFoundException e) {
             Log.w(TAG, "isAppCloneUserPair failed. Users: " + userId1 + " and " + userId2);
             return false;
         }
@@ -1330,7 +1369,7 @@ public class MediaProvider extends ContentProvider {
             return false;
         }
 
-        if (callingUserId != 0 && pathUserId != 0) {
+        if (callingUserId != pathUserId && callingUserId != 0 && pathUserId != 0) {
             Log.w(TAG, "CrossUser at least one user is 0 check failed. Users: " + callingUserId
                     + " and " + pathUserId);
             return false;
@@ -1474,7 +1513,7 @@ public class MediaProvider extends ContentProvider {
 
             if (transformsReason > 0) {
                 ioPath = mTranscodeHelper.getIoPath(path, uid);
-                transformsComplete = false;
+                transformsComplete = mTranscodeHelper.isTranscodeFileCached(path, ioPath);
                 transforms = FLAG_TRANSFORM_TRANSCODING;
             }
         }
@@ -2736,6 +2775,11 @@ public class MediaProvider extends ContentProvider {
         return c;
     }
 
+    private boolean isUriSupportedForRedaction(Uri uri) {
+        final int match = matchUri(uri, true);
+        return REDACTED_URI_SUPPORTED_TYPES.contains(match);
+    }
+
     @Override
     public String getType(Uri url) {
         final int match = matchUri(url, true);
@@ -3087,8 +3131,8 @@ public class MediaProvider extends ContentProvider {
                 if (!validPath) {
                     // Some app-clone implementations use a subdirectory of the main user's root
                     // to store app clone files; allow these as well.
-                    if (isCrossUserEnabled() && primary.equals(PROP_CROSS_USER_ROOT) &&
-                            relativePath.length >= 2) {
+                    if (isCrossUserEnabled() && primary != null &&
+                        primary.equals(PROP_CROSS_USER_ROOT) && relativePath.length >= 2) {
                         final String crossUserPrimary = relativePath[1];
                         validPath = containsIgnoreCase(allowedPrimary, crossUserPrimary);
                     }
@@ -4364,8 +4408,7 @@ public class MediaProvider extends ContentProvider {
 
         // Only accept ALL_VOLUMES parameter up until R, because we're not convinced we want
         // to commit to this as an API.
-        final boolean includeAllVolumes = (Build.VERSION.SDK_INT <= Build.VERSION_CODES.R) ?
-                "1".equals(uri.getQueryParameter(ALL_VOLUMES)) : false;
+        final boolean includeAllVolumes = shouldIncludeRecentlyUnmountedVolumes(uri, extras);
         final String callingPackage = getCallingPackageOrSelf();
 
         switch (match) {
@@ -4843,6 +4886,36 @@ public class MediaProvider extends ContentProvider {
     }
 
     /**
+     * @return {@code true} if app requests to include database rows from
+     * recently unmounted volume.
+     * {@code false} otherwise.
+     */
+    private boolean shouldIncludeRecentlyUnmountedVolumes(Uri uri, Bundle extras) {
+        if (isFuseThread()) {
+            // File path requests don't require to query from unmounted volumes.
+            return false;
+        }
+
+        boolean isIncludeVolumesChangeEnabled = SdkLevel.isAtLeastS() &&
+                CompatChanges.isChangeEnabled(ENABLE_INCLUDE_ALL_VOLUMES, Binder.getCallingUid());
+        if ("1".equals(uri.getQueryParameter(ALL_VOLUMES))) {
+            // Support uri parameter only in R OS and below. Apps should use
+            // MediaStore#QUERY_ARG_RECENTLY_UNMOUNTED_VOLUMES on S OS onwards.
+            if (!isIncludeVolumesChangeEnabled) {
+                return true;
+            }
+            throw new IllegalArgumentException("Unsupported uri parameter \"all_volumes\"");
+        }
+        if (isIncludeVolumesChangeEnabled) {
+            // MediaStore#QUERY_ARG_INCLUDE_RECENTLY_UNMOUNTED_VOLUMES is only supported on S OS and
+            // for app targeting targetSdk>=S.
+            return extras.getBoolean(MediaStore.QUERY_ARG_INCLUDE_RECENTLY_UNMOUNTED_VOLUMES,
+                    false);
+        }
+        return false;
+    }
+
+    /**
      * Determine if given {@link Uri} has a
      * {@link MediaColumns#OWNER_PACKAGE_NAME} column.
      */
@@ -5113,8 +5186,10 @@ public class MediaProvider extends ContentProvider {
         // Do this on a background thread, since we don't want to make binder
         // calls as part of a FUSE call.
         helper.postBackground(() -> {
-            getContext().getSystemService(DownloadManager.class)
-                    .onMediaStoreDownloadsDeleted(deletedDownloadIds);
+            DownloadManager dm = getContext().getSystemService(DownloadManager.class);
+            if (dm != null) {
+                dm.onMediaStoreDownloadsDeleted(deletedDownloadIds);
+            }
         });
     }
 
@@ -5139,6 +5214,63 @@ public class MediaProvider extends ContentProvider {
             } while (n > 0);
             return total;
         });
+    }
+
+    @Nullable
+    private Uri getRedactedUri(@NonNull Uri uri) {
+        if (!isUriSupportedForRedaction(uri)) {
+            return null;
+        }
+
+        DatabaseHelper helper;
+        try {
+            helper = getDatabaseForUri(uri);
+        } catch (VolumeNotFoundException e) {
+            throw e.rethrowAsIllegalArgumentException();
+        }
+
+        try (final Cursor c = helper.runWithoutTransaction(
+                (db) -> db.query("files",
+                        new String[]{FileColumns.REDACTED_URI_ID}, FileColumns._ID + "=?",
+                        new String[]{uri.getLastPathSegment()}, null, null, null))) {
+            // Database entry for uri not found.
+            if (!c.moveToFirst()) return null;
+
+            String redactedUriID = c.getString(c.getColumnIndex(FileColumns.REDACTED_URI_ID));
+            if (redactedUriID == null) {
+                // No redacted has even been created for this uri. Create a new redacted URI ID for
+                // the uri and store it in the DB.
+                redactedUriID = REDACTED_URI_ID_PREFIX + UUID.randomUUID().toString().replace("-",
+                        "");
+
+                ContentValues cv = new ContentValues();
+                cv.put(FileColumns.REDACTED_URI_ID, redactedUriID);
+                int rowsAffected = helper.runWithTransaction(
+                        (db) -> db.update("files", cv, FileColumns._ID + "=?",
+                                new String[]{uri.getLastPathSegment()}));
+                if (rowsAffected == 0) {
+                    // this shouldn't happen ideally, only reason this might happen is if the db
+                    // entry got deleted in b/w in which case we should return null.
+                    return null;
+                }
+            }
+
+            // Create and return a uri with ID = redactedUriID.
+            final Uri.Builder builder = ContentUris.removeId(uri).buildUpon();
+            builder.appendPath(redactedUriID);
+
+            return builder.build();
+        }
+    }
+
+    @NonNull
+    private List<Uri> getRedactedUri(@NonNull List<Uri> uris) {
+        ArrayList<Uri> redactedUris = new ArrayList<>();
+        for (Uri uri : uris) {
+            redactedUris.add(getRedactedUri(uri));
+        }
+
+        return redactedUris;
     }
 
     @Override
@@ -5263,7 +5395,7 @@ public class MediaProvider extends ContentProvider {
 
                 try (ContentProviderClient client = getContext().getContentResolver()
                         .acquireUnstableContentProviderClient(
-                                MediaStore.EXTERNAL_STORAGE_PROVIDER_AUTHORITY)) {
+                                getExternalStorageProviderAuthority())) {
                     extras.putParcelable(MediaStore.EXTRA_URI, fileUri);
                     return client.call(method, null, extras);
                 } catch (RemoteException e) {
@@ -5278,7 +5410,7 @@ public class MediaProvider extends ContentProvider {
                 final Uri fileUri;
                 try (ContentProviderClient client = getContext().getContentResolver()
                         .acquireUnstableContentProviderClient(
-                                MediaStore.EXTERNAL_STORAGE_PROVIDER_AUTHORITY)) {
+                                getExternalStorageProviderAuthority())) {
                     final Bundle res = client.call(method, null, extras);
                     fileUri = res.getParcelable(MediaStore.EXTRA_URI);
                 } catch (RemoteException e) {
@@ -5293,6 +5425,35 @@ public class MediaProvider extends ContentProvider {
                     return res;
                 } catch (FileNotFoundException e) {
                     throw new IllegalArgumentException(e);
+                } finally {
+                    restoreLocalCallingIdentity(token);
+                }
+            }
+            case MediaStore.GET_REDACTED_MEDIA_URI_CALL: {
+                final Uri uri = extras.getParcelable(MediaStore.EXTRA_URI);
+                // NOTE: It is ok to update the DB and return a redacted URI for the cases when
+                // the user code only has read access, hence we don't check for write permission.
+                enforceCallingPermission(uri, Bundle.EMPTY, false);
+                final LocalCallingIdentity token = clearLocalCallingIdentity();
+                try {
+                    final Bundle res = new Bundle();
+                    res.putParcelable(MediaStore.EXTRA_URI, getRedactedUri(uri));
+                    return res;
+                } finally {
+                    restoreLocalCallingIdentity(token);
+                }
+            }
+            case MediaStore.GET_REDACTED_MEDIA_URI_LIST_CALL: {
+                final List<Uri> uris = extras.getParcelableArrayList(MediaStore.EXTRA_URI_LIST);
+                // NOTE: It is ok to update the DB and return a redacted URI for the cases when
+                // the user code only has read access, hence we don't check for write permission.
+                enforceCallingPermission(uris, false);
+                final LocalCallingIdentity token = clearLocalCallingIdentity();
+                try {
+                    final Bundle res = new Bundle();
+                    res.putParcelableArrayList(MediaStore.EXTRA_URI_LIST,
+                            (ArrayList<? extends Parcelable>) getRedactedUri(uris));
+                    return res;
                 } finally {
                     restoreLocalCallingIdentity(token);
                 }
@@ -5336,6 +5497,19 @@ public class MediaProvider extends ContentProvider {
                             "Failed to fetch access mode for file descriptor", e);
                 }
             }
+            case MediaStore.IS_SYSTEM_GALLERY_CALL:
+                final LocalCallingIdentity token = clearLocalCallingIdentity();
+                try {
+                    String packageName = arg;
+                    int uid = extras.getInt(MediaStore.EXTRA_IS_SYSTEM_GALLERY_UID);
+                    boolean isSystemGallery = PermissionUtils.checkWriteImagesOrVideoAppOps(
+                            getContext(), uid, packageName, getContext().getAttributionTag());
+                    Bundle res = new Bundle();
+                    res.putBoolean(MediaStore.EXTRA_IS_SYSTEM_GALLERY_RESPONSE, isSystemGallery);
+                    return res;
+                } finally {
+                    restoreLocalCallingIdentity(token);
+                }
             default:
                 throw new UnsupportedOperationException("Unsupported call: " + method);
         }
@@ -7179,6 +7353,27 @@ public class MediaProvider extends ContentProvider {
         return mCallingIdentity.get().hasPermission(PERMISSION_IS_LEGACY_GRANTED);
     }
 
+    private boolean shouldBypassDatabase(int uid) {
+        if (uid != android.os.Process.SHELL_UID && isCallingPackageManager()) {
+            return mCallingIdentity.get().shouldBypassDatabase(false /*isSystemGallery*/);
+        } else if (isCallingPackageSystemGallery()) {
+            if (isCallingPackageLegacyWrite()) {
+                // We bypass db operations for legacy system galleries with W_E_S (see b/167307393).
+                // Tracking a longer term solution in b/168784136.
+                return true;
+            } else if (isCallingPackageRequestingLegacy()) {
+                // If requesting legacy, app should have W_E_S along with SystemGallery appops.
+                return false;
+            } else if (!SdkLevel.isAtLeastS()) {
+                // We don't parse manifest flags for SdkLevel<=R yet. Hence, we don't bypass
+                // database updates for SystemGallery targeting R or above on R OS.
+                return false;
+            }
+            return mCallingIdentity.get().shouldBypassDatabase(true /*isSystemGallery*/);
+        }
+        return false;
+    }
+
     private static int getFileMediaType(String path) {
         final File file = new File(path);
         final String mimeType = MimeUtils.resolveMimeType(file);
@@ -7258,16 +7453,7 @@ public class MediaProvider extends ContentProvider {
     }
 
     private boolean shouldBypassDatabaseAndSetDirtyForFuse(int uid, String path) {
-        boolean shouldBypass = false;
-        if (uid != android.os.Process.SHELL_UID && isCallingPackageManager()) {
-            shouldBypass = true;
-        } else if (isCallingPackageLegacyWrite() && isCallingPackageSystemGallery()) {
-            // We bypass db operations for legacy system galleries with W_E_S (see b/167307393).
-            // Tracking a longer term solution in b/168784136.
-            shouldBypass = true;
-        }
-
-        if (shouldBypass) {
+        if (shouldBypassDatabase(uid)) {
             synchronized (mNonHiddenPaths) {
                 File file = new File(path);
                 String key = file.getParent();
@@ -7282,8 +7468,9 @@ public class MediaProvider extends ContentProvider {
                     }
                 }
             }
+            return true;
         }
-        return shouldBypass;
+        return false;
     }
 
     /**
@@ -8186,6 +8373,30 @@ public class MediaProvider extends ContentProvider {
         return mCallingIdentity.get().hasPermission(APPOP_REQUEST_INSTALL_PACKAGES_FOR_SHARED_UID);
     }
 
+    private String getExternalStorageProviderAuthority() {
+        if (SdkLevel.isAtLeastS()) {
+            return getExternalStorageProviderAuthorityFromDocumentsContract();
+        }
+        return MediaStore.EXTERNAL_STORAGE_PROVIDER_AUTHORITY;
+    }
+
+    @RequiresApi(Build.VERSION_CODES.S)
+    private String getExternalStorageProviderAuthorityFromDocumentsContract() {
+        return DocumentsContract.EXTERNAL_STORAGE_PROVIDER_AUTHORITY;
+    }
+
+    private String getDownloadsProviderAuthority() {
+        if (SdkLevel.isAtLeastS()) {
+            return getDownloadsProviderAuthorityFromDocumentsContract();
+        }
+        return DOWNLOADS_PROVIDER_AUTHORITY;
+    }
+
+    @RequiresApi(Build.VERSION_CODES.S)
+    private String getDownloadsProviderAuthorityFromDocumentsContract() {
+        return DocumentsContract.EXTERNAL_STORAGE_PROVIDER_AUTHORITY;
+    }
+
     private boolean isCallingIdentityDownloadProvider(int uid) {
         return uid == mDownloadsAuthorityAppId;
     }
@@ -8202,9 +8413,9 @@ public class MediaProvider extends ContentProvider {
      * The following apps have access to all private-app directories on secondary volumes:
      *    * ExternalStorageProvider
      *    * DownloadProvider
-     *    * Signature/privileged apps with ACCESS_MTP permission granted
-     *      (TODO(b/175796984): Allow *only* signature apps with ACCESS_MTP to access all
-     *      private-app directories).
+     *    * Signature apps with ACCESS_MTP permission granted
+     *      (Note: For Android R we also allow privileged apps with ACCESS_MTP to access all
+     *      private-app directories, this additional access is removed for Android S+).
      *
      * Installer apps can only access private-app directories on Android/obb.
      *
@@ -8215,14 +8426,41 @@ public class MediaProvider extends ContentProvider {
         final LocalCallingIdentity token =
             clearLocalCallingIdentity(getCachedCallingIdentityForFuse(uid));
         try {
-            if (isCallingIdentityDownloadProvider(uid) ||
-                    isCallingIdentityExternalStorageProvider(uid) || isCallingIdentityMtp(uid)) {
-                return true;
+            if (SdkLevel.isAtLeastS()) {
+                return isMountModeAllowedPrivatePathAccess(uid, getCallingPackage(), path);
+            } else {
+                if (isCallingIdentityDownloadProvider(uid) ||
+                        isCallingIdentityExternalStorageProvider(uid) || isCallingIdentityMtp(
+                        uid)) {
+                    return true;
+                }
+                return (isObbOrChildPath(path) && isCallingIdentityAllowedInstallerAccess(uid));
             }
-            return (isObbOrChildPath(path) && isCallingIdentityAllowedInstallerAccess(uid));
         } finally {
             restoreLocalCallingIdentity(token);
         }
+    }
+
+    @RequiresApi(Build.VERSION_CODES.S)
+    private boolean isMountModeAllowedPrivatePathAccess(int uid, String packageName, String path) {
+        // This is required as only MediaProvider (package with WRITE_MEDIA_STORAGE) can access
+        // mount modes.
+        final CallingIdentity token = clearCallingIdentity();
+        try {
+            final int mountMode = mStorageManager.getExternalStorageMountMode(uid, packageName);
+            switch (mountMode) {
+                case StorageManager.MOUNT_MODE_EXTERNAL_ANDROID_WRITABLE:
+                case StorageManager.MOUNT_MODE_EXTERNAL_PASS_THROUGH:
+                    return true;
+                case StorageManager.MOUNT_MODE_EXTERNAL_INSTALLER:
+                    return isObbOrChildPath(path);
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Caller does not have the permissions to access mount modes: ", e);
+        } finally {
+            restoreCallingIdentity(token);
+        }
+        return false;
     }
 
     private boolean checkCallingPermissionGlobal(Uri uri, boolean forWrite) {
@@ -8260,11 +8498,8 @@ public class MediaProvider extends ContentProvider {
      */
     private @Nullable Uri getPermissionGrantedUri(@NonNull List<Uri> uris, boolean forWrite) {
         if (SdkLevel.isAtLeastS()) {
-            final int modeFlags = forWrite
-                    ? Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-                    : Intent.FLAG_GRANT_READ_URI_PERMISSION;
-            int[] res = getContext().checkUriPermissions(uris, mCallingIdentity.get().pid,
-                    mCallingIdentity.get().uid, modeFlags);
+            int[] res = checkUriPermissions(uris, mCallingIdentity.get().pid,
+                    mCallingIdentity.get().uid, forWrite);
             if (res.length != uris.size()) {
                 return null;
             }
@@ -8281,6 +8516,14 @@ public class MediaProvider extends ContentProvider {
             }
         }
         return null;
+    }
+
+    @RequiresApi(Build.VERSION_CODES.S)
+    private int[] checkUriPermissions(@NonNull List<Uri> uris, int pid, int uid, boolean forWrite) {
+        final int modeFlags = forWrite
+                ? Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                : Intent.FLAG_GRANT_READ_URI_PERMISSION;
+        return getContext().checkUriPermissions(uris, pid, uid, modeFlags);
     }
 
     private boolean isUriPermissionGranted(Uri uri, boolean forWrite) {
@@ -8375,6 +8618,12 @@ public class MediaProvider extends ContentProvider {
             enforceCallingPermissionInternal(uri, extras, forWrite);
         } finally {
             Trace.endSection();
+        }
+    }
+
+    private void enforceCallingPermission(@NonNull Collection<Uri> uris, boolean forWrite) {
+        for (Uri uri : uris) {
+            enforceCallingPermission(uri, Bundle.EMPTY, forWrite);
         }
     }
 
@@ -8815,6 +9064,9 @@ public class MediaProvider extends ContentProvider {
 
     static final int DOWNLOADS = 800;
     static final int DOWNLOADS_ID = 801;
+
+    private static final HashSet<Integer> REDACTED_URI_SUPPORTED_TYPES = new HashSet<>(
+            Arrays.asList(AUDIO_MEDIA_ID, IMAGES_MEDIA_ID, VIDEO_MEDIA_ID, FILES_ID, DOWNLOADS_ID));
 
     private LocalUriMatcher mUriMatcher;
 

@@ -29,6 +29,7 @@ import android.annotation.SuppressLint;
 import android.annotation.SystemApi;
 import android.annotation.WorkerThread;
 import android.app.Activity;
+import android.app.AppOpsManager;
 import android.app.PendingIntent;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.content.ClipData;
@@ -39,6 +40,7 @@ import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
 import android.content.UriPermission;
+import android.content.pm.PackageManager;
 import android.database.Cursor;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
@@ -56,6 +58,7 @@ import android.os.CancellationSignal;
 import android.os.Environment;
 import android.os.OperationCanceledException;
 import android.os.ParcelFileDescriptor;
+import android.os.Parcelable;
 import android.os.RemoteException;
 import android.os.storage.StorageManager;
 import android.os.storage.StorageVolume;
@@ -210,6 +213,13 @@ public final class MediaStore {
     public static final String GET_MEDIA_URI_CALL = "get_media_uri";
 
     /** {@hide} */
+    public static final String GET_REDACTED_MEDIA_URI_CALL = "get_redacted_media_uri";
+    /** {@hide} */
+    public static final String GET_REDACTED_MEDIA_URI_LIST_CALL = "get_redacted_media_uri_list";
+    /** {@hide} */
+    public static final String EXTRA_URI_LIST = "uri_list";
+
+    /** {@hide} */
     public static final String EXTRA_URI = "uri";
     /** {@hide} */
     public static final String EXTRA_URI_PERMISSIONS = "uriPermissions";
@@ -223,6 +233,13 @@ public final class MediaStore {
 
     /** {@hide} */
     public static final String EXTRA_FILE_DESCRIPTOR = "file_descriptor";
+
+    /** {@hide} */
+    public static final String IS_SYSTEM_GALLERY_CALL = "is_system_gallery";
+    /** {@hide} */
+    public static final String EXTRA_IS_SYSTEM_GALLERY_UID = "is_system_gallery_uid";
+    /** {@hide} */
+    public static final String EXTRA_IS_SYSTEM_GALLERY_RESPONSE = "is_system_gallery_response";
 
     /**
      * This is for internal use by the media scanner only.
@@ -342,7 +359,13 @@ public final class MediaStore {
     public static final String EXTRA_MEDIA_GENRE = "android.intent.extra.genre";
     /**
      * The name of the Intent-extra used to define the playlist.
+     *
+     * @deprecated Android playlists are now deprecated. We will keep the current
+     *             functionality for compatibility resons, but we will no longer take feature
+     *             request. We do not advise adding new usages of Android Playlists. M3U files can
+     *             be used as an alternative.
      */
+    @Deprecated
     public static final String EXTRA_MEDIA_PLAYLIST = "android.intent.extra.playlist";
     /**
      * The name of the Intent-extra used to define the radio channel.
@@ -718,6 +741,26 @@ public final class MediaStore {
      */
     @SystemApi
     public static final String QUERY_ARG_DEFER_SCAN = "android:query-arg-defer-scan";
+
+    /**
+     * Flag that requests {@link ContentResolver#query} to include content from
+     * recently unmounted volumes.
+     * <p>
+     * When the flag is set, {@link ContentResolver#query} will return content
+     * from all volumes(i.e., both mounted and recently unmounted volume whose
+     * content is still held by MediaProvider).
+     * <p>
+     * Note that the query result doesn't provide any hint for content from
+     * unmounted volume. It's strongly recommended to use default query to
+     * avoid accessing/operating on the content that are not available on the
+     * device.
+     * <p>
+     * The flag is useful for apps which manage their own database and
+     * query MediaStore in order to synchronize between MediaStore database
+     * and their own database.
+     */
+    public static final String QUERY_ARG_INCLUDE_RECENTLY_UNMOUNTED_VOLUMES =
+            "android:query-arg-recently-unmounted-volumes";
 
     /**
      * Specify how {@link MediaColumns#IS_PENDING} items should be filtered when
@@ -1796,7 +1839,13 @@ public final class MediaStore {
             /**
              * Constant for the {@link #MEDIA_TYPE} column indicating that file
              * is a playlist file.
+             *
+             * @deprecated Android playlists are now deprecated. We will keep the current
+             *             functionality for compatibility resons, but we will no longer take
+             *             feature request. We do not advise adding new usages of Android Playlists.
+             *             M3U files can be used as an alternative.
              */
+            @Deprecated
             public static final int MEDIA_TYPE_PLAYLIST = 4;
 
             /**
@@ -1887,10 +1936,20 @@ public final class MediaStore {
             /**
              * Indexed value of {@link MediaMetadataRetriever#METADATA_KEY_VIDEO_CODEC_TYPE}
              * extracted from the video file. This value be null for non-video files.
+             *
              * @hide
              */
             // @Column(value = Cursor.FIELD_TYPE_INTEGER)
             public static final String _VIDEO_CODEC_TYPE = "_video_codec_type";
+
+            /**
+             * Redacted Uri-ID corresponding to this DB entry. The value will be null if no
+             * redacted uri has ever been created for this uri.
+             *
+             * @hide
+             */
+            // @Column(value = Cursor.FIELD_TYPE_STRING, readOnly = true)
+            public static final String REDACTED_URI_ID = "redacted_uri_id";
         }
     }
 
@@ -3092,7 +3151,13 @@ public final class MediaStore {
 
         /**
          * Audio playlist metadata columns.
+         *
+         * @deprecated Android playlists are now deprecated. We will keep the current
+         *             functionality for compatibility resons, but we will no longer take
+         *             feature request. We do not advise adding new usages of Android Playlists.
+         *             M3U files can be used as an alternative.
          */
+        @Deprecated
         public interface PlaylistsColumns extends MediaColumns {
             /**
              * The name of the playlist
@@ -3136,7 +3201,13 @@ public final class MediaStore {
 
         /**
          * Contains playlists for audio files
+         *
+         * @deprecated Android playlists are now deprecated. We will keep the current
+         *             functionality for compatibility resons, but we will no longer take
+         *             feature request. We do not advise adding new usages of Android Playlists.
+         *             M3U files can be used as an alternative.
          */
+        @Deprecated
         public static final class Playlists implements BaseColumns,
                 PlaylistsColumns {
             /**
@@ -4182,6 +4253,91 @@ public final class MediaStore {
         }
     }
 
+    /**
+     * Returns true if the given application is the current system gallery of the device.
+     *
+     * @param resolver The {@link ContentResolver} used to connect with
+     * {@link MediaStore#AUTHORITY}. Typically this value is {@link Context#getContentResolver()}.
+     * @param uid The uid to be checked if it is the current system gallery.
+     * @param packageName The package name to be checked if it is the current system gallery.
+     */
+    public static boolean isCurrentSystemGallery(
+            @NonNull ContentResolver resolver,
+            int uid,
+            @NonNull String packageName) {
+        Bundle in = new Bundle();
+        in.putInt(EXTRA_IS_SYSTEM_GALLERY_UID, uid);
+        final Bundle out = resolver.call(AUTHORITY, IS_SYSTEM_GALLERY_CALL, packageName, in);
+        return out.getBoolean(EXTRA_IS_SYSTEM_GALLERY_RESPONSE);
+    }
+
+    /**
+     * Returns an EXIF redacted version of {@code uri} i.e. a {@link Uri} with metadata such as
+     * location, GPS datestamp etc. redacted from the EXIF headers.
+     * <p>
+     * A redacted Uri can be used to share a file with another application wherein exposing
+     * sensitive information in EXIF headers is not desirable.
+     * Note:
+     * 1. Redacted uris cannot be granted write access and can neither be used to perform any kind
+     * of write operations.
+     * 2. To get a redacted uri the caller must hold read permission to {@code uri}.
+     *
+     * @param resolver The {@link ContentResolver} used to connect with
+     * {@link MediaStore#AUTHORITY}. Typically this value is gotten from
+     * {@link Context#getContentResolver()}
+     * @param uri the {@link Uri} Uri to convert
+     * @return redacted version of the {@code uri}. Returns {@code null} when the given
+     * {@link Uri} could not be found or is unsupported
+     * @throws SecurityException if the caller doesn't have the read access to {@code uri}
+     * @see #getRedactedUri(ContentResolver, List)
+     */
+    @Nullable
+    public static Uri getRedactedUri(@NonNull ContentResolver resolver, @NonNull Uri uri) {
+        try (ContentProviderClient client = resolver.acquireContentProviderClient(AUTHORITY)) {
+            final Bundle in = new Bundle();
+            in.putParcelable(EXTRA_URI, uri);
+            final Bundle out = client.call(GET_REDACTED_MEDIA_URI_CALL, null, in);
+            return out.getParcelable(EXTRA_URI);
+        } catch (RemoteException e) {
+            throw e.rethrowAsRuntimeException();
+        }
+    }
+
+    /**
+     * Returns a list of EXIF redacted version of {@code uris} i.e. a {@link Uri} with metadata
+     * such as location, GPS datestamp etc. redacted from the EXIF headers.
+     * <p>
+     * A redacted Uri can be used to share a file with another application wherein exposing
+     * sensitive information in EXIF headers is not desirable.
+     * Note:
+     * 1. Order of the returned uris follow the order of the {@code uris}.
+     * 2. Redacted uris cannot be granted write access and can neither be used to perform any kind
+     * of write operations.
+     * 3. To get a redacted uri the caller must hold read permission to its corresponding uri.
+     *
+     * @param resolver The {@link ContentResolver} used to connect with
+     * {@link MediaStore#AUTHORITY}. Typically this value is gotten from
+     * {@link Context#getContentResolver()}
+     * @param uris the list of {@link Uri} Uri to convert
+     * @return a list with redacted version of {@code uris}, in the same order. Returns {@code null}
+     * when the corresponding {@link Uri} could not be found or is unsupported
+     * @throws SecurityException if the caller doesn't have the read access to all the elements
+     * in {@code uris}
+     * @see #getRedactedUri(ContentResolver, Uri)
+     */
+    @NonNull
+    public static List<Uri> getRedactedUri(@NonNull ContentResolver resolver,
+            @NonNull List<Uri> uris) {
+        try (ContentProviderClient client = resolver.acquireContentProviderClient(AUTHORITY)) {
+            final Bundle in = new Bundle();
+            in.putParcelableArrayList(EXTRA_URI_LIST, (ArrayList<? extends Parcelable>) uris);
+            final Bundle out = client.call(GET_REDACTED_MEDIA_URI_LIST_CALL, null, in);
+            return out.getParcelableArrayList(EXTRA_URI_LIST);
+        } catch (RemoteException e) {
+            throw e.rethrowAsRuntimeException();
+        }
+    }
+
     /** {@hide} */
     public static void resolvePlaylistMembers(@NonNull ContentResolver resolver,
             @NonNull Uri playlistUri) {
@@ -4230,5 +4386,46 @@ public final class MediaStore {
     @WorkerThread
     public static void scanVolume(@NonNull ContentResolver resolver, @NonNull String volumeName) {
         resolver.call(AUTHORITY, SCAN_VOLUME_CALL, volumeName, null);
+    }
+
+    /**
+     * Returns whether the calling app is granted {@link android.Manifest.permission#MANAGE_MEDIA}
+     * or not.
+     * <p>Declaring the permission {@link android.Manifest.permission#MANAGE_MEDIA} isn't
+     * enough to gain the access.
+     * <p>To request access, use {@link android.provider.Settings#ACTION_REQUEST_MANAGE_MEDIA}.
+     *
+     * @param context the request context
+     * @return true, the calling app is granted the permission. Otherwise, false
+     *
+     * @see android.Manifest.permission#MANAGE_MEDIA
+     * @see android.provider.Settings#ACTION_REQUEST_MANAGE_MEDIA
+     * @see #createDeleteRequest(ContentResolver, Collection)
+     * @see #createTrashRequest(ContentResolver, Collection, boolean)
+     * @see #createWriteRequest(ContentResolver, Collection)
+     */
+    public static boolean canManageMedia(@NonNull Context context) {
+        Objects.requireNonNull(context);
+        final String packageName = context.getOpPackageName();
+        final int uid = context.getApplicationInfo().uid;
+        final String permission = android.Manifest.permission.MANAGE_MEDIA;
+
+        final AppOpsManager appOps = context.getSystemService(AppOpsManager.class);
+        final int opMode = appOps.unsafeCheckOpNoThrow(AppOpsManager.permissionToOp(permission),
+                uid, packageName);
+
+        switch (opMode) {
+            case AppOpsManager.MODE_DEFAULT:
+                return PackageManager.PERMISSION_GRANTED == context.checkPermission(
+                        permission, android.os.Process.myPid(), uid);
+            case AppOpsManager.MODE_ALLOWED:
+                return true;
+            case AppOpsManager.MODE_ERRORED:
+            case AppOpsManager.MODE_IGNORED:
+                return false;
+            default:
+                Log.w(TAG, "Unknown AppOpsManager mode " + opMode);
+                return false;
+        }
     }
 }

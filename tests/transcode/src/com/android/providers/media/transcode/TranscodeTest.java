@@ -86,8 +86,7 @@ public class TranscodeTest {
 
     @Before
     public void setUp() throws Exception {
-        // TODO(b/171789917): Cuttlefish doesn't support transcoding yet
-        Assume.assumeFalse(SystemProperties.get("ro.product.vendor.model").contains("Cuttlefish"));
+        Assume.assumeTrue(SystemProperties.getBoolean("sys.fuse.transcode_enabled", false));
 
         TranscodeTestUtils.pollForExternalStorageState();
         TranscodeTestUtils.grantPermission(getContext().getPackageName(),
