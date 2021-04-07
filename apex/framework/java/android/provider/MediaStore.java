@@ -48,12 +48,14 @@ import android.media.ApplicationMediaCapabilities;
 import android.media.ExifInterface;
 import android.media.MediaFormat;
 import android.media.MediaMetadataRetriever;
+import android.media.MediaPlayer;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.CancellationSignal;
 import android.os.Environment;
 import android.os.OperationCanceledException;
+import android.os.ParcelFileDescriptor;
 import android.os.RemoteException;
 import android.os.storage.StorageManager;
 import android.os.storage.StorageVolume;
@@ -194,6 +196,10 @@ public final class MediaStore {
     public static final String FINISH_LEGACY_MIGRATION_CALL = "finish_legacy_migration";
 
     /** {@hide} */
+    public static final String GET_ORIGINAL_MEDIA_FORMAT_FILE_DESCRIPTOR_CALL =
+            "get_original_media_format_file_descriptor";
+
+    /** {@hide} */
     @Deprecated
     public static final String EXTERNAL_STORAGE_PROVIDER_AUTHORITY =
             "com.android.externalstorage.documents";
@@ -214,6 +220,9 @@ public final class MediaStore {
     public static final String EXTRA_CONTENT_VALUES = "content_values";
     /** {@hide} */
     public static final String EXTRA_RESULT = "result";
+
+    /** {@hide} */
+    public static final String EXTRA_FILE_DESCRIPTOR = "file_descriptor";
 
     /**
      * This is for internal use by the media scanner only.
@@ -603,7 +612,7 @@ public final class MediaStore {
      */
     public final static String EXTRA_OUTPUT = "output";
 
-    /*
+    /**
      * Specify that the caller wants to receive the original media format without transcoding.
      *
      * <b>Caution: using this flag can cause app
@@ -626,6 +635,7 @@ public final class MediaStore {
      * @see ContentResolver#openTypedAssetFileDescriptor(Uri, String, Bundle)
      * @see ContentResolver#openTypedAssetFile(Uri, String, Bundle, CancellationSignal)
      * @see #setRequireOriginal(Uri)
+     * @see MediaStore#getOriginalMediaFormatFileDescriptor(Context, ParcelFileDescriptor)
      */
     public final static String EXTRA_ACCEPT_ORIGINAL_MEDIA_FORMAT =
             "android.provider.extra.ACCEPT_ORIGINAL_MEDIA_FORMAT";
@@ -648,6 +658,17 @@ public final class MediaStore {
      */
     public final static String EXTRA_MEDIA_CAPABILITIES =
             "android.provider.extra.MEDIA_CAPABILITIES";
+
+    /**
+     * Specify the UID of the app that should be used to determine supported media capabilities
+     * while opening a media.
+     *
+     * If this specified UID is found to be capable of handling the original media file format, the
+     * app will receive the original file, otherwise, the file will get transcoded to a default
+     * format supported by the specified UID.
+     */
+    public static final String EXTRA_MEDIA_CAPABILITIES_UID =
+            "android.provider.extra.MEDIA_CAPABILITIES_UID";
 
     /**
       * The string that is used when a media attribute is not known. For example,
@@ -835,6 +856,30 @@ public final class MediaStore {
      */
     public static boolean getRequireOriginal(@NonNull Uri uri) {
         return uri.getBooleanQueryParameter(MediaStore.PARAM_REQUIRE_ORIGINAL, false);
+    }
+
+    /**
+     * Returns {@link ParcelFileDescriptor} representing the original media file format for
+     * {@code fileDescriptor}.
+     *
+     * <p>Media files may get transcoded based on an application's media capabilities requirements.
+     * However, in various cases, when the application needs access to the original media file, or
+     * doesn't attempt to parse the actual byte contents of media files, such as playback using
+     * {@link MediaPlayer} or for off-device backup, this method can be useful.
+     *
+     * @throws IOException if the given {@link ParcelFileDescriptor} could not be converted
+     *
+     * @see MediaStore#EXTRA_ACCEPT_ORIGINAL_MEDIA_FORMAT
+     */
+    public static @NonNull ParcelFileDescriptor getOriginalMediaFormatFileDescriptor(
+            @NonNull Context context,
+            @NonNull ParcelFileDescriptor fileDescriptor) throws IOException {
+        Bundle input = new Bundle();
+        input.putParcelable(EXTRA_FILE_DESCRIPTOR, fileDescriptor);
+
+        Bundle output = context.getContentResolver().call(AUTHORITY,
+                GET_ORIGINAL_MEDIA_FORMAT_FILE_DESCRIPTOR_CALL, null, input);
+        return output.getParcelable(EXTRA_FILE_DESCRIPTOR);
     }
 
     /**
@@ -2706,6 +2751,12 @@ public final class MediaStore {
              */
             @Column(value = Cursor.FIELD_TYPE_INTEGER, readOnly = true)
             public static final String IS_AUDIOBOOK = "is_audiobook";
+
+            /**
+             * Non-zero if the audio file is a recording
+             */
+            @Column(value = Cursor.FIELD_TYPE_INTEGER, readOnly = true)
+            public static final String IS_RECORDING = "is_recording";
 
             /**
              * The id of the genre the audio file is from, if any

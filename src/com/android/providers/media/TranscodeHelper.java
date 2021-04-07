@@ -38,6 +38,8 @@ import android.compat.annotation.Disabled;
 import android.content.ContentResolver;
 import android.content.ContentValues;
 import android.content.Context;
+import android.content.pm.ApplicationInfo;
+import android.content.pm.InstallSourceInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.PackageManager.Property;
 import android.content.res.XmlResourceParser;
@@ -61,6 +63,7 @@ import android.os.UserHandle;
 import android.provider.MediaStore;
 import android.provider.MediaStore.Files.FileColumns;
 import android.provider.MediaStore.MediaColumns;
+import android.provider.MediaStore.Video.VideoColumns;
 import android.util.ArrayMap;
 import android.util.ArraySet;
 import android.util.Log;
@@ -88,7 +91,7 @@ import java.io.PrintWriter;
 import java.io.RandomAccessFile;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
-import java.util.List;
+import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
@@ -115,6 +118,9 @@ public class TranscodeHelper {
             "persist.sys.fuse.transcode_user_control";
     private static final String TRANSCODE_COMPAT_MANIFEST_KEY = "transcode_compat_manifest";
     private static final String TRANSCODE_COMPAT_STALE_KEY = "transcode_compat_stale";
+    private static final String TRANSCODE_ANR_DELAY_MS_KEY = "transcode_anr_delay_ms";
+
+    private static final int MY_UID = android.os.Process.myUid();
 
     /**
      * Force enable an app to support the HEVC media capability
@@ -182,6 +188,8 @@ public class TranscodeHelper {
      */
     private static final int TYPE_QUERY = 0;
     private static final int TYPE_UPDATE = 2;
+
+    private static final int MAX_FINISHED_TRANSCODING_SESSION_STORE_COUNT = 16;
     private static final String DIRECTORY_CAMERA = "Camera";
 
     private final Object mLock = new Object();
@@ -190,8 +198,25 @@ public class TranscodeHelper {
     private final PackageManager mPackageManager;
     private final MediaTranscodeManager mMediaTranscodeManager;
     private final File mTranscodeDirectory;
+
     @GuardedBy("mLock")
-    private final Map<String, StorageTranscodingSession> mStorageTranscodingSessions = new ArrayMap<>();
+    private final Map<String, StorageTranscodingSession> mStorageTranscodingSessions =
+            new ArrayMap<>();
+
+    // These are for dumping purpose only.
+    // We keep these separately because the probability of getting cancelled and error'ed sessions
+    // is pretty low, and we are limiting the count of what we keep.  So, we don't wanna miss out
+    // on dumping the cancelled and error'ed sessions.
+    @GuardedBy("mLock")
+    private final Map<String, StorageTranscodingSession> mSuccessfulTranscodeSessions =
+            createFinishedTranscodingSessionMap();
+    @GuardedBy("mLock")
+    private final Map<String, StorageTranscodingSession> mCancelledTranscodeSessions =
+            createFinishedTranscodingSessionMap();
+    @GuardedBy("mLock")
+    private final Map<String, StorageTranscodingSession> mErroredTranscodeSessions =
+            createFinishedTranscodingSessionMap();
+
     private final TranscodeUiNotifier mTranscodingUiNotifier;
     private final SessionTiming mSessionTiming;
     @GuardedBy("mLock")
@@ -249,21 +274,60 @@ public class TranscodeHelper {
         return new File(getTranscodeDirectory(), String.valueOf(rowId)).getAbsolutePath();
     }
 
-    /* TODO: this should probably use a cache so we don't
-     * need to ask the package manager every time
-     */
-    private String getNameForUid(int uid) {
+    public long getAnrDelayMillis(String packageName, int uid) {
+        if (uid == MY_UID) {
+            Log.w(TAG, "Skipping ANR delay for MediaProvider");
+            return 0;
+        }
+
+        logVerbose("Checking transcode status during ANR of " + packageName);
+
+        Set<StorageTranscodingSession> sessions = new ArraySet<>();
+        synchronized (mLock) {
+            sessions.addAll(mStorageTranscodingSessions.values());
+        }
+
+        for (StorageTranscodingSession session: sessions) {
+            if (session.isUidBlocked(uid)) {
+                int delayMs = mMediaProvider.getIntDeviceConfig(TRANSCODE_ANR_DELAY_MS_KEY, 0);
+                Log.i(TAG, "Package: " + packageName + " with uid: " + uid
+                        + " is blocked on transcoding: " + session + ". Delaying ANR by " + delayMs
+                        + "ms");
+                return delayMs;
+            }
+        }
+
+        return 0;
+    }
+
+    // TODO(b/170974147): This should probably use a cache so we don't need to ask the
+    // package manager every time for the package name or installer name
+    private String getMetricsSafeNameForUid(int uid) {
         String name = mPackageManager.getNameForUid(uid);
         if (name == null) {
             Log.w(TAG, "null package name received from getNameForUid for uid " + uid
                     + ", logging uid instead.");
-            name = Integer.toString(uid);
+            return Integer.toString(uid);
         } else if (name.isEmpty()) {
             Log.w(TAG, "empty package name received from getNameForUid for uid " + uid
                     + ", logging uid instead");
-            name = ":" + uid;
+            return ":empty_package_name:" + uid;
+        } else {
+            try {
+                InstallSourceInfo installInfo = mPackageManager.getInstallSourceInfo(name);
+                ApplicationInfo applicationInfo = mPackageManager.getApplicationInfo(name, 0);
+                if (installInfo.getInstallingPackageName() == null
+                        && ((applicationInfo.flags & ApplicationInfo.FLAG_SYSTEM) == 0)) {
+                    // For privacy reasons, we don't log metrics for side-loaded packages that
+                    // are not system packages
+                    return ":installer_adb:" + uid;
+                }
+                return name;
+            } catch (PackageManager.NameNotFoundException e) {
+                Log.w(TAG, "Unable to check installer for uid: " + uid, e);
+                return ":name_not_found:" + uid;
+            }
         }
-        return name;
     }
 
     private void reportTranscodingResult(int uid, boolean success, long transcodingDurationMs,
@@ -274,7 +338,7 @@ public class TranscodeHelper {
                 if (c != null && c.moveToNext()) {
                     MediaProviderStatsLog.write(
                             TRANSCODING_DATA,
-                            getNameForUid(uid),
+                            getMetricsSafeNameForUid(uid),
                             MediaProviderStatsLog.TRANSCODING_DATA__ACCESS_TYPE__READ_TRANSCODE,
                             success ? new File(dst).length() : -1,
                             success ? TRANSCODING_DATA__TRANSCODE_RESULT__SUCCESS :
@@ -382,6 +446,20 @@ public class TranscodeHelper {
         return transcodePath;
     }
 
+    private static int getMediaCapabilitiesUid(int uid, Bundle bundle) {
+        if (bundle == null) {
+            return uid;
+        }
+        int mediaCapabilitiesUid = bundle.getInt(MediaStore.EXTRA_MEDIA_CAPABILITIES_UID);
+        if (mediaCapabilitiesUid >= Process.FIRST_APPLICATION_UID) {
+            logVerbose(
+                    "Media capabilities uid " + mediaCapabilitiesUid + ", passed for uid " + uid);
+            return mediaCapabilitiesUid;
+        }
+        Log.d(TAG, "Ignoring invalid Media capabilities uid " + mediaCapabilitiesUid);
+        return uid;
+    }
+
     // TODO(b/173491972): Generalize to consider other file/app media capabilities beyond hevc
     /**
      * @return 0 or >0 representing whether we should transcode or not.
@@ -404,10 +482,11 @@ public class TranscodeHelper {
             logVerbose("Transcode not enabled");
             return 0;
         }
+
+        uid = getMediaCapabilitiesUid(uid, bundle);
         logVerbose("Checking shouldTranscode for: " + path + ". Uid: " + uid);
 
-        if (!supportsTranscode(path) || uid < Process.FIRST_APPLICATION_UID
-                || uid == Process.myUid()) {
+        if (!supportsTranscode(path) || uid < Process.FIRST_APPLICATION_UID || uid == MY_UID) {
             logVerbose("Transcode not supported");
             // Never transcode in any of these conditions
             // 1. Path doesn't support transcode
@@ -422,6 +501,7 @@ public class TranscodeHelper {
 
         if (fileFlags == 0) {
             // Nothing to transcode
+            logVerbose("File is not HEVC");
             return 0;
         }
 
@@ -439,10 +519,9 @@ public class TranscodeHelper {
             ApplicationMediaCapabilities capabilities =
                     bundle.getParcelable(MediaStore.EXTRA_MEDIA_CAPABILITIES);
             if (capabilities != null) {
-                Optional<Boolean> appExtraResult = checkAppMediaSupport(
-                        capabilitiesToSupportedFlags(capabilities),
-                        capabilitiesToUnsupportedFlags(capabilities), fileFlags,
-                        "app_extra");
+                Pair<Integer, Integer> flags = capabilitiesToMediaFormatFlags(capabilities);
+                Optional<Boolean> appExtraResult = checkAppMediaSupport(flags.first, flags.second,
+                        fileFlags, "app_extra");
                 if (appExtraResult.isPresent()) {
                     if (appExtraResult.get()) {
                         return MediaProviderStatsLog.TRANSCODING_DATA__ACCESS_REASON__APP_EXTRA;
@@ -566,24 +645,37 @@ public class TranscodeHelper {
     }
 
     private int getFileFlags(String path) {
-        try (Cursor cursor = queryFileForTranscode(path,
-                        new String[]{FileColumns._VIDEO_CODEC_TYPE})) {
+        final String[] projection = new String[] {
+            FileColumns._VIDEO_CODEC_TYPE,
+            VideoColumns.COLOR_STANDARD,
+            VideoColumns.COLOR_TRANSFER
+        };
+
+        try (Cursor cursor = queryFileForTranscode(path, projection)) {
             if (cursor == null || !cursor.moveToNext()) {
                 logVerbose("Couldn't find database row");
                 return 0;
             }
 
+            int result = 0;
             if (isHevc(cursor.getString(0))) {
-                return FLAG_HEVC;
-            } else {
-                logVerbose("File is not HEVC");
-                return 0;
+                result |= FLAG_HEVC;
             }
+            if (isHdr10Plus(cursor.getInt(1), cursor.getInt(2))) {
+                result |= FLAG_HDR_10_PLUS;
+            }
+            return result;
         }
     }
 
-    private boolean isHevc(String mimeType) {
+    private static boolean isHevc(String mimeType) {
         return MediaFormat.MIMETYPE_VIDEO_HEVC.equalsIgnoreCase(mimeType);
+    }
+
+    private static boolean isHdr10Plus(int colorStandard, int colorTransfer) {
+        return (colorStandard == MediaFormat.COLOR_STANDARD_BT2020) &&
+                (colorTransfer == MediaFormat.COLOR_TRANSFER_ST2084
+                        || colorTransfer == MediaFormat.COLOR_TRANSFER_HLG);
     }
 
     public boolean supportsTranscode(String path) {
@@ -641,8 +733,9 @@ public class TranscodeHelper {
                     .getXml(mediaCapProperty.getResourceId());
             ApplicationMediaCapabilities capability = ApplicationMediaCapabilities.createFromXml(
                     parser);
-            supportedFlags = capabilitiesToSupportedFlags(capability);
-            unsupportedFlags = capabilitiesToUnsupportedFlags(capability);
+            Pair<Integer, Integer> flags = capabilitiesToMediaFormatFlags(capability);
+            supportedFlags = flags.first;
+            unsupportedFlags = flags.second;
             identity.setApplicationMediaCapabilitiesFlags(supportedFlags, unsupportedFlags);
 
             return checkAppMediaSupport(supportedFlags, unsupportedFlags, fileFlags,
@@ -653,40 +746,54 @@ public class TranscodeHelper {
     }
 
     @ApplicationMediaCapabilitiesFlags
-    private int capabilitiesToSupportedFlags(ApplicationMediaCapabilities capability) {
-        return capabilitiesToFlags(capability.getSupportedVideoMimeTypes(),
-                capability.getSupportedHdrTypes());
-    }
-
-    @ApplicationMediaCapabilitiesFlags
-    private int capabilitiesToUnsupportedFlags(ApplicationMediaCapabilities capability) {
-        return capabilitiesToFlags(capability.getUnsupportedVideoMimeTypes(),
-                capability.getUnsupportedHdrTypes());
-    }
-
-    @ApplicationMediaCapabilitiesFlags
-    private int capabilitiesToFlags(List<String> videoMimeTypes, List<String> hdrTypes) {
-        int flags = 0;
+    private Pair<Integer, Integer> capabilitiesToMediaFormatFlags(
+            ApplicationMediaCapabilities capability) {
+        int supportedFlags = 0;
+        int unsupportedFlags = 0;
 
         // MimeType
-        if (videoMimeTypes.contains(MediaFormat.MIMETYPE_VIDEO_HEVC)) {
-            flags |= FLAG_HEVC;
+        if (capability.isFormatSpecified(MediaFormat.MIMETYPE_VIDEO_HEVC)) {
+            if (capability.isVideoMimeTypeSupported(MediaFormat.MIMETYPE_VIDEO_HEVC)) {
+                supportedFlags |= FLAG_HEVC;
+            } else {
+                unsupportedFlags |= FLAG_HEVC;
+            }
         }
 
         // HdrType
-        if (hdrTypes.contains(MediaFeature.HdrType.HDR10)) {
-            flags |= FLAG_HDR_10;
+        if (capability.isFormatSpecified(MediaFeature.HdrType.HDR10)) {
+            if (capability.isHdrTypeSupported(MediaFeature.HdrType.HDR10)) {
+                supportedFlags |= FLAG_HDR_10;
+            } else {
+                unsupportedFlags |= FLAG_HDR_10;
+            }
         }
-        if (hdrTypes.contains(MediaFeature.HdrType.HDR10_PLUS)) {
-            flags |= FLAG_HDR_10_PLUS;
+
+        if (capability.isFormatSpecified(MediaFeature.HdrType.HDR10_PLUS)) {
+            if (capability.isHdrTypeSupported(MediaFeature.HdrType.HDR10_PLUS)) {
+                supportedFlags |= FLAG_HDR_10_PLUS;
+            } else {
+                unsupportedFlags |= FLAG_HDR_10_PLUS;
+            }
         }
-        if (hdrTypes.contains(MediaFeature.HdrType.HLG)) {
-            flags |= FLAG_HDR_HLG;
+
+        if (capability.isFormatSpecified(MediaFeature.HdrType.HLG)) {
+            if (capability.isHdrTypeSupported(MediaFeature.HdrType.HLG)) {
+                supportedFlags |= FLAG_HDR_HLG;
+            } else {
+                unsupportedFlags |= FLAG_HDR_HLG;
+            }
         }
-        if (hdrTypes.contains(MediaFeature.HdrType.DOLBY_VISION)) {
-            flags |= FLAG_HDR_DOLBY_VISION;
+
+        if (capability.isFormatSpecified(MediaFeature.HdrType.DOLBY_VISION)) {
+            if (capability.isHdrTypeSupported(MediaFeature.HdrType.DOLBY_VISION)) {
+                supportedFlags |= FLAG_HDR_DOLBY_VISION;
+            } else {
+                unsupportedFlags |= FLAG_HDR_DOLBY_VISION;
+            }
         }
-        return flags;
+
+        return Pair.create(supportedFlags, unsupportedFlags);
     }
 
     private boolean getBooleanProperty(String sysPropKey, String deviceConfigKey,
@@ -774,7 +881,7 @@ public class TranscodeHelper {
                     if (transformsReason == 0) {
                         MediaProviderStatsLog.write(
                                 TRANSCODING_DATA,
-                                getNameForUid(uid) /* owner_package_name */,
+                                getMetricsSafeNameForUid(uid) /* owner_package_name */,
                                 MediaProviderStatsLog.TRANSCODING_DATA__ACCESS_TYPE__READ_DIRECT,
                                 c.getLong(1) /* file size */,
                                 TRANSCODING_DATA__TRANSCODE_RESULT__UNDEFINED,
@@ -782,10 +889,10 @@ public class TranscodeHelper {
                                 c.getLong(2) /* video_duration */,
                                 c.getLong(3) /* capture_framerate */,
                                 -1 /* transcode_reason */);
-                    } else if (isTranscodeFileCached(uid, path, ioPath)) {
+                    } else if (isTranscodeFileCached(path, ioPath)) {
                             MediaProviderStatsLog.write(
                                     TRANSCODING_DATA,
-                                    getNameForUid(uid) /* owner_package_name */,
+                                    getMetricsSafeNameForUid(uid) /* owner_package_name */,
                                     MediaProviderStatsLog.TRANSCODING_DATA__ACCESS_TYPE__READ_CACHE,
                                     c.getLong(1) /* file size */,
                                     TRANSCODING_DATA__TRANSCODE_RESULT__UNDEFINED,
@@ -801,7 +908,7 @@ public class TranscodeHelper {
         }
     }
 
-    public boolean isTranscodeFileCached(int uid, String path, String transcodePath) {
+    public boolean isTranscodeFileCached(String path, String transcodePath) {
         if (SystemProperties.getBoolean("sys.fuse.disable_transcode_cache", false)) {
             // Caching is disabled. Hence, delete the cached transcode file.
             return false;
@@ -928,10 +1035,26 @@ public class TranscodeHelper {
 
     private void finishTranscodingResult(int uid, String src, TranscodingSession session,
             CountDownLatch latch) {
+        final StorageTranscodingSession finishedSession;
+
         synchronized (mLock) {
             latch.countDown();
             session.cancel();
-            mStorageTranscodingSessions.remove(src);
+            finishedSession = mStorageTranscodingSessions.remove(src);
+
+            switch (session.getResult()) {
+                case TranscodingSession.RESULT_SUCCESS:
+                    mSuccessfulTranscodeSessions.put(src, finishedSession);
+                    break;
+                case TranscodingSession.RESULT_CANCELED:
+                    mCancelledTranscodeSessions.put(src, finishedSession);
+                    break;
+                case TranscodingSession.RESULT_ERROR:
+                    mErroredTranscodeSessions.put(src, finishedSession);
+                    break;
+                default:
+                    Log.w(TAG, "TranscodingSession.RESULT_NONE received for a finished session");
+            }
         }
 
         logEvent("Transcoding end: " + src + ". Uid: " + uid, session);
@@ -1053,7 +1176,7 @@ public class TranscodeHelper {
         while (i < manifest.length - 1) {
             try {
                 packageName = manifest[i++];
-                packageCompatValue = Integer.valueOf(manifest[i++]);
+                packageCompatValue = Integer.parseInt(manifest[i++]);
                 synchronized (mLock) {
                     // Lock is already held, explicitly hold again to make error prone happy
                     mAppCompatMediaCapabilities.put(packageName, packageCompatValue);
@@ -1095,7 +1218,7 @@ public class TranscodeHelper {
                 }
                 try {
                     packageName = lineValues[0];
-                    packageCompatValue = Integer.valueOf(lineValues[1]);
+                    packageCompatValue = Integer.parseInt(lineValues[1]);
 
                     if (stalePackages.contains(packageName)) {
                         Log.i(TAG, "Skipping stale package in transcode compat manifest: "
@@ -1146,8 +1269,25 @@ public class TranscodeHelper {
     public void dump(PrintWriter writer) {
         writer.println("isTranscodeEnabled=" + isTranscodeEnabled());
         writer.println("shouldTranscodeDefault=" + shouldTranscodeDefault());
+
         synchronized (mLock) {
             writer.println("mAppCompatMediaCapabilities=" + mAppCompatMediaCapabilities);
+            writer.println("mStorageTranscodingSessions=" + mStorageTranscodingSessions);
+
+            dumpFinishedSessions(writer);
+        }
+    }
+
+    private void dumpFinishedSessions(PrintWriter writer) {
+        synchronized (mLock) {
+            writer.println("mSuccessfulTranscodeSessions=" + mSuccessfulTranscodeSessions);
+            mSuccessfulTranscodeSessions.clear();
+
+            writer.println("mCancelledTranscodeSessions=" + mCancelledTranscodeSessions);
+            mCancelledTranscodeSessions.clear();
+
+            writer.println("mErroredTranscodeSessions=" + mErroredTranscodeSessions);
+            mErroredTranscodeSessions.clear();
         }
     }
 
@@ -1159,6 +1299,17 @@ public class TranscodeHelper {
         if (DEBUG) {
             Log.v(TAG, message);
         }
+    }
+
+    // We want to keep track of only the most recent [MAX_FINISHED_TRANSCODING_SESSION_STORE_COUNT]
+    // finished transcoding sessions.
+    private static LinkedHashMap createFinishedTranscodingSessionMap() {
+        return new LinkedHashMap<String, StorageTranscodingSession>() {
+            @Override
+            protected boolean removeEldestEntry(Entry eldest) {
+                return size() > MAX_FINISHED_TRANSCODING_SESSION_STORE_COUNT;
+            }
+        };
     }
 
     private static class StorageTranscodingSession {
