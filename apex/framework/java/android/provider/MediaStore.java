@@ -914,6 +914,11 @@ public final class MediaStore {
      * doesn't attempt to parse the actual byte contents of media files, such as playback using
      * {@link MediaPlayer} or for off-device backup, this method can be useful.
      *
+     * <p>This method is applicable only for media files managed by {@link MediaStore}.
+     *
+     * <p>The method returns the original file descriptor with the same permission that the caller
+     * has for the input file descriptor.
+     *
      * @throws IOException if the given {@link ParcelFileDescriptor} could not be converted
      *
      * @see MediaStore#EXTRA_ACCEPT_ORIGINAL_MEDIA_FORMAT
@@ -923,10 +928,13 @@ public final class MediaStore {
             @NonNull ParcelFileDescriptor fileDescriptor) throws IOException {
         Bundle input = new Bundle();
         input.putParcelable(EXTRA_FILE_DESCRIPTOR, fileDescriptor);
-
-        Bundle output = context.getContentResolver().call(AUTHORITY,
-                GET_ORIGINAL_MEDIA_FORMAT_FILE_DESCRIPTOR_CALL, null, input);
-        return output.getParcelable(EXTRA_FILE_DESCRIPTOR);
+        try {
+            Bundle output = context.getContentResolver().call(AUTHORITY,
+                    GET_ORIGINAL_MEDIA_FORMAT_FILE_DESCRIPTOR_CALL, null, input);
+            return output.getParcelable(EXTRA_FILE_DESCRIPTOR);
+        } catch (Exception e) {
+            throw new IOException(e);
+        }
     }
 
     /**
@@ -1956,6 +1964,14 @@ public final class MediaStore {
              */
             // @Column(value = Cursor.FIELD_TYPE_STRING, readOnly = true)
             public static final String REDACTED_URI_ID = "redacted_uri_id";
+
+            /**
+             * Indexed value of {@link UserIdInt} to which the file belongs.
+             *
+             * @hide
+             */
+            // @Column(value = Cursor.FIELD_TYPE_INTEGER, readOnly = true)
+            public static final String _USER_ID = "_user_id";
         }
     }
 
@@ -4231,13 +4247,16 @@ public final class MediaStore {
 
     /**
      * Return a {@link MediaStore} Uri that is an equivalent to the given
-     * {@link DocumentsProvider} Uri.
+     * {@link DocumentsProvider} Uri. This only supports {@code ExternalStorageProvider}
+     * and {@code MediaDocumentsProvider} Uris.
      * <p>
      * This allows apps with Storage Access Framework permissions to convert
      * between {@link MediaStore} and {@link DocumentsProvider} Uris that refer
-     * to the same underlying item. Note that this method doesn't grant any new
-     * permissions; callers must already hold permissions obtained with
-     * {@link Intent#ACTION_OPEN_DOCUMENT} or related APIs.
+     * to the same underlying item.
+     * Note that this method doesn't grant any new permissions, but it grants the same access to
+     * the Media Store Uri as the caller has to the given DocumentsProvider Uri; callers must
+     * already hold permissions for documentUri obtained with {@link Intent#ACTION_OPEN_DOCUMENT}
+     * or related APIs.
      *
      * @param documentUri The {@link DocumentsProvider} Uri to convert.
      * @return An equivalent {@link MediaStore} Uri. Returns {@code null} if no
@@ -4261,6 +4280,9 @@ public final class MediaStore {
 
     /**
      * Returns true if the given application is the current system gallery of the device.
+     * <p>
+     * The system gallery is one app chosen by the OEM that has read & write access to all photos
+     * and videos on the device and control over folders in media collections.
      *
      * @param resolver The {@link ContentResolver} used to connect with
      * {@link MediaStore#AUTHORITY}. Typically this value is {@link Context#getContentResolver()}.

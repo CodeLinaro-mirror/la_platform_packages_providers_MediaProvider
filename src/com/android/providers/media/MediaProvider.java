@@ -154,6 +154,7 @@ import android.preference.PreferenceManager;
 import android.provider.BaseColumns;
 import android.provider.Column;
 import android.provider.DeviceConfig;
+import android.provider.DeviceConfig.OnPropertiesChangedListener;
 import android.provider.DocumentsContract;
 import android.provider.MediaStore;
 import android.provider.MediaStore.Audio;
@@ -297,6 +298,7 @@ public class MediaProvider extends ContentProvider {
     private static final String TRANSFORMS_SYNTHETIC_DIR = ".transforms/synthetic";
     private static final String REDACTED_URI_DIR = TRANSFORMS_SYNTHETIC_DIR + "/redacted";
     public static final int REDACTED_URI_ID_SIZE = 36;
+    private static final String QUERY_ARG_REDACTED_URI = "android:query-arg-redacted-uri";
 
     /**
      * Hard-coded filename where the current value of
@@ -1175,27 +1177,11 @@ public class MediaProvider extends ContentProvider {
         });
         Log.d(TAG, "Pruned " + stalePackages + " unknown packages");
 
-        // Delete any expired content on mounted volumes. The expired content on unmounted
-        // volumes will be deleted when we forget any stale volumes; we're cautious about
-        // wildly changing clocks, so only delete items within the last week
-        final long from = ((System.currentTimeMillis() - DateUtils.WEEK_IN_MILLIS) / 1000);
-        final long to = (System.currentTimeMillis() / 1000);
-        final int expiredMedia = mExternalDatabase.runWithTransaction((db) -> {
-            String selection = FileColumns.DATE_EXPIRES + " BETWEEN " + from + " AND " + to;
-            selection += " AND volume_name in " + bindList(MediaStore.getExternalVolumeNames(
-                    getContext()).toArray());
-            try (Cursor c = db.query(true, "files", new String[] { "volume_name", "_id" },
-                    selection, null, null, null, null, null, signal)) {
-                int totalCount = 0;
-                while (c.moveToNext()) {
-                    final String volumeName = c.getString(0);
-                    final long id = c.getLong(1);
-                    totalCount += delete(Files.getContentUri(volumeName, id), null, null);
-                }
-                return totalCount;
-            }
-        });
-        Log.d(TAG, "Deleted " + expiredMedia + " expired items");
+        // Delete the expired items or extend them on mounted volumes
+        final int[] result = deleteOrExtendExpiredItems(signal);
+        final int deletedExpiredMedia = result[0];
+        Log.d(TAG, "Deleted " + deletedExpiredMedia + " expired items");
+        Log.d(TAG, "Extended " + result[1] + " expired items");
 
         // Forget any stale volumes
         mExternalDatabase.runWithTransaction((db) -> {
@@ -1229,7 +1215,84 @@ public class MediaProvider extends ContentProvider {
 
         final long durationMillis = (SystemClock.elapsedRealtime() - startTime);
         Metrics.logIdleMaintenance(MediaStore.VOLUME_EXTERNAL, itemCount,
-                durationMillis, staleThumbnails, expiredMedia);
+                durationMillis, staleThumbnails, deletedExpiredMedia);
+    }
+
+    /**
+     * Delete any expired content on mounted volumes. The expired content on unmounted
+     * volumes will be deleted when we forget any stale volumes; we're cautious about
+     * wildly changing clocks, so only delete items within the last week.
+     * If the items are expired more than one week, extend the expired time of them
+     * another one week to avoid data loss with incorrect time zone data. We will
+     * delete it when it is expired next time.
+     *
+     * @param signal the cancellation signal
+     * @return the integer array includes total deleted count and total extended count
+     */
+    @NonNull
+    private int[] deleteOrExtendExpiredItems(@NonNull CancellationSignal signal) {
+        final long expiredOneWeek =
+                ((System.currentTimeMillis() - DateUtils.WEEK_IN_MILLIS) / 1000);
+        final long now = (System.currentTimeMillis() / 1000);
+        final Long extendedTime = now + (FileUtils.DEFAULT_DURATION_EXTENDED / 1000);
+        final int result[] = mExternalDatabase.runWithTransaction((db) -> {
+            String selection = FileColumns.DATE_EXPIRES + " < " + now;
+            selection += " AND volume_name in " + bindList(MediaStore.getExternalVolumeNames(
+                    getContext()).toArray());
+            String[] projection = new String[]{"volume_name", "_id",
+                    FileColumns.DATE_EXPIRES, FileColumns.DATA};
+            try (Cursor c = db.query(true, "files", projection, selection, null, null, null, null,
+                    null, signal)) {
+                int totalDeleteCount = 0;
+                int totalExtendedCount = 0;
+                while (c.moveToNext()) {
+                    final String volumeName = c.getString(0);
+                    final long id = c.getLong(1);
+                    final long dateExpires = c.getLong(2);
+                    // we only delete the items that expire in one week
+                    if (dateExpires > expiredOneWeek) {
+                        totalDeleteCount += delete(Files.getContentUri(volumeName, id), null, null);
+                    } else {
+                        final String oriPath = c.getString(3);
+                        final boolean success = extendExpiredItem(db, oriPath, id, extendedTime);
+                        if (success) {
+                            totalExtendedCount++;
+                        }
+                    }
+                }
+                return new int[]{totalDeleteCount, totalExtendedCount};
+            }
+        });
+        return result;
+    }
+
+    /**
+     * Extend the expired items by renaming the file to new path with new
+     * timestamp and updating the database for {@link FileColumns#DATA} and
+     * {@link FileColumns#DATE_EXPIRES}
+     */
+    private boolean extendExpiredItem(@NonNull SQLiteDatabase db, @NonNull String originalPath,
+            Long id, Long extendedTime) {
+        final String newPath = FileUtils.getAbsoluteExtendedPath(originalPath, extendedTime);
+        if (newPath == null) {
+            return false;
+        }
+
+        try {
+            Os.rename(originalPath, newPath);
+            invalidateFuseDentry(originalPath);
+            invalidateFuseDentry(newPath);
+        } catch (ErrnoException e) {
+            final String errorMessage = "Rename " + originalPath + " to " + newPath + " failed.";
+            Log.e(TAG, errorMessage, e);
+            return false;
+        }
+
+        final ContentValues values = new ContentValues();
+        values.put(FileColumns.DATA, newPath);
+        values.put(FileColumns.DATE_EXPIRES, extendedTime);
+        final int count = db.update("files", values, "_id=?", new String[]{String.valueOf(id)});
+        return count == 1;
     }
 
     public void onIdleMaintenanceStopped() {
@@ -1321,16 +1384,16 @@ public class MediaProvider extends ContentProvider {
             // createContextAsUser which uses the current MediaProvider module package.
             final Context userContext1 = getContext().createPackageContextAsUser("system", 0,
                     user1);
-            boolean sharesMediaWithParentUser1 = userContext1.getSystemService(
-                    UserManager.class).sharesMediaWithParent();
+            boolean isMediaSharedWithParent1 = userContext1.getSystemService(
+                    UserManager.class).isMediaSharedWithParent();
             final Context userContext2 = getContext().createPackageContextAsUser("system", 0,
                     user2);
-            boolean sharesMediaWithParentUser2 = userContext2.getSystemService(
-                    UserManager.class).sharesMediaWithParent();
+            boolean isMediaSharedWithParent2 = userContext2.getSystemService(
+                    UserManager.class).isMediaSharedWithParent();
 
             // Clone profiles share media with the parent user
-            if (SdkLevel.isAtLeastS() && (sharesMediaWithParentUser1
-                    || sharesMediaWithParentUser2)) {
+            if (SdkLevel.isAtLeastS() && (isMediaSharedWithParent1
+                    || isMediaSharedWithParent2)) {
                 return mUserManager.isSameProfileGroup(user1, user2);
             }
             Method isAppCloneUserPair = StorageManager.class.getMethod("isAppCloneUserPair",
@@ -2728,9 +2791,12 @@ public class MediaProvider extends ContentProvider {
         DatabaseUtils.resolveQueryArgs(queryArgs, honoredArgs::add, this::ensureCustomCollator);
 
         Uri redactedUri = null;
+        // REDACTED_URI_BUNDLE_KEY extra should only be set inside MediaProvider.
+        queryArgs.remove(QUERY_ARG_REDACTED_URI);
         if (isRedactedUri(uri)) {
             redactedUri = uri;
             uri = getUriForRedactedUri(uri);
+            queryArgs.putParcelable(QUERY_ARG_REDACTED_URI, redactedUri);
         }
 
         uri = safeUncanonicalize(uri);
@@ -3853,6 +3919,18 @@ public class MediaProvider extends ContentProvider {
             values.put(FileColumns._MODIFIER, FileColumns._MODIFIER_CR);
         }
 
+        // There is no meaning of an owner in the internal storage. It is shared by all users.
+        // So we only set the user_id field in the database for external storage.
+        qb.allowColumn(FileColumns._USER_ID);
+        int ownerUserId = FileUtils.extractUserId(path);
+        if (!helper.mInternal) {
+            if (isAppCloneUserForFuse(ownerUserId)) {
+                values.put(FileColumns._USER_ID, ownerUserId);
+            } else {
+                values.put(FileColumns._USER_ID, sUserId);
+            }
+        }
+
         final long rowId;
         Uri newUri = uri;
         {
@@ -3881,7 +3959,10 @@ public class MediaProvider extends ContentProvider {
                         values.put(FileColumns.SIZE, file.length());
                     }
                 }
-                if (!isFuseThread() && shouldFileBeHidden(file)) {
+                // Checking if the file/directory is hidden can be expensive based on the depth of
+                // the directory tree. Call shouldFileBeHidden() only when the caller of insert()
+                // cares about returned uri.
+                if (!isCallingPackageSelf() && !isFuseThread() && shouldFileBeHidden(file)) {
                     newUri = MediaStore.Files.getContentUri(MediaStore.getVolumeName(uri));
                 }
             }
@@ -4064,6 +4145,8 @@ public class MediaProvider extends ContentProvider {
     private @Nullable Uri insertInternal(@NonNull Uri uri, @Nullable ContentValues initialValues,
             @Nullable Bundle extras) throws FallbackException {
         extras = (extras != null) ? extras : new Bundle();
+        // REDACTED_URI_BUNDLE_KEY extra should only be set inside MediaProvider.
+        extras.remove(QUERY_ARG_REDACTED_URI);
 
         // INCLUDED_DEFAULT_DIRECTORIES extra should only be set inside MediaProvider.
         extras.remove(INCLUDED_DEFAULT_DIRECTORIES);
@@ -4550,7 +4633,18 @@ public class MediaProvider extends ContentProvider {
         final String matchSharedPackagesClause = FileColumns.OWNER_PACKAGE_NAME + " IN "
                 + sharedPackages;
 
-        final boolean allowGlobal = checkCallingPermissionGlobal(uri, forWrite);
+        boolean allowGlobal;
+        final Uri redactedUri = extras.getParcelable(QUERY_ARG_REDACTED_URI);
+        if (redactedUri != null) {
+            if (forWrite) {
+                throw new UnsupportedOperationException(
+                        "Writes on: " + redactedUri.toString() + " are not supported");
+            }
+            allowGlobal = checkCallingPermissionGlobal(redactedUri, false);
+        } else {
+            allowGlobal = checkCallingPermissionGlobal(uri, forWrite);
+        }
+
         final boolean allowLegacy =
                 forWrite ? isCallingPackageLegacyWrite() : isCallingPackageLegacyRead();
         final boolean allowLegacyRead = allowLegacy && !forWrite;
@@ -5138,6 +5232,8 @@ public class MediaProvider extends ContentProvider {
     private int deleteInternal(@NonNull Uri uri, @Nullable Bundle extras)
             throws FallbackException {
         extras = (extras != null) ? extras : new Bundle();
+        // REDACTED_URI_BUNDLE_KEY extra should only be set inside MediaProvider.
+        extras.remove(QUERY_ARG_REDACTED_URI);
 
         if (isRedactedUri(uri)) {
             // we don't support deletion on redacted uris.
@@ -5345,7 +5441,7 @@ public class MediaProvider extends ContentProvider {
             final int isDownload = c.getInt(3);
             final String mimeType = c.getString(4);
 
-            final Uri uriGranted = getOtherUriGrantsForPath(data, mediaType, id,
+            final Uri uriGranted = getOtherUriGrantsForPath(data, mediaType, Long.toString(id),
                     /* forWrite */ true);
             if (uriGranted != null) {
                 // 1. delete file
@@ -5405,7 +5501,8 @@ public class MediaProvider extends ContentProvider {
     }
 
     @Nullable
-    private Uri getRedactedUri(@NonNull Uri uri) {
+    @VisibleForTesting
+    Uri getRedactedUri(@NonNull Uri uri) {
         if (!isUriSupportedForRedaction(uri)) {
             return null;
         }
@@ -5452,7 +5549,8 @@ public class MediaProvider extends ContentProvider {
     }
 
     @NonNull
-    private List<Uri> getRedactedUri(@NonNull List<Uri> uris) {
+    @VisibleForTesting
+    List<Uri> getRedactedUri(@NonNull List<Uri> uris) {
         ArrayList<Uri> redactedUris = new ArrayList<>();
         for (Uri uri : uris) {
             redactedUris.add(getRedactedUri(uri));
@@ -5595,26 +5693,34 @@ public class MediaProvider extends ContentProvider {
                 getContext().enforceCallingUriPermission(documentUri,
                         Intent.FLAG_GRANT_READ_URI_PERMISSION, TAG);
 
-                final Uri fileUri;
-                try (ContentProviderClient client = getContext().getContentResolver()
-                        .acquireUnstableContentProviderClient(
-                                getExternalStorageProviderAuthority())) {
-                    final Bundle res = client.call(method, null, extras);
-                    fileUri = res.getParcelable(MediaStore.EXTRA_URI);
-                } catch (RemoteException e) {
-                    throw new IllegalStateException(e);
+                final int callingPid = mCallingIdentity.get().pid;
+                final int callingUid = mCallingIdentity.get().uid;
+                final String callingPackage = getCallingPackage();
+                final CallingIdentity token = clearCallingIdentity();
+                final String authority = documentUri.getAuthority();
+
+                if (!authority.equals(MediaDocumentsProvider.AUTHORITY) &&
+                        !authority.equals(DocumentsContract.EXTERNAL_STORAGE_PROVIDER_AUTHORITY)) {
+                    throw new IllegalArgumentException("Provider for this Uri is not supported.");
                 }
 
-                final LocalCallingIdentity token = clearLocalCallingIdentity();
-                try {
+                try (ContentProviderClient client = getContext().getContentResolver()
+                        .acquireUnstableContentProviderClient(authority)) {
+                    final Bundle clientRes = client.call(method, null, extras);
+                    final Uri fileUri = clientRes.getParcelable(MediaStore.EXTRA_URI);
                     final Bundle res = new Bundle();
-                    res.putParcelable(MediaStore.EXTRA_URI,
-                            queryForMediaUri(new File(fileUri.getPath()), null));
+                    final Uri mediaStoreUri = fileUri.getAuthority().equals(MediaStore.AUTHORITY) ?
+                            fileUri : queryForMediaUri(new File(fileUri.getPath()), null);
+                    copyUriPermissionGrants(documentUri, mediaStoreUri, callingPid,
+                            callingUid, callingPackage);
+                    res.putParcelable(MediaStore.EXTRA_URI, mediaStoreUri);
                     return res;
                 } catch (FileNotFoundException e) {
                     throw new IllegalArgumentException(e);
+                } catch (RemoteException e) {
+                    throw new IllegalStateException(e);
                 } finally {
-                    restoreLocalCallingIdentity(token);
+                    restoreCallingIdentity(token);
                 }
             }
             case MediaStore.GET_REDACTED_MEDIA_URI_CALL: {
@@ -5660,11 +5766,17 @@ public class MediaProvider extends ContentProvider {
                         extras.getParcelable(MediaStore.EXTRA_FILE_DESCRIPTOR);
                 try {
                     File file = getFileFromFileDescriptor(inputPfd);
-                    FuseDaemon fuseDaemon = getFuseDaemonForFile(file);
+                    boolean supportsTranscode = mTranscodeHelper.supportsTranscode(file.getPath());
+                    if (!supportsTranscode) {
+                        throw new IllegalArgumentException(
+                                "Input file descriptor is already original");
+                    }
 
+                    FuseDaemon fuseDaemon = getFuseDaemonForFile(file);
                     String outputPath = fuseDaemon.getOriginalMediaFormatFilePath(inputPfd);
                     if (TextUtils.isEmpty(outputPath)) {
-                        throw new IOException("Invalid path for original media format file");
+                        throw new IllegalArgumentException(
+                                "Invalid path for original media format file");
                     }
 
                     int posixMode = Os.fcntlInt(inputPfd.getFileDescriptor(), F_GETFL,
@@ -5679,9 +5791,9 @@ public class MediaProvider extends ContentProvider {
                     res.putParcelable(MediaStore.EXTRA_FILE_DESCRIPTOR, outputPfd);
                     return res;
                 } catch (IOException e) {
-                    throw new RuntimeException(e);
+                    throw new IllegalStateException(e);
                 } catch (ErrnoException e) {
-                    throw new RuntimeException(
+                    throw new IllegalStateException(
                             "Failed to fetch access mode for file descriptor", e);
                 }
             }
@@ -5701,6 +5813,31 @@ public class MediaProvider extends ContentProvider {
             default:
                 throw new UnsupportedOperationException("Unsupported call: " + method);
         }
+    }
+
+    /**
+     * Grant similar read/write access for mediaStoreUri as the caller has for documentsUri.
+     *
+     * Note: This function assumes that read permission check for documentsUri is already enforced.
+     * Note: This function currently does not check/grant for persisted Uris. Support for this can
+     * be added eventually, but the calling application will have to call
+     * ContentResolver#takePersistableUriPermission(Uri, int) for the mediaStoreUri to persist.
+     *
+     * @param documentsUri DocumentsProvider format content Uri
+     * @param mediaStoreUri MediaStore format content Uri
+     * @param callingPid pid of the caller
+     * @param callingUid uid of the caller
+     * @param callingPackage package name of the caller
+     */
+    private void copyUriPermissionGrants(Uri documentsUri, Uri mediaStoreUri,
+            int callingPid, int callingUid, String callingPackage) {
+        // No need to check for read permission, as we enforce it already.
+        int modeFlags = Intent.FLAG_GRANT_READ_URI_PERMISSION;
+        if (getContext().checkUriPermission(documentsUri, callingPid, callingUid,
+                Intent.FLAG_GRANT_WRITE_URI_PERMISSION) == PERMISSION_GRANTED) {
+            modeFlags |= Intent.FLAG_GRANT_WRITE_URI_PERMISSION;
+        }
+        getContext().grantUriPermission(callingPackage, mediaStoreUri, modeFlags);
     }
 
     static List<Uri> collectUris(ClipData clipData) {
@@ -6081,6 +6218,8 @@ public class MediaProvider extends ContentProvider {
     private int updateInternal(@NonNull Uri uri, @Nullable ContentValues initialValues,
             @Nullable Bundle extras) throws FallbackException {
         extras = (extras != null) ? extras : new Bundle();
+        // REDACTED_URI_BUNDLE_KEY extra should only be set inside MediaProvider.
+        extras.remove(QUERY_ARG_REDACTED_URI);
 
         if (isRedactedUri(uri)) {
             // we don't support update on redacted uris.
@@ -6985,13 +7124,14 @@ public class MediaProvider extends ContentProvider {
     private ParcelFileDescriptor openFileCommon(Uri uri, String mode, CancellationSignal signal,
             @Nullable Bundle opts)
             throws FileNotFoundException {
-        boolean isRedactedUri = false;
+        opts = opts == null ? new Bundle() : opts;
+        // REDACTED_URI_BUNDLE_KEY extra should only be set inside MediaProvider.
+        opts.remove(QUERY_ARG_REDACTED_URI);
         if (isRedactedUri(uri)) {
+            opts.putParcelable(QUERY_ARG_REDACTED_URI, uri);
             uri = getUriForRedactedUri(uri);
-            isRedactedUri = true;
         }
         uri = safeUncanonicalize(uri);
-        opts = opts == null ? new Bundle() : opts;
 
         final boolean allowHidden = isCallingPackageAllowedHidden();
         final int match = matchUri(uri, allowHidden);
@@ -7025,8 +7165,7 @@ public class MediaProvider extends ContentProvider {
             }
         }
 
-        return openFileAndEnforcePathPermissionsHelper(uri, match, mode, signal, opts,
-                isRedactedUri);
+        return openFileAndEnforcePathPermissionsHelper(uri, match, mode, signal, opts);
     }
 
     @Override
@@ -7339,13 +7478,15 @@ public class MediaProvider extends ContentProvider {
      * a "/mnt/user" path.
      */
     private ParcelFileDescriptor openFileAndEnforcePathPermissionsHelper(Uri uri, int match,
-            String mode, CancellationSignal signal, @NonNull Bundle opts, boolean isRedactedUri)
+            String mode, CancellationSignal signal, @NonNull Bundle opts)
             throws FileNotFoundException {
         int modeBits = ParcelFileDescriptor.parseMode(mode);
         boolean forWrite = (modeBits & ParcelFileDescriptor.MODE_WRITE_ONLY) != 0;
+        final Uri redactedUri = opts.getParcelable(QUERY_ARG_REDACTED_URI);
         if (forWrite) {
-            if (isRedactedUri) {
-                throw new UnsupportedOperationException("Write is not supported on redacted URIs");
+            if (redactedUri != null) {
+                throw new UnsupportedOperationException(
+                        "Write is not supported on " + redactedUri.toString());
             }
             // Upgrade 'w' only to 'rw'. This allows us acquire a WR_LOCK when calling
             // #shouldOpenWithFuse
@@ -7378,7 +7519,11 @@ public class MediaProvider extends ContentProvider {
             restoreLocalCallingIdentity(token);
         }
 
-        checkAccess(uri, Bundle.EMPTY, file, forWrite);
+        if (redactedUri == null) {
+            checkAccess(uri, Bundle.EMPTY, file, forWrite);
+        } else {
+            checkAccess(redactedUri, Bundle.EMPTY, file, false);
+        }
 
         // We don't check ownership for files with IS_PENDING set by FUSE
         if (isPending && !isPendingFromFuse(file)) {
@@ -7387,12 +7532,13 @@ public class MediaProvider extends ContentProvider {
 
         final boolean callerIsOwner = Objects.equals(getCallingPackageOrSelf(), ownerPackageName);
         // Figure out if we need to redact contents
-        final boolean redactionNeeded = isRedactedUri || (!callerIsOwner && isRedactionNeeded(uri));
+        final boolean redactionNeeded =
+                (redactedUri != null) || (!callerIsOwner && isRedactionNeeded(uri));
         final RedactionInfo redactionInfo;
         try {
             redactionInfo = redactionNeeded ? getRedactionRanges(file)
                     : new RedactionInfo(new long[0], new long[0]);
-        } catch(IOException e) {
+        } catch (IOException e) {
             throw new IllegalStateException(e);
         }
 
@@ -7951,12 +8097,15 @@ public class MediaProvider extends ContentProvider {
 
         try {
             boolean forceRedaction = false;
+            String redactedUriId = null;
             if (isSyntheticFilePathForRedactedUri(path, uid)) {
                 if (forWrite) {
                     // Redacted URIs are not allowed to update EXIF headers.
                     return new FileOpenResult(OsConstants.EACCES /* status */, originalUid,
                             mediaCapabilitiesUid, new long[0]);
                 }
+
+                redactedUriId = extractDisplayName(path);
 
                 // If path is redacted Uris' path, ioPath must be the real path, ioPath must
                 // haven been updated to the real path during onFileLookupForFuse.
@@ -8011,7 +8160,7 @@ public class MediaProvider extends ContentProvider {
                 mediaType = c.getInt(3);
             }
             final File file = new File(path);
-            final Uri fileUri = MediaStore.Files.getContentUri(extractVolumeName(path), id);
+            Uri fileUri = MediaStore.Files.getContentUri(extractVolumeName(path), id);
             // We don't check ownership for files with IS_PENDING set by FUSE
             if (isPending && !isPendingFromFuse(new File(path))) {
                 requireOwnershipForItem(ownerPackageName, fileUri);
@@ -8025,11 +8174,16 @@ public class MediaProvider extends ContentProvider {
             try {
                 // checkAccess throws FileNotFoundException only from checkWorldReadAccess(),
                 // which we already check above. Hence, handling only SecurityException.
+                if (redactedUriId != null) {
+                    fileUri = ContentUris.removeId(fileUri).buildUpon().appendPath(
+                            redactedUriId).build();
+                }
                 checkAccess(fileUri, Bundle.EMPTY, file, forWrite);
             } catch (SecurityException e) {
                 // Check for other Uri formats only when the single uri check flow fails.
                 // Throw the previous exception if the multi-uri checks failed.
-                if (getOtherUriGrantsForPath(path, mediaType, id, forWrite) == null) {
+                final String uriId = redactedUriId == null ? Long.toString(id) : redactedUriId;
+                if (getOtherUriGrantsForPath(path, mediaType, uriId, forWrite) == null) {
                     throw e;
                 }
             }
@@ -8063,12 +8217,12 @@ public class MediaProvider extends ContentProvider {
                 MediaColumns._ID,
                 FileColumns.MEDIA_TYPE};
         final String selection = MediaColumns.DATA + "=?";
-        final String[] selectionArgs = new String[]{ path };
-        final long id;
+        final String[] selectionArgs = new String[]{path};
+        final String id;
         final int mediaType;
         try (final Cursor c = queryForSingleItemAsMediaProvider(contentUri, projection, selection,
                 selectionArgs, null)) {
-            id = c.getLong(0);
+            id = c.getString(0);
             mediaType = c.getInt(1);
             return getOtherUriGrantsForPath(path, mediaType, id, forWrite);
         } catch (FileNotFoundException ignored) {
@@ -8076,8 +8230,8 @@ public class MediaProvider extends ContentProvider {
         return null;
     }
 
-    private @Nullable Uri getOtherUriGrantsForPath(String path, int mediaType, long id,
-            boolean forWrite) {
+    @Nullable
+    private Uri getOtherUriGrantsForPath(String path, int mediaType, String id, boolean forWrite) {
         List<Uri> otherUris = new ArrayList<Uri>();
         final Uri mediaUri = getMediaUriForFuse(extractVolumeName(path), mediaType, id);
         otherUris.add(mediaUri);
@@ -8086,21 +8240,25 @@ public class MediaProvider extends ContentProvider {
         return getPermissionGrantedUri(otherUris, forWrite);
     }
 
-    private @NonNull Uri getMediaUriForFuse(@NonNull String volumeName, int mediaType, long id) {
+    @NonNull
+    private Uri getMediaUriForFuse(@NonNull String volumeName, int mediaType, String id) {
+        Uri uri = MediaStore.Files.getContentUri(volumeName);
         switch (mediaType) {
             case FileColumns.MEDIA_TYPE_IMAGE:
-                return MediaStore.Images.Media.getContentUri(volumeName, id);
+                uri = MediaStore.Images.Media.getContentUri(volumeName);
+                break;
             case FileColumns.MEDIA_TYPE_VIDEO:
-                return MediaStore.Video.Media.getContentUri(volumeName, id);
+                uri = MediaStore.Video.Media.getContentUri(volumeName);
+                break;
             case FileColumns.MEDIA_TYPE_AUDIO:
-                return MediaStore.Audio.Media.getContentUri(volumeName, id);
+                uri = MediaStore.Audio.Media.getContentUri(volumeName);
+                break;
             case FileColumns.MEDIA_TYPE_PLAYLIST:
-                return ContentUris.withAppendedId(
-                        MediaStore.Audio.Playlists.getContentUri(volumeName), id);
-            default:
-                // return files URIs
-                return MediaStore.Files.getContentUri(volumeName, id);
+                uri = MediaStore.Audio.Playlists.getContentUri(volumeName);
+                break;
         }
+
+        return uri.buildUpon().appendPath(id).build();
     }
 
     /**
@@ -8236,7 +8394,7 @@ public class MediaProvider extends ContentProvider {
 
     /**
      * Enforces file creation restrictions (see return values) for the given file on behalf of the
-     * app with the given {@code uid}. If the file is is added to the shared storage, creates a
+     * app with the given {@code uid}. If the file is added to the shared storage, creates a
      * database entry for it.
      * <p> Does NOT create file.
      *
@@ -8801,6 +8959,12 @@ public class MediaProvider extends ContentProvider {
         }
     }
 
+    @VisibleForTesting
+    public void addOnPropertiesChangedListener(OnPropertiesChangedListener listener) {
+        DeviceConfig.addOnPropertiesChangedListener(DeviceConfig.NAMESPACE_STORAGE_NATIVE_BOOT,
+                BackgroundThread.getExecutor(), listener);
+    }
+
     @Deprecated
     private boolean checkCallingPermissionAudio(boolean forWrite, String callingPackage) {
         if (forWrite) {
@@ -8865,6 +9029,16 @@ public class MediaProvider extends ContentProvider {
         if (checkCallingPermissionGlobal(uri, forWrite)) {
             // Access allowed, yay!
             return;
+        }
+
+        // For redacted URI proceed with its corresponding URI as query builder doesn't support
+        // redacted URIs for fetching a database row
+        // NOTE: The grants (if any) must have been on redacted URI hence global check requires
+        // redacted URI
+        Uri redactedUri = null;
+        if (isRedactedUri(uri)) {
+            redactedUri = uri;
+            uri = getUriForRedactedUri(uri);
         }
 
         final DatabaseHelper helper;
@@ -8932,6 +9106,7 @@ public class MediaProvider extends ContentProvider {
             }
         }
 
+        if (redactedUri != null) uri = redactedUri;
         throw new SecurityException(getCallingPackageOrSelf() + " has no access to " + uri);
     }
 

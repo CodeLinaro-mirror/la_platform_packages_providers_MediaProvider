@@ -40,12 +40,20 @@
             "name": "fuse_node_test"
         },
         {
-            "name": "MediaProviderTranscodeTests"
+            "name": "CtsMediaProviderTranscodeTests"
         }
     ],
     "postsubmit": [
         {
             "name": "MediaProviderClientTests"
+        },
+        {
+            "name": "CtsAppSecurityHostTestCases",
+            "options": [
+                {
+                    "include-filter": "android.appsecurity.cts.ExternalStorageHostTest"
+                }
+            ]
         }
     ]
 }
