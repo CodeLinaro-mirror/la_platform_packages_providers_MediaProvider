@@ -18,7 +18,6 @@ apex {
 apex_defaults {
     name: "com.android.mediaprovider-defaults",
     bootclasspath_fragments: ["com.android.mediaprovider-bootclasspath-fragment"],
-    prebuilts: ["current_sdkinfo"],
     key: "com.android.mediaprovider.key",
     certificate: ":com.android.mediaprovider.certificate",
     file_contexts: ":com.android.mediaprovider-file_contexts",
@@ -42,7 +41,9 @@ android_app_certificate {
 
 sdk {
     name: "mediaprovider-module-sdk",
-    bootclasspath_fragments: ["com.android.mediaprovider-bootclasspath-fragment"],
+    java_sdk_libs: [
+        "framework-mediaprovider",
+    ],
 }
 
 // Encapsulate the contributions made by the com.android.mediaprovider to the bootclasspath.

@@ -31,7 +31,7 @@ import java.util.Random;
 /**
  * Stores metrics for transcode sessions to be shared with statsd.
  */
-final class TranscodeMetrics {
+public final class TranscodeMetrics {
     private static final List<TranscodingStatsData> TRANSCODING_STATS_DATA = new ArrayList<>();
 
     // PLEASE update these if there's a change in the proto message, per the limit set in
@@ -44,26 +44,29 @@ final class TranscodeMetrics {
     // incoming data because of the hard limit on the size.
     private static int sTotalStatsDataCount = 0;
 
-    static List<StatsEvent> pullStatsEvents() {
+    static int handleStatsEventDataRequest(int atomTag, List<StatsEvent> statsEvents) {
+        if (TRANSCODING_DATA != atomTag) {
+            return StatsManager.PULL_SKIP;
+        }
+
         synchronized (TRANSCODING_STATS_DATA) {
             if (TRANSCODING_STATS_DATA.size() > STATS_DATA_SAMPLE_LIMIT) {
                 doRandomSampling();
             }
 
-            List<StatsEvent> result = getStatsEvents();
+            fillStatsEventDataList(atomTag, statsEvents);
             resetStatsData();
-            return result;
+            return StatsManager.PULL_SUCCESS;
         }
     }
 
-    private static List<StatsEvent> getStatsEvents() {
+    private static void fillStatsEventDataList(int atomTag, List<StatsEvent> statsEvents) {
         synchronized (TRANSCODING_STATS_DATA) {
-            List<StatsEvent> result = new ArrayList<>();
             StatsEvent event;
             int dataCountToFill = Math.min(TRANSCODING_STATS_DATA.size(), STATS_DATA_SAMPLE_LIMIT);
             for (int i = 0; i < dataCountToFill; ++i) {
                 TranscodingStatsData statsData = TRANSCODING_STATS_DATA.get(i);
-                event = StatsEvent.newBuilder().setAtomId(TRANSCODING_DATA)
+                event = StatsEvent.newBuilder().setAtomId(atomTag)
                         .writeString(statsData.mRequestorPackage)
                         .writeInt(statsData.mAccessType)
                         .writeLong(statsData.mFileSizeBytes)
@@ -73,9 +76,8 @@ final class TranscodeMetrics {
                         .writeLong(statsData.mFrameRate)
                         .writeInt(statsData.mAccessReason).build();
 
-                result.add(event);
+                statsEvents.add(event);
             }
-            return result;
         }
     }
 
@@ -95,17 +97,33 @@ final class TranscodeMetrics {
         }
     }
 
-    @VisibleForTesting
-    static void resetStatsData() {
+    private static void resetStatsData() {
         synchronized (TRANSCODING_STATS_DATA) {
             TRANSCODING_STATS_DATA.clear();
             sTotalStatsDataCount = 0;
         }
     }
 
-    /** Saves the statsd data that'd eventually be shared in the pull callback. */
+    /**
+     * Saves the statsd data that'd eventually be shared in the pull callback.
+     * The data is saved only if StatsdPuller is initialized.
+     * Everyone should always use this method for saving the data.
+     */
+    public static void saveStatsData(TranscodingStatsData transcodingStatsData) {
+        if (!StatsdPuller.isInitialized()) {
+            // no need to accumulate data if statsd is not going to ask for it.
+            return;
+        }
+
+        forceSaveStatsData(transcodingStatsData);
+    }
+
+    /**
+     * {@link StatsManager} does not register callback for Android unit test.  So, we have this
+     * method exposed for unit-tests so that they can save data.
+     */
     @VisibleForTesting
-    static void saveStatsData(TranscodingStatsData transcodingStatsData) {
+    static void forceSaveStatsData(TranscodingStatsData transcodingStatsData) {
         checkAndLimitStatsDataSizeAfterAddition(transcodingStatsData);
     }
 
@@ -153,7 +171,7 @@ final class TranscodeMetrics {
     }
 
     /** This is the data to populate the proto shared to westworld. */
-    static final class TranscodingStatsData {
+    public static final class TranscodingStatsData {
         private final String mRequestorPackage;
         private final short mAccessType;
         private final long mFileSizeBytes;
