@@ -964,6 +964,12 @@ public class FileUtils {
     public static final Pattern PATTERN_OBB_OR_CHILD_PATH = Pattern.compile(
             "(?i)^/storage/[^/]+/(?:[0-9]+/)?Android/(?:obb)(/?.*)");
 
+    /**
+     * The recordings directory. This is used for R OS. For S OS or later,
+     * we use {@link Environment#DIRECTORY_RECORDINGS} directly.
+     */
+    public static final String DIRECTORY_RECORDINGS = "Recordings";
+
     @VisibleForTesting
     public static final String[] DEFAULT_FOLDER_NAMES;
     static {
@@ -995,6 +1001,7 @@ public class FileUtils {
                     Environment.DIRECTORY_DCIM,
                     Environment.DIRECTORY_DOCUMENTS,
                     Environment.DIRECTORY_AUDIOBOOKS,
+                    DIRECTORY_RECORDINGS,
             };
         }
     }
@@ -1015,7 +1022,7 @@ public class FileUtils {
      * Regex that matches user-ids under well-known storage paths.
      */
     private static final Pattern PATTERN_USER_ID = Pattern.compile(
-            "(?i)^/storage/emulated/([0-9]+)/");
+            "(?i)^/storage/emulated/([0-9]+)");
 
     private static final String CAMERA_RELATIVE_PATH =
             String.format("%s/%s/", Environment.DIRECTORY_DCIM, "Camera");
