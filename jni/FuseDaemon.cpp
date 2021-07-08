@@ -749,14 +749,9 @@ static void pf_fallocate(fuse_req_t req, fuse_ino_t ino, int mode, off_t offset,
     ATRACE_CALL();
     struct fuse* fuse = get_fuse(req);
 
-    if (mode) {
-        fuse_reply_err(req, EOPNOTSUPP);
-        return;
-    }
-
     handle* h = reinterpret_cast<handle*>(fi->fh);
-    auto err = posix_fallocate(h->fd, offset, length);
-    fuse_reply_err(req, err);
+    auto err = fallocate(h->fd, mode, offset, length);
+    fuse_reply_err(req, err ? errno : 0);
 }
 
 static void pf_getattr(fuse_req_t req,
