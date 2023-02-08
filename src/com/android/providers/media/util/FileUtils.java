@@ -887,8 +887,7 @@ public class FileUtils {
             "(?i)^/storage/[^/]+/(?:[0-9]+/)?Android/(?:data|media|obb|sandbox)/([^/]+)(/?.*)?");
 
     /**
-     * Regex that matches exactly Android/obb or Android/data or Android/obb/ or Android/data/
-     * suffix absolute file path.
+     * Regex that matches Android/obb or Android/data path.
      */
     private static final Pattern PATTERN_DATA_OR_OBB_PATH = Pattern.compile(
             "(?i)^/storage/[^/]+/(?:[0-9]+/)?Android/(?:data|obb)(?:/.*)?$");
