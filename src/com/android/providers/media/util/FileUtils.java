@@ -890,29 +890,8 @@ public class FileUtils {
      * Regex that matches exactly Android/obb or Android/data or Android/obb/ or Android/data/
      * suffix absolute file path.
      */
-    private static final Pattern PATTERN_DATA_OR_OBB_PATH = Pattern.compile(
+    public static final Pattern PATTERN_DATA_OR_OBB_PATH = Pattern.compile(
             "(?i)^/storage/[^/]+/(?:[0-9]+/)?Android/(?:data|obb)/?$");
-
-     /**
-     * Regex that matches paths in all well-known package-specific relative directory
-     * path (as defined in {@link MediaColumns#RELATIVE_PATH})
-     * and which captures the package name as the first group.
-     */
-    private static final Pattern PATTERN_OWNED_RELATIVE_PATH = Pattern.compile(
-            "(?i)^Android/(?:data|media|obb|sandbox)/([^/]+)(/?.*)?");
-
-    /**
-     * Regex that matches Android/obb or Android/data relative path (as defined in
-     * {@link MediaColumns#RELATIVE_PATH})
-     */
-    private static final Pattern PATTERN_DATA_OR_OBB_RELATIVE_PATH = Pattern.compile(
-            "(?i)^Android/(?:data|obb)(?:/.*)?$");
-
-    /**
-     * Regex that matches Android/obb {@link MediaColumns#RELATIVE_PATH}.
-     */
-    private static final Pattern PATTERN_OBB_OR_CHILD_RELATIVE_PATH = Pattern.compile(
-            "(?i)^Android/obb(?:/.*)?$");
 
     @VisibleForTesting
     public static final String[] DEFAULT_FOLDER_NAMES = {
@@ -992,13 +971,14 @@ public class FileUtils {
     }
 
     /**
-     * Returns relative path with display name.
+     * Returns relative path for the directory.
      */
     @VisibleForTesting
-    public static @Nullable String extractRelativePathWithDisplayName(@Nullable String path) {
-        if (path == null) return null;
+    public static @Nullable String extractRelativePathForDirectory(@Nullable String directoryPath) {
+        if (directoryPath == null) return null;
 
-        if (path.equals("/storage/emulated") || path.equals("/storage/emulated/")) {
+        if (directoryPath.equals("/storage/emulated") ||
+                directoryPath.equals("/storage/emulated/")) {
             // This path is not reachable for MediaProvider.
             return null;
         }
@@ -1007,18 +987,18 @@ public class FileUtils {
         // same PATTERN_RELATIVE_PATH to match relative path for directory. For example, relative
         // path of '/storage/<volume_name>' is null where as relative path for directory is "/", for
         // PATTERN_RELATIVE_PATH to match '/storage/<volume_name>', it should end with "/".
-        if (!path.endsWith("/")) {
+        if (!directoryPath.endsWith("/")) {
             // Relative path for directory should end with "/".
-            path += "/";
+            directoryPath += "/";
         }
 
-        final Matcher matcher = PATTERN_RELATIVE_PATH.matcher(path);
+        final Matcher matcher = PATTERN_RELATIVE_PATH.matcher(directoryPath);
         if (matcher.find()) {
-            if (matcher.end() == path.length()) {
+            if (matcher.end() == directoryPath.length()) {
                 // This is the top-level directory, so relative path is "/"
                 return "/";
             }
-            return path.substring(matcher.end());
+            return directoryPath.substring(matcher.end());
         }
         return null;
     }
@@ -1028,43 +1008,17 @@ public class FileUtils {
         final Matcher m = PATTERN_OWNED_PATH.matcher(path);
         if (m.matches()) {
             return m.group(1);
+        } else {
+            return null;
         }
-        return null;
-    }
-
-    public static @Nullable String extractOwnerPackageNameFromRelativePath(@Nullable String path) {
-        if (path == null) return null;
-        final Matcher m = PATTERN_OWNED_RELATIVE_PATH.matcher(path);
-        if (m.matches()) {
-            return m.group(1);
-        }
-        return null;
-    }
-
-    /**
-     * Returns true if path is Android/data or Android/obb path.
-     */
-    public static boolean isDataOrObbPath(@Nullable String path) {
-        if (path == null) return false;
-        final Matcher m = PATTERN_DATA_OR_OBB_PATH.matcher(path);
-        return m.matches();
     }
 
     /**
      * Returns true if relative path is Android/data or Android/obb path.
      */
-    public static boolean isDataOrObbRelativePath(@Nullable String path) {
+    public static boolean isDataOrObbPath(String path) {
         if (path == null) return false;
-        final Matcher m = PATTERN_DATA_OR_OBB_RELATIVE_PATH.matcher(path);
-        return m.matches();
-    }
-
-    /**
-     * Returns true if relative path is Android/obb path.
-     */
-    public static boolean isObbOrChildRelativePath(@Nullable String path) {
-        if (path == null) return false;
-        final Matcher m = PATTERN_OBB_OR_CHILD_RELATIVE_PATH.matcher(path);
+        final Matcher m = PATTERN_DATA_OR_OBB_PATH.matcher(path);
         return m.matches();
     }
 
@@ -1306,7 +1260,7 @@ public class FileUtils {
 
         // DCIM/Camera should always be visible regardless of .nomedia presence.
         if (CAMERA_RELATIVE_PATH.equalsIgnoreCase(
-                extractRelativePathWithDisplayName(dir.getAbsolutePath()))) {
+                extractRelativePathForDirectory(dir.getAbsolutePath()))) {
             nomedia.delete();
             return false;
         }
