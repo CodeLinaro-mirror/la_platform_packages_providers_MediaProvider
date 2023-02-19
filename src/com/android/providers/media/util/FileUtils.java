@@ -1315,7 +1315,7 @@ public class FileUtils {
 
         // DCIM/Camera should always be visible regardless of .nomedia presence.
         if (CAMERA_RELATIVE_PATH.equalsIgnoreCase(
-              extractRelativePathWithDisplayName(dir.getAbsolutePath()))) {
+                extractRelativePathWithDisplayName(dir.getAbsolutePath()))) {
             nomedia.delete();
             return false;
         }

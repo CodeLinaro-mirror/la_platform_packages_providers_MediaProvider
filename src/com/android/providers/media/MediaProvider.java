@@ -1743,8 +1743,8 @@ public class MediaProvider extends ContentProvider {
      * Gets all files in the given {@code path} and subdirectories of the given {@code path}.
      */
     private ArrayList<String> getAllFilesForRenameDirectory(String oldPath) {
-        final String selection = MediaColumns.RELATIVE_PATH + " REGEXP '^" +
-                extractRelativePathWithDisplayName(oldPath) + "/?.*' and mime_type not like 'null'";
+        final String selection = FileColumns.DATA + " LIKE ? ESCAPE '\\'"
+                + " and mime_type not like 'null'";
         final String[] selectionArgs = new String[] {DatabaseUtils.escapeForLike(oldPath) + "/%"};
         ArrayList<String> fileList = new ArrayList<>();
 
@@ -1787,9 +1787,9 @@ public class MediaProvider extends ContentProvider {
         }
 
         final int countAllFilesInDirectory;
-        final String selection = MediaColumns.RELATIVE_PATH + " REGEXP '^" +
-                extractRelativePathWithDisplayName(oldPath) + "/?.*' and mime_type not like 'null'";
-	final String[] selectionArgs = new String[] {DatabaseUtils.escapeForLike(oldPath) + "/%"};
+        final String selection = FileColumns.DATA + " LIKE ? ESCAPE '\\'"
+                + " and mime_type not like 'null'";
+        final String[] selectionArgs = new String[] {DatabaseUtils.escapeForLike(oldPath) + "/%"};
 
         final Uri uriOldPath = FileUtils.getContentUriForPath(oldPath);
 
