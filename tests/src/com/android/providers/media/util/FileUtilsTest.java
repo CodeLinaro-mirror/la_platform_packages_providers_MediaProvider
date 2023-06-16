@@ -61,6 +61,7 @@ import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
@@ -541,7 +542,15 @@ public class FileUtilsTest {
                     extractRelativePath(prefix + "DCIM/foo.jpg"));
             assertEquals("DCIM/My Vacation/",
                     extractRelativePath(prefix + "DCIM/My Vacation/foo.jpg"));
+            assertEquals("Pictures/",
+                    extractRelativePath(prefix + "DCIM/../Pictures/.//foo.jpg"));
+            assertEquals("/",
+                    extractRelativePath(prefix + "DCIM/Pictures/./..//..////foo.jpg"));
+            assertEquals("Android/data/",
+                    extractRelativePath(prefix + "DCIM/foo.jpg/.//../../Android/data/poc"));
         }
+
+        assertEquals(null, extractRelativePath("/sdcard/\\\u0000"));
     }
 
     @Test
@@ -903,11 +912,16 @@ public class FileUtilsTest {
         assertThat(isDataOrObbPath("/storage/emulated/0/Android/obb")).isTrue();
         assertThat(isDataOrObbPath("/storage/ABCD-1234/Android/data")).isTrue();
         assertThat(isDataOrObbPath("/storage/ABCD-1234/Android/obb")).isTrue();
-        assertThat(isDataOrObbPath("/storage/emulated/0/Android/data/foo")).isTrue();
-        assertThat(isDataOrObbPath("/storage/emulated/0/Android/obb/foo")).isTrue();
-        assertThat(isDataOrObbPath("/storage/ABCD-1234/Android/data/foo")).isTrue();
-        assertThat(isDataOrObbPath("/storage/ABCD-1234/Android/obb/foo")).isTrue();
 
+        assertThat(isDataOrObbPath("/storage/emulated/0/Android/data/foo")).isFalse();
+        assertThat(isDataOrObbPath("/storage/emulated/0/Android/obb/foo")).isFalse();
+        assertThat(isDataOrObbPath("/storage/ABCD-1234/Android/data/foo")).isFalse();
+        assertThat(isDataOrObbPath("/storage/ABCD-1234/Android/obb/foo")).isFalse();
+        assertThat(isDataOrObbPath("/storage/emulated/10/Android/obb/foo")).isFalse();
+        assertThat(isDataOrObbPath("/storage/emulated//Android/obb/foo")).isFalse();
+        assertThat(isDataOrObbPath("/storage/emulated//Android/obb")).isFalse();
+        assertThat(isDataOrObbPath("/storage/emulated/0//Android/obb")).isFalse();
+        assertThat(isDataOrObbPath("/storage/emulated/0//Android/obb/foo")).isFalse();
         assertThat(isDataOrObbPath("/storage/emulated/0/Android/")).isFalse();
         assertThat(isDataOrObbPath("/storage/emulated/0/Android/media/")).isFalse();
         assertThat(isDataOrObbPath("/storage/ABCD-1234/Android/media/")).isFalse();
@@ -1014,5 +1028,28 @@ public class FileUtilsTest {
             assertTrue(isExternalMediaDirectory(prefix + "Android/media/foo.jpg", "AppClone"));
             assertFalse(isExternalMediaDirectory(prefix + "Android/media/foo.jpg", "NotAppClone"));
         }
+    }
+
+    @Test
+    public void testComputeDataFromValuesForValidPath_success() {
+        final ContentValues values = new ContentValues();
+        values.put(MediaColumns.RELATIVE_PATH, "Android/media/com.example");
+        values.put(MediaColumns.DISPLAY_NAME, "./../../abc.txt");
+
+        FileUtils.computeDataFromValues(values, new File("/storage/emulated/0"), false);
+
+        assertThat(values.getAsString(MediaColumns.DATA)).isEqualTo(
+                "/storage/emulated/0/Android/abc.txt");
+    }
+
+    @Test
+    public void testComputeDataFromValuesForInvalidPath_throwsIllegalArgumentException() {
+        final ContentValues values = new ContentValues();
+        values.put(MediaColumns.RELATIVE_PATH, "\0");
+        values.put(MediaColumns.DISPLAY_NAME, "./../../abc.txt");
+
+        assertThrows(IllegalArgumentException.class,
+                () -> FileUtils.computeDataFromValues(values, new File("/storage/emulated/0"),
+                        false));
     }
 }
