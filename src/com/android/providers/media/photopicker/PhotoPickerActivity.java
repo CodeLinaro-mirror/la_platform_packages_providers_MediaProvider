@@ -21,6 +21,7 @@ import static android.provider.MediaStore.ACTION_PICK_IMAGES;
 import static android.provider.MediaStore.ACTION_USER_SELECT_IMAGES_FOR_APP;
 import static android.provider.MediaStore.grantMediaReadForPackage;
 
+import static com.android.providers.media.MediaApplication.getConfigStore;
 import static com.android.providers.media.photopicker.PhotoPickerSettingsActivity.EXTRA_CURRENT_USER_ID;
 import static com.android.providers.media.photopicker.data.PickerResult.getPickerResponseIntent;
 import static com.android.providers.media.photopicker.data.PickerResult.getPickerUrisForItems;
@@ -567,7 +568,7 @@ public class PhotoPickerActivity extends AppCompatActivity {
 
         final boolean isGetContent = isGetContentAction();
         final boolean isPickImages = isPickImagesAction();
-        final ConfigStore cs = mPickerViewModel.getConfigStore();
+        final ConfigStore cs = getConfigStore();
 
         if (getIntent().hasExtra(EXTRA_PRELOAD_SELECTED)) {
             if (Build.isDebuggable()
@@ -600,9 +601,8 @@ public class PhotoPickerActivity extends AppCompatActivity {
     /**
      * NOTE: this may wrongly return {@code false} if called before {@link PickerViewModel} had a
      * chance to fetch the authority and the account of the current
-     * {@link android.provider.CloudMediaProvider}. However, {@link PickerViewModel} initiates the
-     * "fetch" through {@link PickerViewModel#maybeInitialiseAndSetBannersForCurrentUser()} in its
-     * ctor, so this may only happen very early on in the lifecycle.
+     * {@link android.provider.CloudMediaProvider}.
+     * However, this may only happen very early on in the lifecycle.
      */
     private boolean isCloudMediaAvailable() {
         return mPickerViewModel.getCloudMediaProviderAuthorityLiveData().getValue() != null
@@ -836,9 +836,7 @@ public class PhotoPickerActivity extends AppCompatActivity {
      * Returns {@code true} if settings page is enabled.
      */
     private boolean shouldShowSettingsScreen() {
-        if (mPickerViewModel.isUserSelectForApp()) {
-            // Photo Picker is launched by {@link MediaStore#ACTION_USER_SELECT_IMAGES_FOR_APP}
-            // action for permission flow. We only show local items in this case.
+        if (mPickerViewModel.shouldShowOnlyLocalFeatures()) {
             return false;
         }
 

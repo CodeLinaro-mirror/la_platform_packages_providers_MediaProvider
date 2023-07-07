@@ -26,6 +26,7 @@ import android.widget.TextView;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.annotation.StringRes;
+import androidx.annotation.VisibleForTesting;
 import androidx.lifecycle.LifecycleOwner;
 import androidx.lifecycle.LiveData;
 import androidx.recyclerview.widget.RecyclerView;
@@ -38,9 +39,11 @@ import java.util.List;
 /**
  * Adapts from model to something RecyclerView understands.
  */
-abstract class TabAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
+@VisibleForTesting
+public abstract class TabAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
 
-    static final int ITEM_TYPE_BANNER = 0;
+    @VisibleForTesting
+    public static final int ITEM_TYPE_BANNER = 0;
     // Date header sections for "Photos" tab
     static final int ITEM_TYPE_SECTION = 1;
     // Media items (a.k.a. Items) for "Photos" tab, Albums (a.k.a. Categories) for "Albums" tab
@@ -69,8 +72,12 @@ abstract class TabAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
             @NonNull LiveData<String> cloudMediaAccountName,
             @NonNull LiveData<Boolean> shouldShowChooseAppBanner,
             @NonNull LiveData<Boolean> shouldShowCloudMediaAvailableBanner,
+            @NonNull LiveData<Boolean> shouldShowAccountUpdatedBanner,
+            @NonNull LiveData<Boolean> shouldShowChooseAccountBanner,
             @NonNull OnBannerEventListener onChooseAppBannerEventListener,
-            @NonNull OnBannerEventListener onCloudMediaAvailableBannerEventListener) {
+            @NonNull OnBannerEventListener onCloudMediaAvailableBannerEventListener,
+            @NonNull OnBannerEventListener onAccountUpdatedBannerEventListener,
+            @NonNull OnBannerEventListener onChooseAccountBannerEventListener) {
         mImageLoader = imageLoader;
         mCloudMediaProviderAppTitle = cloudMediaProviderAppTitle;
         mCloudMediaAccountName = cloudMediaAccountName;
@@ -80,6 +87,12 @@ abstract class TabAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
         shouldShowCloudMediaAvailableBanner.observe(lifecycleOwner, isVisible ->
                 setBannerVisibility(isVisible, Banner.CLOUD_MEDIA_AVAILABLE,
                         onCloudMediaAvailableBannerEventListener));
+        shouldShowAccountUpdatedBanner.observe(lifecycleOwner, isVisible ->
+                setBannerVisibility(isVisible, Banner.ACCOUNT_UPDATED,
+                        onAccountUpdatedBannerEventListener));
+        shouldShowChooseAccountBanner.observe(lifecycleOwner, isVisible ->
+                setBannerVisibility(isVisible, Banner.CHOOSE_ACCOUNT,
+                        onChooseAccountBannerEventListener));
     }
 
     @NonNull
@@ -187,7 +200,7 @@ abstract class TabAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     abstract boolean isItemTypeMediaItem(int position);
 
     /**
-     * Update the 'choose app' banner visibility in tab adapter
+     * Update the banner visibility in tab adapter
      */
     private void setBannerVisibility(boolean isVisible, @NonNull Banner banner,
             @NonNull OnBannerEventListener onBannerEventListener) {
@@ -197,7 +210,7 @@ abstract class TabAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
                 mOnBannerEventListener = onBannerEventListener;
                 notifyItemInserted(/* position */ 0);
                 mOnBannerEventListener.onBannerAdded();
-            } else if (mBanner != banner) {
+            } else {
                 mBanner = banner;
                 mOnBannerEventListener = onBannerEventListener;
                 notifyItemChanged(/* position */ 0);
@@ -274,14 +287,18 @@ abstract class TabAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> 
     }
 
     private enum Banner {
+        // TODO(b/274426228): Replace `CLOUD_MEDIA_AVAILABLE` `mActionButtonText` from `-1` to
+        //  `R.string.picker_banner_cloud_change_account_button`, post change cloud account
+        //  functionality implementation from the Picker settings (b/261999521).
         CLOUD_MEDIA_AVAILABLE(R.string.picker_banner_cloud_first_time_available_title,
-                R.string.picker_banner_cloud_first_time_available_desc,
-                R.string.picker_banner_cloud_change_account_button),
+                R.string.picker_banner_cloud_first_time_available_desc, /* no action button */ -1),
         ACCOUNT_UPDATED(R.string.picker_banner_cloud_account_changed_title,
                 R.string.picker_banner_cloud_account_changed_desc, /* no action button */ -1),
+        // TODO(b/274426228): Replace `CHOOSE_ACCOUNT` `mActionButtonText` from `-1` to
+        //  `R.string.picker_banner_cloud_choose_account_button`, post change cloud account
+        //  functionality implementation from the Picker settings (b/261999521).
         CHOOSE_ACCOUNT(R.string.picker_banner_cloud_choose_account_title,
-                R.string.picker_banner_cloud_choose_account_desc,
-                R.string.picker_banner_cloud_choose_account_button),
+                R.string.picker_banner_cloud_choose_account_desc, /* no action button */ -1),
         CHOOSE_APP(R.string.picker_banner_cloud_choose_app_title,
                 R.string.picker_banner_cloud_choose_app_desc,
                 R.string.picker_banner_cloud_choose_app_button);
