@@ -17,10 +17,10 @@
 package android.graphics.pdf;
 
 import static android.graphics.pdf.PdfLinearizationTypes.PDF_DOCUMENT_TYPE_LINEARIZED;
-import static android.graphics.pdf.PdfLinearizationTypes.PDF_DOCUMENT_TYPE_NON_LINEARIZED;
 
 import android.annotation.FlaggedApi;
 import android.annotation.IntDef;
+import android.annotation.IntRange;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.SuppressLint;
@@ -50,9 +50,7 @@ import androidx.annotation.RestrictTo;
 import java.io.IOException;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Set;
 
 /**
  * <p>
@@ -116,17 +114,13 @@ import java.util.Set;
  */
 @SuppressLint("UnflaggedApi")
 public final class PdfRenderer implements AutoCloseable {
-    /** Represents that the linearization of the PDF document cannot be determined. */
-    @FlaggedApi(Flags.FLAG_ENABLE_PDF_VIEWER)
-    public static final int DOCUMENT_LINEARIZED_TYPE_UNKNOWN = 0;
-
     /** Represents a non-linearized PDF document. */
     @FlaggedApi(Flags.FLAG_ENABLE_PDF_VIEWER)
-    public static final int DOCUMENT_LINEARIZED_TYPE_NON_LINEARIZED = 1;
+    public static final int DOCUMENT_LINEARIZED_TYPE_NON_LINEARIZED = 0;
 
     /** Represents a linearized PDF document. */
     @FlaggedApi(Flags.FLAG_ENABLE_PDF_VIEWER)
-    public static final int DOCUMENT_LINEARIZED_TYPE_LINEARIZED = 2;
+    public static final int DOCUMENT_LINEARIZED_TYPE_LINEARIZED = 1;
 
     /** Represents a PDF without form fields */
     @FlaggedApi(Flags.FLAG_ENABLE_FORM_FILLING)
@@ -306,10 +300,8 @@ public final class PdfRenderer implements AutoCloseable {
             int documentType = mPdfProcessor.getDocumentLinearizationType();
             if (documentType == PDF_DOCUMENT_TYPE_LINEARIZED) {
                 return DOCUMENT_LINEARIZED_TYPE_LINEARIZED;
-            } else if (documentType == PDF_DOCUMENT_TYPE_NON_LINEARIZED) {
-                return DOCUMENT_LINEARIZED_TYPE_NON_LINEARIZED;
             } else {
-                return DOCUMENT_LINEARIZED_TYPE_UNKNOWN;
+                return DOCUMENT_LINEARIZED_TYPE_NON_LINEARIZED;
             }
         }
     }
@@ -373,7 +365,7 @@ public final class PdfRenderer implements AutoCloseable {
      *                               {@code true} but the document remains encrypted.
      * @throws IllegalStateException If {@link #close()} is called before invoking this.
      */
-    @SuppressLint("UnflaggedApi")
+    @FlaggedApi(Flags.FLAG_ENABLE_PDF_VIEWER)
     public void write(@NonNull ParcelFileDescriptor destination, boolean removePasswordProtection)
             throws IOException {
         throwIfClosed();
@@ -468,8 +460,7 @@ public final class PdfRenderer implements AutoCloseable {
     /** @hide */
     @RestrictTo(RestrictTo.Scope.LIBRARY)
     @Retention(RetentionPolicy.SOURCE)
-    @IntDef(prefix = {"PDF_DOCUMENT_TYPE_"}, value = {DOCUMENT_LINEARIZED_TYPE_UNKNOWN,
-            DOCUMENT_LINEARIZED_TYPE_NON_LINEARIZED,
+    @IntDef(prefix = {"PDF_DOCUMENT_TYPE_"}, value = {DOCUMENT_LINEARIZED_TYPE_NON_LINEARIZED,
             DOCUMENT_LINEARIZED_TYPE_LINEARIZED})
     public @interface PdfDocumentLinearizationType {
     }
@@ -619,9 +610,10 @@ public final class PdfRenderer implements AutoCloseable {
         }
 
         /**
-         * Return list of {@link PdfPageTextContent} in the order it was found on the page. It
-         * contains all the content associated with text found on the page. The list will be empty
-         * if there are no results found.
+         * Return list of {@link PdfPageTextContent} found on the page, ordered left to right
+         * and top to bottom. It contains all the content associated with text found on the page.
+         * The list will be empty if there are no results found. Currently, localisation does
+         * not have any impact on the order in which {@link PdfPageTextContent} is returned.
          *
          * @return list of text content found on the page.
          * @throws IllegalStateException If the document/page is closed before invocation.
@@ -636,9 +628,11 @@ public final class PdfRenderer implements AutoCloseable {
         }
 
         /**
-         * Return list of {@link PdfPageImageContent} in the order it was found on the page. It
-         * contains all the content associated with images found on the page including alt text.
-         * The list will be empty if there are no results found.
+         * Return list of {@link PdfPageImageContent} found on the page, ordered left to right
+         * and top to bottom. It contains all the content associated with images found on the
+         * page including alt text. The list will be empty if there are no results found.
+         * Currently, localisation does not have any impact on the order in which
+         * {@link PdfPageImageContent} is returned.
          *
          * @return list of image content found on the page.
          * @throws IllegalStateException If the document/page is closed before invocation.
@@ -677,9 +671,9 @@ public final class PdfRenderer implements AutoCloseable {
 
         /**
          * Return a {@link PageSelection} which represents the selected content that spans between
-         * the two boundaries, both of which can be either exactly defined with text indexes, or
+         * the two boundaries. The boundaries can be either exactly defined with text indexes, or
          * approximately defined with points on the page. The resulting selection will also be
-         * exactly defined with both indexes and points. If the start and stop boundary are both
+         * exactly defined with both indexes and points. If the left and right boundary are both
          * the same point, selects the word at that point. In case the selection from the given
          * boundaries result in an empty space, then the method returns {@code null}. The left and
          * right {@link SelectionBoundary} in {@link PageSelection} resolves to the "nearest" index
@@ -688,8 +682,8 @@ public final class PdfRenderer implements AutoCloseable {
          * <strong>Note:</strong> Should be invoked on a {@link android.annotation.WorkerThread}
          * as it is long-running task.
          *
-         * @param left  start boundary of the selection (inclusive)
-         * @param right stop boundary of the selection (exclusive)
+         * @param left  left boundary of the selection (inclusive)
+         * @param right right boundary of the selection (exclusive)
          * @param isRtl determines right-to-left mode for the selection.
          * @return collection of the selected content for text, images, etc.
          * @throws IllegalStateException If the document/page is closed before invocation.
@@ -727,8 +721,8 @@ public final class PdfRenderer implements AutoCloseable {
          * are the internal navigation links which directs the user to different location
          * within the same document.
          *
-         * @return list of all goto links {@link PdfPageGotoLinkContent} on a page in the order
-         * they are present on the page
+         * @return list of all goto links {@link PdfPageGotoLinkContent} on a page, ordered
+         * left to right and top to bottom.
          * @throws IllegalStateException If the document/page is closed before invocation.
          */
         @FlaggedApi(Flags.FLAG_ENABLE_PDF_VIEWER)
@@ -749,20 +743,20 @@ public final class PdfRenderer implements AutoCloseable {
         @androidx.annotation.NonNull
         @FlaggedApi(Flags.FLAG_ENABLE_FORM_FILLING)
         public List<FormWidgetInfo> getFormWidgetInfos() {
-            return getFormWidgetInfos(new HashSet<>());
+            return getFormWidgetInfos(new int[0]);
         }
 
         /**
-         * Returns information about all form widgets on the page, or an empty list if there are no
-         * form widgets on the page.
+         * Returns information about all form widgets of the specified types on the page, or an
+         * empty list if there are no form widgets of the specified types on the page.
          *
-         * @param types the types of form widgets to return
+         * @param types the types of form widgets to return, or an empty array to return all widgets
          * @throws IllegalStateException if the renderer or page is closed
          */
         @NonNull
         @FlaggedApi(Flags.FLAG_ENABLE_FORM_FILLING)
         public List<FormWidgetInfo> getFormWidgetInfos(
-                @NonNull @FormWidgetInfo.WidgetType Set<Integer> types) {
+                @NonNull @FormWidgetInfo.WidgetType int[] types) {
             throwIfDocumentOrPageClosed();
             synchronized (sPdfiumLock) {
                 return mPdfProcessor.getFormWidgetInfos(mIndex, types);
@@ -773,16 +767,15 @@ public final class PdfRenderer implements AutoCloseable {
          * Returns information about the widget with {@code widgetIndex}.
          *
          * @param widgetIndex the index of the widget within the page's "Annot" array in the PDF
-         *                    document, available on results of previous calls to
-         *                    {@link #getFormWidgetInfos(Set)}
-         *                    or {@link #getFormWidgetInfoAtPosition(int, int)} via {@link
-         *                    FormWidgetInfo#getWidgetIndex()}.
+         *     document, available on results of previous calls to {@link
+         *     #getFormWidgetInfos(int[])} or {@link #getFormWidgetInfoAtPosition(int, int)} via
+         *     {@link FormWidgetInfo#getWidgetIndex()}.
          * @throws IllegalArgumentException if there is no form widget at the provided index.
-         * @throws IllegalStateException    if the renderer or page is closed
+         * @throws IllegalStateException if the renderer or page is closed
          */
         @NonNull
         @FlaggedApi(Flags.FLAG_ENABLE_FORM_FILLING)
-        public FormWidgetInfo getFormWidgetInfoAtIndex(int widgetIndex) {
+        public FormWidgetInfo getFormWidgetInfoAtIndex(@IntRange(from = 0) int widgetIndex) {
             throwIfDocumentOrPageClosed();
             synchronized (sPdfiumLock) {
                 return mPdfProcessor.getFormWidgetInfoAtIndex(mIndex, widgetIndex);
@@ -823,15 +816,11 @@ public final class PdfRenderer implements AutoCloseable {
          *
          * @param editRecord the {@link FormEditRecord} to be applied
          * @return Rectangular areas of the page bitmap that have been invalidated by this action.
-         * @throws IllegalArgumentException if the provided {@link FormEditRecord} is not
-         *                                  applicable
-         *                                  to the widget indicated by the index (e.g. a set indices
-         *                                  type record contains an
-         *                                  index that corresponds to push button widget, or if the
-         *                                  index does not correspond to
-         *                                  a form widget on the page).
-         * @throws IllegalStateException    If the document is already closed.
-         * @throws IllegalStateException    If the page is already closed.
+         * @throws IllegalArgumentException if the provided {@link FormEditRecord} cannot be applied
+         *     to the widget indicated by the index, or if the index does not correspond to a widget
+         *     on the page.
+         * @throws IllegalStateException If the document is already closed.
+         * @throws IllegalStateException If the page is already closed.
          */
         @NonNull
         @FlaggedApi(Flags.FLAG_ENABLE_FORM_FILLING)
@@ -839,32 +828,6 @@ public final class PdfRenderer implements AutoCloseable {
             throwIfDocumentOrPageClosed();
             synchronized (sPdfiumLock) {
                 return mPdfProcessor.applyEdit(mIndex, editRecord);
-            }
-        }
-
-        /**
-         * Applies the {@link FormEditRecord}s to the page, in order.
-         *
-         * <p><strong>Note: </strong>Re-rendering the page via {@link #render(Bitmap, Rect, Matrix,
-         * RenderParams)} is required after calling this method. Applying edits to form widgets will
-         * change the appearance of the page.
-         *
-         * <p>If any record cannot be applied, it will be returned and no further records will be
-         * applied. Records already applied will not be reverted. To restore the page to its state
-         * before any records were applied, re-load the page via {@link #close()} and {@link
-         * #openPage(int)}.
-         *
-         * @param formEditRecords the {@link FormEditRecord}s to be applied
-         * @return the records that could not be applied, or an empty list if all were applied
-         * @throws IllegalStateException If the document is already closed.
-         * @throws IllegalStateException If the page is already closed.
-         */
-        @NonNull
-        @FlaggedApi(Flags.FLAG_ENABLE_FORM_FILLING)
-        public List<FormEditRecord> applyEdits(@NonNull List<FormEditRecord> formEditRecords) {
-            throwIfDocumentOrPageClosed();
-            synchronized (sPdfiumLock) {
-                return mPdfProcessor.applyEdits(mIndex, formEditRecords);
             }
         }
 
