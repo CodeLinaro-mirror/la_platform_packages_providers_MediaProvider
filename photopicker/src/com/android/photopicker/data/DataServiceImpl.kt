@@ -18,11 +18,13 @@ package com.android.photopicker.data
 
 import android.database.ContentObserver
 import android.net.Uri
+import androidx.paging.PagingSource
 import com.android.photopicker.core.user.UserStatus
 import com.android.photopicker.data.model.CloudMediaProviderDetails
+import com.android.photopicker.data.model.Group.Album
+import com.android.photopicker.data.model.Media
+import com.android.photopicker.data.model.MediaPageKey
 import com.android.photopicker.data.model.Provider
-import com.android.photopicker.data.paging.AlbumContentPagingSource
-import com.android.photopicker.data.paging.AlbumPagingSource
 import com.android.photopicker.data.paging.MediaPagingSource
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.channels.awaitClose
@@ -40,11 +42,19 @@ import kotlinx.coroutines.flow.stateIn
  * Underlying data changes in [MediaProvider] are observed using [ContentObservers]. When a change
  * in data is observed, the data is re-fetched from the [MediaProvider] process and the new data
  * is emitted to the [StateFlows]-s.
+ *
+ * @param userStatus A [StateFlow] with the current active user's details.
+ * @param scope The [CoroutineScope] the data flows will be shared in.
+ * @param notificationService An instance of [NotificationService] responsible to listen to data
+ * change notifications.
+ * @param mediaProviderClient An instance of [MediaProviderClient] responsible to get data from
+ * MediaProvider.
  */
 class DataServiceImpl(
     private val userStatus: StateFlow<UserStatus>,
     private val scope: CoroutineScope,
     private val notificationService: NotificationService,
+    private val mediaProviderClient: MediaProviderClient,
 ) : DataService {
     companion object {
         const val FLOW_TIMEOUT_MILLI_SECONDS: Long = 5000
@@ -79,7 +89,7 @@ class DataServiceImpl(
         }
     }.map {
         // Fetch the available providers again when a change is detected.
-        MediaProviderClient.fetchAvailableProviders(userStatus.value.activeContentResolver)
+        mediaProviderClient.fetchAvailableProviders(userStatus.value.activeContentResolver)
     }
 
     /**
@@ -96,23 +106,26 @@ class DataServiceImpl(
         availableProvidersCallbackFlow.stateIn(
             scope,
             SharingStarted.WhileSubscribed(FLOW_TIMEOUT_MILLI_SECONDS),
-            MediaProviderClient.fetchAvailableProviders(userStatus.value.activeContentResolver)
+            mediaProviderClient.fetchAvailableProviders(userStatus.value.activeContentResolver)
         )
     }
 
-    override fun albumContentPagingSource(
-        albumId: String
-    ): AlbumContentPagingSource =
+    override fun albumContentPagingSource(albumId: String): PagingSource<MediaPageKey, Media> =
         throw NotImplementedError("This method is not implemented yet.")
 
-    override fun albumPagingSource(): AlbumPagingSource =
+    override fun albumPagingSource(): PagingSource<MediaPageKey, Album> =
         throw NotImplementedError("This method is not implemented yet.")
 
     override fun cloudMediaProviderDetails(
-            authority: String
+        authority: String
     ): StateFlow<CloudMediaProviderDetails?> =
             throw NotImplementedError("This method is not implemented yet.")
 
-    override fun mediaPagingSource(): MediaPagingSource =
-        throw NotImplementedError("This method is not implemented yet.")
+    override fun mediaPagingSource(): PagingSource<MediaPageKey, Media> {
+        return MediaPagingSource(
+            userStatus,
+            availableProviders,
+            mediaProviderClient
+        )
+    }
 }
