@@ -16,7 +16,6 @@
 
 package com.android.providers.media.photopicker.v2;
 
-import static com.android.providers.media.MediaApplication.getAppContext;
 import static com.android.providers.media.photopicker.sync.PickerSyncManager.IMMEDIATE_LOCAL_SYNC_WORK_NAME;
 import static com.android.providers.media.photopicker.sync.WorkManagerInitializer.getWorkManager;
 
@@ -54,10 +53,12 @@ public class PickerDataLayerV2 {
     private static final int CLOUD_SYNC_TIMEOUT_MILLIS = 500;
     /**
      * Returns a cursor with the Photo Picker media in response.
+     *
      * @param queryArgs The arguments help us filter on the media query to yield the desired
      *                  results.
      */
-    public static Cursor queryMedia(Bundle queryArgs) {
+    @NonNull
+    public static Cursor queryMedia(@NonNull Context appContext, @NonNull Bundle queryArgs) {
         final MediaQuery query = new MediaQuery(queryArgs);
         final PickerSyncController syncController = PickerSyncController.getInstanceOrThrow();
 
@@ -67,6 +68,7 @@ public class PickerDataLayerV2 {
                          syncLockManager.tryLock(PickerSyncLockManager.CLOUD_PROVIDER_LOCK)) {
                 // TODO(b/329122491) wait for sync to finish.
                 return queryMediaLocked(
+                        appContext,
                         syncController,
                         query,
                         /* shouldQueryCloudMedia */ true
@@ -76,6 +78,7 @@ public class PickerDataLayerV2 {
             }
         } else {
             return queryMediaLocked(
+                    appContext,
                     syncController,
                     query,
                     /* shouldQueryCloudMedia */ false
@@ -91,9 +94,11 @@ public class PickerDataLayerV2 {
      * a transaction in {@code DEFERRED} mode. This is why we'll perform the read queries in
      * {@code IMMEDIATE} mode instead.
      */
+    @NonNull
     static Cursor queryMediaLocked(
-            PickerSyncController syncController,
-            MediaQuery query,
+            @NonNull Context appContext,
+            @NonNull PickerSyncController syncController,
+            @NonNull MediaQuery query,
             boolean shouldQueryCloudMedia
     ) {
         try {
@@ -107,7 +112,7 @@ public class PickerDataLayerV2 {
                     ? syncController.getCloudProvider()
                     : null;
 
-            waitForOngoingSync(localAuthority, cloudAuthority);
+            waitForOngoingSync(appContext, localAuthority, cloudAuthority);
 
             try {
                 database.beginTransactionNonExclusive();
@@ -159,11 +164,12 @@ public class PickerDataLayerV2 {
     }
 
     private static void waitForOngoingSync(
-            String localAuthority,
-            String cloudAuthority) {
+            @NonNull Context appContext,
+            @Nullable String localAuthority,
+            @Nullable String cloudAuthority) {
         if (localAuthority != null) {
             SyncCompletionWaiter.waitForSync(
-                    getWorkManager(getAppContext()),
+                    getWorkManager(appContext),
                     SyncTrackerRegistry.getLocalSyncTracker(),
                     IMMEDIATE_LOCAL_SYNC_WORK_NAME
             );
