@@ -41,12 +41,14 @@ import com.android.photopicker.core.configuration.provideTestConfigurationFlow
 import com.android.photopicker.core.events.Event
 import com.android.photopicker.core.events.Events
 import com.android.photopicker.core.events.LocalEvents
-import com.android.photopicker.core.features.FeatureToken
 import com.android.photopicker.core.features.FeatureManager
+import com.android.photopicker.core.features.FeatureToken
 import com.android.photopicker.core.features.LocalFeatureManager
+import com.android.photopicker.core.navigation.LocalNavController
 import com.android.photopicker.core.selection.LocalSelection
 import com.android.photopicker.core.selection.Selection
 import com.android.photopicker.data.model.Media
+import com.android.photopicker.data.model.MediaSource
 import com.android.photopicker.features.PhotopickerFeatureBaseTest
 import com.android.photopicker.features.simpleuifeature.SimpleUiFeature
 import com.android.photopicker.inject.PhotopickerTestModule
@@ -111,14 +113,23 @@ class SelectionBarFeatureTest : PhotopickerFeatureBaseTest() {
             mediaId = "1",
             pickerId = 1L,
             authority = "a",
-            uri =
-                Uri.EMPTY.buildUpon()
-                    .apply {
-                        scheme("content")
-                        authority("a")
-                        path("$1")
-                    }
-                    .build(),
+            mediaSource = MediaSource.LOCAL,
+            mediaUri = Uri.EMPTY.buildUpon()
+                .apply {
+                    scheme("content")
+                    authority("media")
+                    path("picker")
+                    path("a")
+                    path("1")
+                }
+                .build(),
+            glideLoadableUri = Uri.EMPTY.buildUpon()
+                .apply {
+                    scheme("content")
+                    authority("a")
+                    path("1")
+                }
+                .build(),
             dateTakenMillisLong = 123456789L,
             sizeInBytes = 1000L,
             mimeType = "image/png",
@@ -167,7 +178,8 @@ class SelectionBarFeatureTest : PhotopickerFeatureBaseTest() {
                 CompositionLocalProvider(
                     LocalFeatureManager provides featureManager,
                     LocalSelection provides selection,
-                    LocalEvents provides events
+                    LocalEvents provides events,
+                    LocalNavController provides createNavController(),
                 ) {
                     SelectionBar(modifier = Modifier.testTag(TEST_TAG_SELECTION_BAR))
                 }
@@ -234,7 +246,8 @@ class SelectionBarFeatureTest : PhotopickerFeatureBaseTest() {
                 CompositionLocalProvider(
                     LocalFeatureManager provides featureManager,
                     LocalSelection provides selection,
-                    LocalEvents provides events
+                    LocalEvents provides events,
+                    LocalNavController provides createNavController(),
                 ) {
                     SelectionBar(modifier = Modifier.testTag(TEST_TAG_SELECTION_BAR))
                 }

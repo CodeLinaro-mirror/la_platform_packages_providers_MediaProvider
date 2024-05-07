@@ -39,6 +39,7 @@ import static com.google.android.material.bottomsheet.BottomSheetBehavior.STATE_
 import static com.google.android.material.bottomsheet.BottomSheetBehavior.STATE_EXPANDED;
 
 import android.annotation.SuppressLint;
+import android.app.ActivityManager;
 import android.app.Application;
 import android.content.ContentResolver;
 import android.content.Context;
@@ -676,30 +677,38 @@ public class PickerViewModel extends AndroidViewModel {
     public void getRemainingPreGrantedItems() {
         if (!isManagedSelectionEnabled() || mSelection.getPreGrantedUris() == null) return;
 
-        List<Uri> idsForItemsToBeFetched =
+        List<Uri> urisForItemsToBeFetched =
                 new ArrayList<>(mSelection.getPreGrantedUris());
-        idsForItemsToBeFetched.removeAll(mSelection.getSelectedItems().stream().map(
+        urisForItemsToBeFetched.removeAll(mSelection.getSelectedItems().stream().map(
                 Item::getContentUri).collect(Collectors.toSet()));
-        idsForItemsToBeFetched.removeAll(mSelection.getDeselectedUrisToBeRevoked());
+        urisForItemsToBeFetched.removeAll(mSelection.getDeselectedUrisToBeRevoked());
 
-        if (!idsForItemsToBeFetched.isEmpty()) {
+        if (!urisForItemsToBeFetched.isEmpty()) {
+            getItemDataForUris(urisForItemsToBeFetched, /* callingPackageUid */ -1,
+                    /* shouldScreenSelectionUris */ false);
+        }
+    }
+
+    private void getItemDataForUris(List<Uri> urisForItemsToBeFetched, int callingPackageUid,
+            boolean shouldScreenSelectionUris) {
+        if (!urisForItemsToBeFetched.isEmpty()) {
             UserId userId = getCurrentUserProfileId();
             DataLoaderThread.getHandler().postDelayed(() -> {
-                loadItemsWithLocalIdSelection(Category.DEFAULT, userId,
-                        idsForItemsToBeFetched.stream().map(Uri::getLastPathSegment)
-                                .map(Integer::valueOf).collect(Collectors.toList()));
+                loadItemsDataForPreSelection(Category.DEFAULT, userId,
+                        urisForItemsToBeFetched, callingPackageUid, shouldScreenSelectionUris);
                 // If new data has loaded then post value representing a successful operation.
                 mIsAllPreGrantedMediaLoaded.postValue(true);
-                Log.d(TAG, "Fetched " + idsForItemsToBeFetched.size()
+                Log.d(TAG, "Fetched " + urisForItemsToBeFetched.size()
                         + " items for required preGranted ids");
             }, TOKEN, 0);
         }
     }
 
-    private void loadItemsWithLocalIdSelection(Category category, UserId userId,
-            List<Integer> selectionArg) {
-        try (Cursor cursor = mItemsProvider.getLocalItemsForSelection(category, selectionArg,
-                mMimeTypeFilters, userId, mCancellationSignal)) {
+    private void loadItemsDataForPreSelection(Category category, UserId userId,
+            List<Uri> selectionArg, int callingPackageUid, boolean shouldScreenSelectionUris) {
+        try (Cursor cursor = mItemsProvider.getItemsForPreselectedMedia(category, selectionArg,
+                mMimeTypeFilters, userId, shouldShowOnlyLocalFeatures(), callingPackageUid,
+                shouldScreenSelectionUris, mCancellationSignal)) {
             if (cursor == null || cursor.getCount() == 0) {
                 Log.d(TAG, "Didn't receive any items for pre granted URIs" + category
                         + ", either cursor is null or cursor count is zero");
@@ -1078,9 +1087,19 @@ public class PickerViewModel extends AndroidViewModel {
      */
     public void logPickerOpened(int callingUid, String callingPackage, String intentAction) {
         if (mConfigStore.isPrivateSpaceInPhotoPickerEnabled() && SdkLevel.isAtLeastS()) {
+            UserManagerState userManagerState = getUserManagerState();
+            if (userManagerState.getCurrentUserProfileId().getIdentifier()
+                    == ActivityManager.getCurrentUser()) {
+                mLogger.logPickerOpenPersonal(mInstanceId, callingUid, callingPackage);
+            } else if (userManagerState.isManagedUserProfile(
+                    userManagerState.getCurrentUserProfileId())) {
+                mLogger.logPickerOpenWork(mInstanceId, callingUid, callingPackage);
+            } else {
+                mLogger.logPickerOpenUnknown(mInstanceId, callingUid, callingPackage);
+            }
             return;
         }
-        //Todo(b/318614654): need to refactor
+
         if (getUserIdManager().isManagedUserSelected()) {
             mLogger.logPickerOpenWork(mInstanceId, callingUid, callingPackage);
         } else {
@@ -1173,9 +1192,21 @@ public class PickerViewModel extends AndroidViewModel {
      */
     public void logPickerConfirm(int callingUid, String callingPackage, int countOfItemsConfirmed) {
         if (mConfigStore.isPrivateSpaceInPhotoPickerEnabled() && SdkLevel.isAtLeastS()) {
+            UserManagerState userManagerState = getUserManagerState();
+            if (userManagerState.getCurrentUserProfileId().getIdentifier()
+                    == ActivityManager.getCurrentUser()) {
+                mLogger.logPickerConfirmPersonal(mInstanceId, callingUid, callingPackage,
+                        countOfItemsConfirmed);
+            } else if (userManagerState.isManagedUserProfile(
+                    userManagerState.getCurrentUserProfileId())) {
+                mLogger.logPickerConfirmWork(mInstanceId, callingUid, callingPackage,
+                        countOfItemsConfirmed);
+            } else {
+                mLogger.logPickerConfirmUnknown(
+                        mInstanceId, callingUid, callingPackage, countOfItemsConfirmed);
+            }
             return;
         }
-        //Todo(b/318614654): need to refactor
         if (getUserIdManager().isManagedUserSelected()) {
             mLogger.logPickerConfirmWork(mInstanceId, callingUid, callingPackage,
                     countOfItemsConfirmed);
@@ -1190,9 +1221,18 @@ public class PickerViewModel extends AndroidViewModel {
      */
     public void logPickerCancel(int callingUid, String callingPackage) {
         if (mConfigStore.isPrivateSpaceInPhotoPickerEnabled() && SdkLevel.isAtLeastS()) {
+            UserManagerState userManagerState = getUserManagerState();
+            if (userManagerState.getCurrentUserProfileId().getIdentifier()
+                    == ActivityManager.getCurrentUser()) {
+                mLogger.logPickerCancelPersonal(mInstanceId, callingUid, callingPackage);
+            } else if (userManagerState.isManagedUserProfile(
+                    userManagerState.getCurrentUserProfileId())) {
+                mLogger.logPickerCancelWork(mInstanceId, callingUid, callingPackage);
+            } else {
+                mLogger.logPickerCancelUnknown(mInstanceId, callingUid, callingPackage);
+            }
             return;
         }
-        //Todo(b/318614654): need to refactor
         if (getUserIdManager().isManagedUserSelected()) {
             mLogger.logPickerCancelWork(mInstanceId, callingUid, callingPackage);
         } else {
@@ -1231,10 +1271,24 @@ public class PickerViewModel extends AndroidViewModel {
     }
 
     /**
+     * Log metrics to notify that the 'switch profile menu' button is visible
+     */
+    public void logProfileSwitchMenuButtonVisible() {
+        mLogger.logProfileSwitchMenuButtonVisible(mInstanceId);
+    }
+
+    /**
      * Log metrics to notify that the user has clicked the 'switch profile' button
      */
     public void logProfileSwitchButtonClick() {
         mLogger.logProfileSwitchButtonClick(mInstanceId);
+    }
+
+    /**
+     * Log metrics to notify that the user has clicked the 'switch profile menu ' button
+     */
+    public void logProfileSwitchMenuButtonClick() {
+        mLogger.logProfileSwitchMenuButtonClick(mInstanceId);
     }
 
     /**
