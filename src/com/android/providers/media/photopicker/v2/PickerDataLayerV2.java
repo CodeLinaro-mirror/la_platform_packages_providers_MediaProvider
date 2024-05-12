@@ -16,7 +16,9 @@
 
 package com.android.providers.media.photopicker.v2;
 
+import static com.android.providers.media.PickerUriResolver.getAlbumUri;
 import static com.android.providers.media.photopicker.sync.PickerSyncManager.IMMEDIATE_LOCAL_SYNC_WORK_NAME;
+import static com.android.providers.media.photopicker.sync.PickerSyncManager.IMMEDIATE_ALBUM_SYNC_WORK_NAME;
 import static com.android.providers.media.photopicker.sync.WorkManagerInitializer.getWorkManager;
 
 import android.annotation.UserIdInt;
@@ -25,25 +27,31 @@ import android.content.pm.PackageManager;
 import android.content.pm.PackageManager.NameNotFoundException;
 import android.database.Cursor;
 import android.database.MatrixCursor;
+import android.database.MergeCursor;
 import android.database.sqlite.SQLiteDatabase;
 import android.os.Bundle;
 import android.os.Process;
+import android.provider.CloudMediaProviderContract.AlbumColumns;
 import android.util.Log;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
 import com.android.providers.media.photopicker.PickerSyncController;
-import com.android.providers.media.photopicker.sync.CloseableReentrantLock;
-import com.android.providers.media.photopicker.sync.PickerSyncLockManager;
 import com.android.providers.media.photopicker.sync.SyncCompletionWaiter;
 import com.android.providers.media.photopicker.sync.SyncTrackerRegistry;
-import com.android.providers.media.photopicker.util.exceptions.UnableToAcquireLockException;
+import com.android.providers.media.photopicker.v2.model.AlbumMediaQuery;
+import com.android.providers.media.photopicker.v2.model.AlbumsCursorWrapper;
+import com.android.providers.media.photopicker.v2.model.FavoritesMediaQuery;
 import com.android.providers.media.photopicker.v2.model.MediaQuery;
 import com.android.providers.media.photopicker.v2.model.MediaSource;
+import com.android.providers.media.photopicker.v2.model.VideoMediaQuery;
 
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Iterator;
 import java.util.List;
+
 
 /**
  * This class handles Photo Picker content queries.
@@ -51,37 +59,137 @@ import java.util.List;
 public class PickerDataLayerV2 {
     private static final String TAG = "PickerDataLayerV2";
     private static final int CLOUD_SYNC_TIMEOUT_MILLIS = 500;
+    private static final List<String> sMergedAlbumIds = List.of(
+            AlbumColumns.ALBUM_ID_FAVORITES,
+            AlbumColumns.ALBUM_ID_VIDEOS
+    );
+
     /**
      * Returns a cursor with the Photo Picker media in response.
      *
+     * @param appContext The application context.
      * @param queryArgs The arguments help us filter on the media query to yield the desired
      *                  results.
      */
     @NonNull
-    public static Cursor queryMedia(@NonNull Context appContext, @NonNull Bundle queryArgs) {
+    static Cursor queryMedia(@NonNull Context appContext, @NonNull Bundle queryArgs) {
         final MediaQuery query = new MediaQuery(queryArgs);
         final PickerSyncController syncController = PickerSyncController.getInstanceOrThrow();
+        final String effectiveLocalAuthority =
+                query.getProviders().contains(syncController.getLocalProvider())
+                        ? syncController.getLocalProvider()
+                        : null;
+        final String cloudAuthority = syncController
+                .getCloudProviderOrDefault(/* defaultValue */ null);
+        final String effectiveCloudAuthority =
+                syncController.shouldQueryCloudMedia(query.getProviders(), cloudAuthority)
+                        ? cloudAuthority
+                        : null;
 
-        if (syncController.shouldQueryCloudMedia(query.getProviders())) {
-            final PickerSyncLockManager syncLockManager = syncController.getPickerSyncLockManager();
-            try (CloseableReentrantLock ignored =
-                         syncLockManager.tryLock(PickerSyncLockManager.CLOUD_PROVIDER_LOCK)) {
-                // TODO(b/329122491) wait for sync to finish.
-                return queryMediaLocked(
-                        appContext,
-                        syncController,
-                        query,
-                        /* shouldQueryCloudMedia */ true
-                );
-            } catch (UnableToAcquireLockException e) {
-                throw new RuntimeException("Could not fetch media", e);
+        return queryMediaInternal(
+                appContext,
+                syncController,
+                query,
+                effectiveLocalAuthority,
+                effectiveCloudAuthority
+        );
+    }
+
+    /**
+     * Returns a cursor with the Photo Picker albums in response.
+     *
+     * @param appContext The application context.
+     * @param queryArgs The arguments help us filter on the media query to yield the desired
+     *                  results.
+     */
+    @Nullable
+    static Cursor queryAlbums(@NonNull Context appContext, @NonNull Bundle queryArgs) {
+        final MediaQuery query = new MediaQuery(queryArgs);
+        final PickerSyncController syncController = PickerSyncController.getInstanceOrThrow();
+        final SQLiteDatabase database = syncController.getDbFacade().getDatabase();
+        final String localAuthority = syncController.getLocalProvider();
+        final boolean shouldShowLocalAlbums = query.getProviders().contains(localAuthority);
+        final String cloudAuthority =
+                syncController.getCloudProviderOrDefault(/* defaultValue */ null);
+        final boolean shouldShowCloudAlbums = syncController.shouldQueryCloudMedia(
+                query.getProviders(), cloudAuthority);
+        final List<AlbumsCursorWrapper> cursors = new ArrayList<>();
+
+        if (shouldShowLocalAlbums || shouldShowCloudAlbums) {
+            cursors.add(getMergedAlbumsCursor(
+                    AlbumColumns.ALBUM_ID_FAVORITES, queryArgs, database,
+                    shouldShowLocalAlbums ? localAuthority : null,
+                    shouldShowCloudAlbums ? cloudAuthority : null));
+
+            cursors.add(getMergedAlbumsCursor(
+                    AlbumColumns.ALBUM_ID_VIDEOS, queryArgs, database,
+                    shouldShowLocalAlbums ? localAuthority : null,
+                    shouldShowCloudAlbums ? cloudAuthority : null));
+        }
+
+        if (shouldShowLocalAlbums) {
+            cursors.add(getLocalAlbumsCursor(appContext, query, localAuthority));
+        }
+
+        if (shouldShowCloudAlbums) {
+            cursors.add(getCloudAlbumsCursor(appContext, query, localAuthority, cloudAuthority));
+        }
+
+        for (Iterator<AlbumsCursorWrapper> iterator = cursors.iterator(); iterator.hasNext(); ) {
+            if (iterator.next() == null) {
+                iterator.remove();
             }
+        }
+
+        if (cursors.isEmpty()) {
+            Log.e(TAG, "No albums available");
+            return null;
         } else {
-            return queryMediaLocked(
+            return new MergeCursor(cursors.toArray(new Cursor[cursors.size()]));
+        }
+    }
+
+    /**
+     * Returns a cursor with the Photo Picker album media in response.
+     *
+     * @param appContext The application context.
+     * @param queryArgs The arguments help us filter on the media query to yield the desired
+     *                  results.
+     * @param albumId The album ID of the requested album media.
+     */
+    static Cursor queryAlbumMedia(
+            @NonNull Context appContext,
+            @NonNull Bundle queryArgs,
+            @NonNull String albumId) {
+        final AlbumMediaQuery query = new AlbumMediaQuery(queryArgs, albumId);
+        final PickerSyncController syncController = PickerSyncController.getInstanceOrThrow();
+        final String effectiveLocalAuthority =
+                query.getProviders().contains(syncController.getLocalProvider())
+                        ? syncController.getLocalProvider()
+                        : null;
+        final String cloudAuthority = syncController
+                .getCloudProviderOrDefault(/* defaultValue */ null);
+        final String effectiveCloudAuthority =
+                syncController.shouldQueryCloudMedia(query.getProviders(), cloudAuthority)
+                        ? cloudAuthority
+                        : null;
+
+        if (isMergedAlbum(albumId)) {
+            return queryMergedAlbumMedia(
+                    albumId,
+                    appContext,
+                    syncController,
+                    queryArgs,
+                    effectiveLocalAuthority,
+                    effectiveCloudAuthority
+            );
+        } else {
+            return queryAlbumMediaInternal(
                     appContext,
                     syncController,
                     query,
-                    /* shouldQueryCloudMedia */ false
+                    effectiveLocalAuthority,
+                    effectiveCloudAuthority
             );
         }
     }
@@ -93,24 +201,29 @@ public class PickerDataLayerV2 {
      * {@link android.database.sqlite.SQLiteQueryBuilder} currently does not support the creation of
      * a transaction in {@code DEFERRED} mode. This is why we'll perform the read queries in
      * {@code IMMEDIATE} mode instead.
+     *
+     * @param appContext The application context.
+     * @param syncController Instance of the PickerSyncController singleton.
+     * @param query The MediaQuery object instance that tells us about the media query args.
+     * @param localAuthority The effective local authority that we need to consider for this
+     *                       transaction. If the local items should not be queries but the local
+     *                       authority has some value, the effective local authority would be null.
+     * @param cloudAuthority The effective cloud authority that we need to consider for this
+     *                       transaction. If the local items should not be queries but the local
+     *                       authority has some value, the effective local authority would
+     *                       be null.
+     * @return The cursor with the album media query results.
      */
     @NonNull
-    static Cursor queryMediaLocked(
+    private static Cursor queryMediaInternal(
             @NonNull Context appContext,
             @NonNull PickerSyncController syncController,
             @NonNull MediaQuery query,
-            boolean shouldQueryCloudMedia
+            @Nullable String localAuthority,
+            @Nullable String cloudAuthority
     ) {
         try {
             final SQLiteDatabase database = syncController.getDbFacade().getDatabase();
-            final String localAuthority =
-                    query.getProviders().contains(syncController.getLocalProvider())
-                    ? syncController.getLocalProvider()
-                    : null;
-            final String cloudAuthority = (shouldQueryCloudMedia
-                    && query.getProviders().contains(syncController.getCloudProvider()))
-                    ? syncController.getCloudProvider()
-                    : null;
 
             waitForOngoingSync(appContext, localAuthority, cloudAuthority);
 
@@ -120,6 +233,7 @@ public class PickerDataLayerV2 {
                         getMediaPageQuery(
                             query,
                             database,
+                            PickerSQLConstants.Table.MEDIA,
                             localAuthority,
                             cloudAuthority
                     ),
@@ -131,6 +245,7 @@ public class PickerDataLayerV2 {
                         getMediaNextPageKeyQuery(
                             query,
                             database,
+                            PickerSQLConstants.Table.MEDIA,
                             localAuthority,
                             cloudAuthority
                         ),
@@ -142,6 +257,7 @@ public class PickerDataLayerV2 {
                         getMediaPreviousPageQuery(
                                 query,
                                 database,
+                                PickerSQLConstants.Table.MEDIA,
                                 localAuthority,
                                 cloudAuthority
                         ),
@@ -182,6 +298,25 @@ public class PickerDataLayerV2 {
             Log.i(TAG, "Finished waiting for cloud sync.  Is cloud sync complete: "
                     + syncIsComplete);
         }
+    }
+
+    /**
+     * @param appContext The application context.
+     * @param query The AlbumMediaQuery object instance that tells us about the media query args.
+     * @param localAuthority The effective local authority that we need to consider for this
+     *                       transaction. If the local items should not be queries but the local
+     *                       authority has some value, the effective local authority would be null.
+     */
+    private static void waitForOngoingAlbumSync(
+            @NonNull Context appContext,
+            @NonNull AlbumMediaQuery query,
+            @Nullable String localAuthority) {
+        boolean isLocal = localAuthority != null
+                && localAuthority.equals(query.getAlbumAuthority());
+        SyncCompletionWaiter.waitForSync(
+                getWorkManager(appContext),
+                SyncTrackerRegistry.getAlbumSyncTracker(isLocal),
+                IMMEDIATE_ALBUM_SYNC_WORK_NAME);
     }
 
     /**
@@ -256,10 +391,11 @@ public class PickerDataLayerV2 {
     private static String getMediaPageQuery(
             @NonNull MediaQuery query,
             @NonNull SQLiteDatabase database,
+            @NonNull PickerSQLConstants.Table table,
             @Nullable String localAuthority,
             @Nullable String cloudAuthority) {
         SelectSQLiteQueryBuilder queryBuilder = new SelectSQLiteQueryBuilder(database)
-                .setTables(PickerSQLConstants.Table.MEDIA.name())
+                .setTables(table.name())
                 .setProjection(List.of(
                         PickerSQLConstants.MediaResponse.MEDIA_ID.getProjection(),
                         PickerSQLConstants.MediaResponse.PICKER_ID.getProjection(),
@@ -302,6 +438,7 @@ public class PickerDataLayerV2 {
     private static String getMediaNextPageKeyQuery(
             @NonNull MediaQuery query,
             @NonNull SQLiteDatabase database,
+            @NonNull PickerSQLConstants.Table table,
             @Nullable String localAuthority,
             @Nullable String cloudAuthority) {
         if (query.getPageSize() == Integer.MAX_VALUE) {
@@ -309,7 +446,7 @@ public class PickerDataLayerV2 {
         }
 
         SelectSQLiteQueryBuilder queryBuilder = new SelectSQLiteQueryBuilder(database)
-                .setTables(PickerSQLConstants.Table.MEDIA.name())
+                .setTables(table.name())
                 .setProjection(List.of(
                         PickerSQLConstants.MediaResponse.PICKER_ID.getProjection(),
                         PickerSQLConstants.MediaResponse.DATE_TAKEN_MS.getProjection()
@@ -345,10 +482,11 @@ public class PickerDataLayerV2 {
     private static String getMediaPreviousPageQuery(
             @NonNull MediaQuery query,
             @NonNull SQLiteDatabase database,
+            @NonNull PickerSQLConstants.Table table,
             @Nullable String localAuthority,
             @Nullable String cloudAuthority) {
         SelectSQLiteQueryBuilder queryBuilder = new SelectSQLiteQueryBuilder(database)
-                .setTables(PickerSQLConstants.Table.MEDIA.name())
+                .setTables(table.name())
                 .setProjection(List.of(
                         PickerSQLConstants.MediaResponse.PICKER_ID.getProjection(),
                         PickerSQLConstants.MediaResponse.DATE_TAKEN_MS.getProjection()
@@ -371,12 +509,315 @@ public class PickerDataLayerV2 {
         return queryBuilder.buildQuery();
     }
 
-    static Cursor queryAlbum(Bundle queryArgs) {
-        throw new UnsupportedOperationException("This method is not implemented yet.");
+    /**
+     * Return merged albums cursor for the given merged album id.
+     *
+     * @param albumId Merged album id.
+     * @param queryArgs Query arguments bundle that will be used to filter albums.
+     * @param database Instance of Picker SQLiteDatabase.
+     * @param localAuthority The local authority if local albums should be returned, otherwise this
+     *                       argument should be null.
+     * @param cloudAuthority The cloud authority if cloud albums should be returned, otherwise this
+     *                       argument should be null.
+     */
+    private static AlbumsCursorWrapper getMergedAlbumsCursor(
+            @NonNull String albumId,
+            @NonNull Bundle queryArgs,
+            @NonNull SQLiteDatabase database,
+            @Nullable String localAuthority,
+            @Nullable String cloudAuthority) {
+        final MediaQuery query;
+        if (albumId.equals(AlbumColumns.ALBUM_ID_VIDEOS)) {
+            query = new VideoMediaQuery(queryArgs, 1);
+        } else if (albumId.equals(AlbumColumns.ALBUM_ID_FAVORITES)) {
+            query = new FavoritesMediaQuery(queryArgs, 1);
+        } else {
+            Log.e(TAG, "Cannot recognize merged album " + albumId);
+            return null;
+        }
+
+        try {
+            database.beginTransactionNonExclusive();
+            Cursor pickerDBResponse = database.rawQuery(
+                    getMediaPageQuery(
+                            query,
+                            database,
+                            PickerSQLConstants.Table.MEDIA,
+                            localAuthority,
+                            cloudAuthority
+                    ),
+                    /* selectionArgs */ null
+            );
+
+            if (pickerDBResponse.moveToFirst()) {
+                // Conform to the album response projection. Temporary code, this will change once
+                // we start caching album metadata.
+                final MatrixCursor result = new MatrixCursor(AlbumColumns.ALL_PROJECTION);
+                final String authority = pickerDBResponse.getString(pickerDBResponse.getColumnIndex(
+                        PickerSQLConstants.MediaResponse.AUTHORITY.getProjectedName()));
+                final String[] projectionValue = new String[]{
+                        /* albumId */ albumId,
+                        pickerDBResponse.getString(pickerDBResponse.getColumnIndex(
+                                PickerSQLConstants.MediaResponse.DATE_TAKEN_MS.getProjectedName())),
+                        /* displayName */ albumId,
+                        pickerDBResponse.getString(pickerDBResponse.getColumnIndex(
+                                PickerSQLConstants.MediaResponse.MEDIA_ID.getProjectedName())),
+                        /* count */ "0", // This value is not used anymore
+                        authority,
+                };
+                result.addRow(projectionValue);
+                return new AlbumsCursorWrapper(result, authority, localAuthority);
+            }
+
+            // Show merged albums even if no data is currently available in the DB when cloud media
+            // feature is enabled.
+            if (cloudAuthority != null) {
+                // Conform to the album response projection. Temporary code, this will change once
+                // we start caching album metadata.
+                final MatrixCursor result = new MatrixCursor(AlbumColumns.ALL_PROJECTION);
+                final String[] projectionValue = new String[]{
+                        /* albumId */ albumId,
+                        /* dateTakenMillis */ Long.toString(Long.MAX_VALUE),
+                        /* displayName */ albumId,
+                        /* mediaId */ Integer.toString(Integer.MAX_VALUE),
+                        /* count */ "0", // This value is not used anymore
+                        localAuthority,
+                };
+                result.addRow(projectionValue);
+                return new AlbumsCursorWrapper(result, localAuthority, localAuthority);
+            }
+
+            return null;
+        } finally {
+            database.setTransactionSuccessful();
+            database.endTransaction();
+        }
+
     }
 
-    static Cursor queryAlbumContent(Bundle queryArgs) {
-        throw new UnsupportedOperationException("This method is not implemented yet.");
+    /**
+     * Returns local albums cursor after fetching them from the local provider.
+     *
+     * @param appContext The application context.
+     * @param query Query arguments that will be used to filter albums.
+     * @param localAuthority Authority of the local media provider.
+     */
+    @Nullable
+    private static AlbumsCursorWrapper getLocalAlbumsCursor(
+            @NonNull Context appContext,
+            @NonNull MediaQuery query,
+            @NonNull String localAuthority) {
+        return getCMPAlbumsCursor(appContext, query, localAuthority, localAuthority);
+    }
+
+    /**
+     * Returns cloud albums cursor after fetching them from the local provider.
+     *
+     * @param appContext The application context.
+     * @param query Query arguments that will be used to filter albums.
+     * @param localAuthority Authority of the local media provider.
+     * @param cloudAuthority Authority of the cloud media provider.
+     */
+    @Nullable
+    private static AlbumsCursorWrapper getCloudAlbumsCursor(
+            @NonNull Context appContext,
+            @NonNull MediaQuery query,
+            @NonNull String localAuthority,
+            @NonNull String cloudAuthority) {
+        return getCMPAlbumsCursor(appContext, query, localAuthority, cloudAuthority);
+    }
+
+    /**
+     * Returns {@link AlbumsCursorWrapper} object that wraps the albums cursor response from the
+     * CMP.
+     *
+     * @param appContext The application context.
+     * @param query Query arguments that will be used to filter albums.
+     * @param localAuthority Authority of the local media provider.
+     * @param cmpAuthority Authority of the cloud media provider.
+     */
+    @Nullable
+    private static AlbumsCursorWrapper getCMPAlbumsCursor(
+            @NonNull Context appContext,
+            @NonNull MediaQuery query,
+            @NonNull String localAuthority,
+            @NonNull String cmpAuthority) {
+        final Cursor cursor = appContext.getContentResolver().query(
+                getAlbumUri(cmpAuthority),
+                /* projection */ null,
+                query.prepareCMPQueryArgs(),
+                /* cancellationSignal */ null);
+        return cursor == null
+                ? null
+                : new AlbumsCursorWrapper(cursor, cmpAuthority, localAuthority);
+    }
+
+    /**
+     * @param appContext The application context.
+     * @param syncController Instance of the PickerSyncController singleton.
+     * @param query The AlbumMediaQuery object instance that tells us about the media query args.
+     * @param localAuthority The effective local authority that we need to consider for this
+     *                       transaction. If the local items should not be queries but the local
+     *                       authority has some value, the effective local authority would be null.
+     * @param cloudAuthority The effective cloud authority that we need to consider for this
+     *                       transaction. If the local items should not be queries but the local
+     *                       authority has some value, the effective local authority would
+     *                       be null.
+     * @return The cursor with the album media query results.
+     */
+    @NonNull
+    private static Cursor queryAlbumMediaInternal(
+            @NonNull Context appContext,
+            @NonNull PickerSyncController syncController,
+            @NonNull AlbumMediaQuery query,
+            @Nullable String localAuthority,
+            @Nullable String cloudAuthority
+    ) {
+        try {
+            final SQLiteDatabase database = syncController.getDbFacade().getDatabase();
+
+            waitForOngoingAlbumSync(appContext, query, localAuthority);
+
+            try {
+                database.beginTransactionNonExclusive();
+                Cursor pageData = database.rawQuery(
+                        getMediaPageQuery(
+                                query,
+                                database,
+                                PickerSQLConstants.Table.ALBUM_MEDIA,
+                                localAuthority,
+                                cloudAuthority
+                        ),
+                        /* selectionArgs */ null
+                );
+
+                Bundle extraArgs = new Bundle();
+                Cursor nextPageKeyCursor = database.rawQuery(
+                        getMediaNextPageKeyQuery(
+                                query,
+                                database,
+                                PickerSQLConstants.Table.ALBUM_MEDIA,
+                                localAuthority,
+                                cloudAuthority
+                        ),
+                        /* selectionArgs */ null
+                );
+                addNextPageKey(extraArgs, nextPageKeyCursor);
+
+                Cursor prevPageKeyCursor = database.rawQuery(
+                        getMediaPreviousPageQuery(
+                                query,
+                                database,
+                                PickerSQLConstants.Table.ALBUM_MEDIA,
+                                localAuthority,
+                                cloudAuthority
+                        ),
+                        /* selectionArgs */ null
+                );
+                addPrevPageKey(extraArgs, prevPageKeyCursor);
+
+                database.setTransactionSuccessful();
+
+                pageData.setExtras(extraArgs);
+                return pageData;
+            } finally {
+                database.endTransaction();
+            }
+
+
+        } catch (Exception e) {
+            throw new RuntimeException("Could not fetch media", e);
+        }
+    }
+
+    /**
+     * @param albumId The album id of the request album media.
+     * @param appContext The application context.
+     * @param syncController Instance of the PickerSyncController singleton.
+     * @param queryArgs The Bundle with query args received with the request.
+     * @param localAuthority The effective local authority that we need to consider for this
+     *                       transaction. If the local items should not be queries but the local
+     *                       authority has some value, the effective local authority would be null.
+     * @param cloudAuthority The effective cloud authority that we need to consider for this
+     *                       transaction. If the local items should not be queries but the local
+     *                       authority has some value, the effective local authority would
+     *                       be null.
+     * @return The cursor with the album media query results.
+     */
+    @NonNull
+    private static Cursor queryMergedAlbumMedia(
+            @NonNull String albumId,
+            @NonNull Context appContext,
+            @NonNull PickerSyncController syncController,
+            @NonNull Bundle queryArgs,
+            @Nullable String localAuthority,
+            @Nullable String cloudAuthority
+    ) {
+        try {
+            MediaQuery query;
+            switch (albumId) {
+                case AlbumColumns.ALBUM_ID_FAVORITES:
+                    query = new FavoritesMediaQuery(queryArgs);
+                    break;
+                case AlbumColumns.ALBUM_ID_VIDEOS:
+                    query = new VideoMediaQuery(queryArgs);
+                    break;
+                default:
+                    throw new IllegalArgumentException("Cannot recognize album " + albumId);
+            }
+
+            final SQLiteDatabase database = syncController.getDbFacade().getDatabase();
+
+            waitForOngoingSync(appContext, localAuthority, cloudAuthority);
+
+            try {
+                database.beginTransactionNonExclusive();
+                Cursor pageData = database.rawQuery(
+                        getMediaPageQuery(
+                                query,
+                                database,
+                                PickerSQLConstants.Table.MEDIA,
+                                localAuthority,
+                                cloudAuthority
+                        ),
+                        /* selectionArgs */ null
+                );
+
+                Bundle extraArgs = new Bundle();
+                Cursor nextPageKeyCursor = database.rawQuery(
+                        getMediaNextPageKeyQuery(
+                                query,
+                                database,
+                                PickerSQLConstants.Table.MEDIA,
+                                localAuthority,
+                                cloudAuthority
+                        ),
+                        /* selectionArgs */ null
+                );
+                addNextPageKey(extraArgs, nextPageKeyCursor);
+
+                Cursor prevPageKeyCursor = database.rawQuery(
+                        getMediaPreviousPageQuery(
+                                query,
+                                database,
+                                PickerSQLConstants.Table.MEDIA,
+                                localAuthority,
+                                cloudAuthority
+                        ),
+                        /* selectionArgs */ null
+                );
+                addPrevPageKey(extraArgs, prevPageKeyCursor);
+
+                database.setTransactionSuccessful();
+
+                pageData.setExtras(extraArgs);
+                return pageData;
+            } finally {
+                database.endTransaction();
+            }
+        } catch (Exception e) {
+            throw new RuntimeException("Could not fetch media", e);
+        }
     }
 
     /**
@@ -397,7 +838,8 @@ public class PickerDataLayerV2 {
                     MediaSource.LOCAL,
                     Process.myUid());
 
-            final String cloudAuthority = syncController.getCloudProvider();
+            final String cloudAuthority =
+                    syncController.getCloudProviderOrDefault(/* defaultValue */ null);
             if (cloudAuthority != null) {
                 final PackageManager packageManager = context.getPackageManager();
                 final int uid = packageManager.getPackageUid(
@@ -430,6 +872,14 @@ public class PickerDataLayerV2 {
                 .add(PickerSQLConstants.AvailableProviderResponse.MEDIA_SOURCE.getColumnName(),
                         source.name())
                 .add(PickerSQLConstants.AvailableProviderResponse.UID.getColumnName(), uid);
+    }
+
+    /**
+     * @param albumId Album identifier.
+     * @return True if the given album id matches the album id of any merged album.
+     */
+    private static boolean isMergedAlbum(@NonNull String albumId) {
+        return sMergedAlbumIds.contains(albumId);
     }
 
     /**

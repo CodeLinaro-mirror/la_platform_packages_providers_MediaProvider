@@ -16,7 +16,7 @@
 
 package com.android.providers.media.photopicker.v2;
 
-import static com.android.providers.media.MediaApplication.getAppContext;
+import static java.util.Objects.requireNonNull;
 
 import android.content.Context;
 import android.content.UriMatcher;
@@ -31,7 +31,6 @@ import androidx.annotation.Nullable;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
-
 
 public class PickerUriResolverV2 {
     public static final String BASE_PICKER_PATH = "picker_internal/v2/";
@@ -56,7 +55,7 @@ public class PickerUriResolverV2 {
         sUriMatcher.addURI(MediaStore.AUTHORITY, BASE_PICKER_PATH + "album", PICKER_INTERNAL_ALBUM);
         sUriMatcher.addURI(
                 MediaStore.AUTHORITY,
-                BASE_PICKER_PATH + "album_content",
+                BASE_PICKER_PATH + "album/*",
                 PICKER_INTERNAL_ALBUM_CONTENT
         );
         sUriMatcher.addURI(
@@ -79,11 +78,13 @@ public class PickerUriResolverV2 {
             case PICKER_INTERNAL_MEDIA:
                 return PickerDataLayerV2.queryMedia(appContext, queryArgs);
             case PICKER_INTERNAL_ALBUM:
-                return PickerDataLayerV2.queryAlbum(queryArgs);
+                return PickerDataLayerV2.queryAlbums(appContext, queryArgs);
             case PICKER_INTERNAL_ALBUM_CONTENT:
-                return PickerDataLayerV2.queryAlbumContent(queryArgs);
+                final String albumId = uri.getLastPathSegment();
+                requireNonNull(albumId);
+                return PickerDataLayerV2.queryAlbumMedia(appContext, queryArgs, albumId);
             case PICKER_INTERNAL_AVAILABLE_PROVIDERS:
-                return PickerDataLayerV2.queryAvailableProviders(getAppContext());
+                return PickerDataLayerV2.queryAvailableProviders(appContext);
             default:
                 throw new UnsupportedOperationException("Could not recognize content URI " + uri);
         }
