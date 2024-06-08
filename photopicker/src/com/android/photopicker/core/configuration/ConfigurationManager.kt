@@ -19,17 +19,17 @@ package com.android.photopicker.core.configuration
 import android.content.Intent
 import android.provider.DeviceConfig
 import android.util.Log
+import com.android.photopicker.extensions.getPhotopickerSelectionLimitOrDefault
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.asExecutor
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.debounce
-import kotlinx.coroutines.flow.stateIn
-import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.updateAndGet
 import kotlinx.coroutines.launch
 
 /**
@@ -72,16 +72,8 @@ class ConfigurationManager(
     private val _configuration: MutableStateFlow<PhotopickerConfiguration> =
         MutableStateFlow(generateInitialConfiguration())
 
-    /* Exposes the current configuration used by Photopicker. */
-    val configuration: StateFlow<PhotopickerConfiguration> =
-        _configuration.stateIn(
-            scope,
-            // This is shared Eagerly so that it is always up to date to prevent multiple emissions
-            // when the first subscriber joins. Configuration updates are expensive, so always
-            // keeping this flow current is very important.
-            SharingStarted.Eagerly,
-            initialValue = _configuration.value
-        )
+    /* Exposes the current configuration used by Photopicker as a ReadOnly StateFlow. */
+    val configuration: StateFlow<PhotopickerConfiguration> = _configuration
 
     /**
      * Setup a [DeviceConfig.OnPropertiesChangedListener] to receive DeviceConfig changes to flags
@@ -115,7 +107,7 @@ class ConfigurationManager(
             @OptIn(kotlinx.coroutines.FlowPreview::class)
             deviceConfigProxyChanges.debounce(DEBOUNCE_DELAY).collect { flags ->
                 Log.d(TAG, "Configuration is being updated! Received updated Device flags: $flags")
-                _configuration.update { it.copy(flags = flags) }
+                _configuration.updateAndGet { it.copy(flags = flags) }
             }
         }
     }
@@ -132,7 +124,21 @@ class ConfigurationManager(
      */
     fun setIntent(intent: Intent?) {
         Log.d(TAG, "New intent received: $intent : Configuration will now update.")
-        _configuration.update { it.copy(action = intent?.getAction() ?: "", intent = intent) }
+
+        // Check for [MediaStore.EXTRA_PICK_IMAGES_MAX] and update the selection limit accordingly.
+        val selectionLimit =
+            intent?.getPhotopickerSelectionLimitOrDefault(default = DEFAULT_SELECTION_LIMIT)
+                ?: DEFAULT_SELECTION_LIMIT
+
+        // Use updateAndGet to ensure the value is set before this method returns so the new intent
+        // is immediately available to new subscribers.
+        _configuration.updateAndGet {
+            it.copy(
+                action = intent?.getAction() ?: "",
+                intent = intent,
+                selectionLimit = selectionLimit,
+            )
+        }
     }
 
     /** Assembles an initial configuration upon activity launch. */

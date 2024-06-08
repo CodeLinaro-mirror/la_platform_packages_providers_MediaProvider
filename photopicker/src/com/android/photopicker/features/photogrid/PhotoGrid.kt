@@ -16,6 +16,7 @@
 
 package com.android.photopicker.features.photogrid
 
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
@@ -25,6 +26,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.res.stringResource
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -32,14 +34,17 @@ import androidx.paging.compose.collectAsLazyPagingItems
 import com.android.photopicker.R
 import com.android.photopicker.core.components.MediaGridItem
 import com.android.photopicker.core.components.mediaGrid
+import com.android.photopicker.core.configuration.LocalPhotopickerConfiguration
 import com.android.photopicker.core.features.LocalFeatureManager
 import com.android.photopicker.core.navigation.LocalNavController
 import com.android.photopicker.core.navigation.PhotopickerDestinations
 import com.android.photopicker.core.navigation.PhotopickerDestinations.PHOTO_GRID
 import com.android.photopicker.core.selection.LocalSelection
 import com.android.photopicker.core.theme.LocalWindowSizeClass
+import com.android.photopicker.extensions.navigateToAlbumGrid
 import com.android.photopicker.extensions.navigateToPhotoGrid
 import com.android.photopicker.extensions.navigateToPreviewMedia
+import com.android.photopicker.features.albumgrid.AlbumGridFeature
 import com.android.photopicker.features.navigationbar.NavigationBarButton
 import com.android.photopicker.features.preview.PreviewFeature
 
@@ -60,7 +65,7 @@ fun PhotoGrid(viewModel: PhotoGridViewModel = hiltViewModel()) {
 
     val selection by LocalSelection.current.flow.collectAsStateWithLifecycle()
 
-    // Use the expanded layout any time the Width is Medium or larger.
+    /* Use the expanded layout any time the Width is Medium or larger. */
     val isExpandedScreen: Boolean =
         when (LocalWindowSizeClass.current.widthSizeClass) {
             WindowWidthSizeClass.Medium -> true
@@ -68,7 +73,27 @@ fun PhotoGrid(viewModel: PhotoGridViewModel = hiltViewModel()) {
             else -> false
         }
 
-    Column(modifier = Modifier.fillMaxSize()) {
+    val selectionLimit = LocalPhotopickerConfiguration.current.selectionLimit
+    val selectionLimitExceededMessage =
+        stringResource(R.string.photopicker_selection_limit_exceeded_snackbar, selectionLimit)
+
+    Column(
+        modifier =
+            Modifier.fillMaxSize().pointerInput(Unit) {
+                detectHorizontalDragGestures(
+                    onHorizontalDrag = { _, dragAmount ->
+                        // This may need some additional fine tuning by looking at a certain
+                        // distance in dragAmount, but initial testing suggested this worked
+                        // pretty well as is.
+                        if (dragAmount < 0) {
+                            // Negative is a left swipe
+                            if (featureManager.isFeatureEnabled(AlbumGridFeature::class.java))
+                                navController.navigateToAlbumGrid()
+                        }
+                    }
+                )
+            }
+    ) {
         mediaGrid(
             items = items,
             isExpandedScreen = isExpandedScreen,
@@ -76,7 +101,8 @@ fun PhotoGrid(viewModel: PhotoGridViewModel = hiltViewModel()) {
             onItemClick = { item ->
                 if (item is MediaGridItem.MediaItem) {
                     viewModel.handleGridItemSelection(
-                        item.media,
+                        item = item.media,
+                        selectionLimitExceededMessage = selectionLimitExceededMessage
                     )
                 }
             },

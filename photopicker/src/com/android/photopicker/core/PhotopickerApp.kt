@@ -16,6 +16,7 @@
 
 package com.android.photopicker.core
 
+
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -37,8 +38,6 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -89,17 +88,24 @@ fun PhotopickerAppWithBottomSheet(onDismissRequest: () -> Unit) {
                     contentAlignment = Alignment.BottomCenter
                 ) {
                     PhotopickerMain()
-                    LocalFeatureManager.current.composeLocation(
-                        Location.SELECTION_BAR,
-                        maxSlots = 1,
+                    Column(
                         modifier =
-                            // SELECTION_BAR needs to be drawn over the UI inside of the BottomSheet
-                            // A negative y offset will move it from the bottom of the content
-                            // to the bottom of the onscreen BottomSheet.
+                            // Some elements needs to be drawn over the UI inside of the
+                            // BottomSheet A negative y offset will move it from the bottom of the
+                            // content to the bottom of the onscreen BottomSheet.
                             Modifier.offset {
                                 IntOffset(x = 0, y = -state.requireOffset().toInt())
                             },
-                    )
+                    ) {
+                        LocalFeatureManager.current.composeLocation(
+                            Location.SNACK_BAR,
+                            maxSlots = 1,
+                        )
+                        LocalFeatureManager.current.composeLocation(
+                            Location.SELECTION_BAR,
+                            maxSlots = 1,
+                        )
+                    }
                 }
             }
         }
