@@ -33,6 +33,8 @@ import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ActivityScenario.launchActivityForResult
 import androidx.test.platform.app.InstrumentationRegistry
 import com.android.photopicker.core.ActivityModule
+import com.android.photopicker.core.ApplicationModule
+import com.android.photopicker.core.ApplicationOwned
 import com.android.photopicker.core.Background
 import com.android.photopicker.core.EmbeddedServiceModule
 import com.android.photopicker.core.Main
@@ -75,6 +77,7 @@ import org.mockito.MockitoAnnotations
 
 /** This test class will run Photopicker's actual MainActivity. */
 @UninstallModules(
+    ApplicationModule::class,
     ActivityModule::class,
     EmbeddedServiceModule::class,
 )
@@ -99,7 +102,7 @@ class MainActivityTest {
     @Mock lateinit var mockUserManager: UserManager
     @Mock lateinit var mockPackageManager: PackageManager
 
-    val contentResolver: ContentResolver = MockContentResolver()
+    @BindValue @ApplicationOwned val contentResolver: ContentResolver = MockContentResolver()
 
     @Before
     fun setup() {
@@ -150,6 +153,36 @@ class MainActivityTest {
                 assertWithMessage("Expected configuration to contain an action")
                     .that(configurationManager.configuration.first().action)
                     .isEqualTo(MediaStore.ACTION_PICK_IMAGES)
+            }
+        }
+    }
+
+    @Test
+    fun testMainActivitySetsCaller() {
+        val intent =
+            Intent()
+                .setAction(MediaStore.ACTION_PICK_IMAGES)
+                .setComponent(
+                    ComponentName(
+                        InstrumentationRegistry.getInstrumentation().targetContext,
+                        MainActivity::class.java
+                    )
+                )
+        with(launchActivityForResult<MainActivity>(intent)) {
+            mainScope.runTest {
+                onActivity {
+                    advanceTimeBy(100)
+                    val configuration = configurationManager.configuration.value
+                    assertWithMessage("Expected configuration to contain caller's package name")
+                        .that(configuration.callingPackage)
+                        .isEqualTo("com.android.photopicker.tests")
+                    assertWithMessage("Expected configuration to contain caller's uid")
+                        .that(configuration.callingPackageUid)
+                        .isNotNull()
+                    assertWithMessage("Expected configuration to contain caller's display label")
+                        .that(configuration.callingPackageLabel)
+                        .isNotNull()
+                }
             }
         }
     }
