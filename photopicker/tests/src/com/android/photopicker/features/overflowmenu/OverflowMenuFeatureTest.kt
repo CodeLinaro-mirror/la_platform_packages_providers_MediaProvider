@@ -40,9 +40,11 @@ import com.android.photopicker.core.ConcurrencyModule
 import com.android.photopicker.core.EmbeddedServiceModule
 import com.android.photopicker.core.Main
 import com.android.photopicker.core.configuration.ConfigurationManager
+import com.android.photopicker.core.configuration.LocalPhotopickerConfiguration
 import com.android.photopicker.core.configuration.provideTestConfigurationFlow
 import com.android.photopicker.core.configuration.testActionPickImagesConfiguration
 import com.android.photopicker.core.configuration.testGetContentConfiguration
+import com.android.photopicker.core.configuration.testPhotopickerConfiguration
 import com.android.photopicker.core.configuration.testUserSelectImagesForAppConfiguration
 import com.android.photopicker.core.events.Events
 import com.android.photopicker.core.events.LocalEvents
@@ -51,6 +53,7 @@ import com.android.photopicker.core.features.FeatureManager
 import com.android.photopicker.core.features.FeatureToken.OVERFLOW_MENU
 import com.android.photopicker.core.features.LocalFeatureManager
 import com.android.photopicker.core.features.Location
+import com.android.photopicker.core.glide.GlideTestRule
 import com.android.photopicker.features.PhotopickerFeatureBaseTest
 import com.android.photopicker.features.simpleuifeature.SimpleUiFeature
 import com.android.photopicker.inject.PhotopickerTestModule
@@ -91,6 +94,7 @@ class OverflowMenuFeatureTest : PhotopickerFeatureBaseTest() {
     @get:Rule(order = 0) val hiltRule = HiltAndroidRule(this)
     @get:Rule(order = 1)
     val composeTestRule = createAndroidComposeRule(activityClass = HiltTestActivity::class.java)
+    @get:Rule(order = 2) val glideRule = GlideTestRule()
 
     /* Setup dependencies for the UninstallModules for the test class. */
     @Module @InstallIn(SingletonComponent::class) class TestModule : PhotopickerTestModule()
@@ -98,8 +102,9 @@ class OverflowMenuFeatureTest : PhotopickerFeatureBaseTest() {
     val testDispatcher = StandardTestDispatcher()
 
     /* Overrides for ActivityModule */
-    @BindValue @Main val mainScope: TestScope = TestScope(testDispatcher)
-    @BindValue @Background var testBackgroundScope: CoroutineScope = mainScope.backgroundScope
+    val testScope: TestScope = TestScope(testDispatcher)
+    @BindValue @Main val mainScope: CoroutineScope = testScope
+    @BindValue @Background var testBackgroundScope: CoroutineScope = testScope.backgroundScope
 
     /* Overrides for the ConcurrencyModule */
     @BindValue @Main val mainDispatcher: CoroutineDispatcher = testDispatcher
@@ -140,7 +145,7 @@ class OverflowMenuFeatureTest : PhotopickerFeatureBaseTest() {
 
     @Test
     fun testOverflowMenuAnchorShownIfMenuItemsExist() =
-        mainScope.runTest {
+        testScope.runTest {
             val featureManager =
                 FeatureManager(
                     provideTestConfigurationFlow(scope = this.backgroundScope),
@@ -164,6 +169,7 @@ class OverflowMenuFeatureTest : PhotopickerFeatureBaseTest() {
                 CompositionLocalProvider(
                     LocalFeatureManager provides featureManager,
                     LocalEvents provides events,
+                    LocalPhotopickerConfiguration provides testPhotopickerConfiguration,
                 ) {
                     featureManager.composeLocation(Location.OVERFLOW_MENU)
                 }
@@ -182,7 +188,7 @@ class OverflowMenuFeatureTest : PhotopickerFeatureBaseTest() {
 
     @Test
     fun testOverflowMenuAnchorHiddenWhenNoMenuItemsExist() =
-        mainScope.runTest {
+        testScope.runTest {
             val featureManager =
                 FeatureManager(
                     provideTestConfigurationFlow(scope = this.backgroundScope),
@@ -222,7 +228,7 @@ class OverflowMenuFeatureTest : PhotopickerFeatureBaseTest() {
 
     @Test
     fun testOverflowMenuIsHiddenAfterItemSelected() =
-        mainScope.runTest {
+        testScope.runTest {
             val featureManager =
                 FeatureManager(
                     provideTestConfigurationFlow(scope = this.backgroundScope),
@@ -245,6 +251,7 @@ class OverflowMenuFeatureTest : PhotopickerFeatureBaseTest() {
                 CompositionLocalProvider(
                     LocalFeatureManager provides featureManager,
                     LocalEvents provides events,
+                    LocalPhotopickerConfiguration provides testPhotopickerConfiguration
                 ) {
                     featureManager.composeLocation(Location.OVERFLOW_MENU)
                 }

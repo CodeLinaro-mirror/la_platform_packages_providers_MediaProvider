@@ -44,6 +44,7 @@ import com.android.photopicker.core.configuration.ConfigurationManager
 import com.android.photopicker.core.database.DatabaseManager
 import com.android.photopicker.core.events.Events
 import com.android.photopicker.core.features.FeatureManager
+import com.android.photopicker.core.glide.GlideTestRule
 import com.android.photopicker.core.selection.Selection
 import com.android.photopicker.data.model.Media
 import com.android.photopicker.features.PhotopickerFeatureBaseTest
@@ -92,6 +93,7 @@ class PrivacyExplainerFeatureTest : PhotopickerFeatureBaseTest() {
     @get:Rule(order = 0) val hiltRule = HiltAndroidRule(this)
     @get:Rule(order = 1)
     val composeTestRule = createAndroidComposeRule(activityClass = HiltTestActivity::class.java)
+    @get:Rule(order = 2) val glideRule = GlideTestRule()
 
     /* Setup dependencies for the UninstallModules for the test class. */
     @Module @InstallIn(SingletonComponent::class) class TestModule : PhotopickerTestModule()
@@ -99,11 +101,12 @@ class PrivacyExplainerFeatureTest : PhotopickerFeatureBaseTest() {
     val testDispatcher = StandardTestDispatcher()
 
     /* Overrides for ActivityModule */
-    @BindValue @Main val mainScope: TestScope = TestScope(testDispatcher)
-    @BindValue @Background var testBackgroundScope: CoroutineScope = mainScope.backgroundScope
+    val testScope: TestScope = TestScope(testDispatcher)
+    @BindValue @Main val mainScope: CoroutineScope = testScope
+    @BindValue @Background var testBackgroundScope: CoroutineScope = testScope.backgroundScope
 
     /* Overrides for ViewModelModule */
-    @BindValue val viewModelScopeOverride: CoroutineScope? = mainScope.backgroundScope
+    @BindValue val viewModelScopeOverride: CoroutineScope? = testScope.backgroundScope
 
     /* Overrides for the ConcurrencyModule */
     @BindValue @Main val mainDispatcher: CoroutineDispatcher = testDispatcher
@@ -153,7 +156,7 @@ class PrivacyExplainerFeatureTest : PhotopickerFeatureBaseTest() {
 
     @Test
     fun testPrivacyExplainerBannerIsShown() =
-        mainScope.runTest {
+        testScope.runTest {
             val bannerStateDao = databaseManager.acquireDao(BannerStateDao::class.java)
             whenever(bannerStateDao.getBannerState(anyString(), anyInt())) { null }
 
@@ -185,7 +188,7 @@ class PrivacyExplainerFeatureTest : PhotopickerFeatureBaseTest() {
 
     @Test
     fun testPrivacyExplainerBannerIsHiddenWhenDismissed() =
-        mainScope.runTest {
+        testScope.runTest {
             val bannerStateDao = databaseManager.acquireDao(BannerStateDao::class.java)
 
             whenever(bannerStateDao.getBannerState(anyString(), anyInt())) { null }

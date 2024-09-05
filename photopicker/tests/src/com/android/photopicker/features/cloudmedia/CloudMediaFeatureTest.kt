@@ -52,6 +52,7 @@ import com.android.photopicker.core.configuration.testUserSelectImagesForAppConf
 import com.android.photopicker.core.database.DatabaseManager
 import com.android.photopicker.core.events.Events
 import com.android.photopicker.core.features.FeatureManager
+import com.android.photopicker.core.glide.GlideTestRule
 import com.android.photopicker.core.selection.Selection
 import com.android.photopicker.data.DataService
 import com.android.photopicker.data.TestDataServiceImpl
@@ -103,6 +104,7 @@ class CloudMediaFeatureTest : PhotopickerFeatureBaseTest() {
     @get:Rule(order = 0) val hiltRule = HiltAndroidRule(this)
     @get:Rule(order = 1)
     val composeTestRule = createAndroidComposeRule(activityClass = HiltTestActivity::class.java)
+    @get:Rule(order = 2) val glideRule = GlideTestRule()
 
     /* Setup dependencies for the UninstallModules for the test class. */
     @Module @InstallIn(SingletonComponent::class) class TestModule : PhotopickerTestModule()
@@ -110,8 +112,9 @@ class CloudMediaFeatureTest : PhotopickerFeatureBaseTest() {
     val testDispatcher = StandardTestDispatcher()
 
     /* Overrides for ActivityModule */
-    @BindValue @Main val mainScope: TestScope = TestScope(testDispatcher)
-    @BindValue @Background var testBackgroundScope: CoroutineScope = mainScope.backgroundScope
+    val testScope: TestScope = TestScope(testDispatcher)
+    @BindValue @Main val mainScope: CoroutineScope = testScope
+    @BindValue @Background var testBackgroundScope: CoroutineScope = testScope.backgroundScope
 
     /* Overrides for the ConcurrencyModule */
     @BindValue @Main val mainDispatcher: CoroutineDispatcher = testDispatcher
@@ -272,7 +275,7 @@ class CloudMediaFeatureTest : PhotopickerFeatureBaseTest() {
 
     @Test
     fun testCloudMediaAvailableBanner() =
-        mainScope.runTest {
+        testScope.runTest {
             val bannerStateDao = databaseManager.acquireDao(BannerStateDao::class.java)
 
             // Treat privacy explainer as already dismissed since it's a higher priority.
@@ -337,7 +340,7 @@ class CloudMediaFeatureTest : PhotopickerFeatureBaseTest() {
 
     @Test
     fun testCloudMediaAvailableBannerAsDismissed() =
-        mainScope.runTest {
+        testScope.runTest {
             val bannerStateDao = databaseManager.acquireDao(BannerStateDao::class.java)
 
             // Treat privacy explainer as already dismissed since it's a higher priority.
@@ -406,7 +409,7 @@ class CloudMediaFeatureTest : PhotopickerFeatureBaseTest() {
 
     @Test
     fun testCloudChooseAccountBanner() =
-        mainScope.runTest {
+        testScope.runTest {
             val bannerStateDao = databaseManager.acquireDao(BannerStateDao::class.java)
 
             // Treat privacy explainer as already dismissed since it's a higher priority.
@@ -462,7 +465,7 @@ class CloudMediaFeatureTest : PhotopickerFeatureBaseTest() {
 
     @Test
     fun testCloudChooseAccountBannerAsDismissed() =
-        mainScope.runTest {
+        testScope.runTest {
             val bannerStateDao = databaseManager.acquireDao(BannerStateDao::class.java)
 
             // Treat privacy explainer as already dismissed since it's a higher priority.
@@ -531,7 +534,7 @@ class CloudMediaFeatureTest : PhotopickerFeatureBaseTest() {
 
     @Test
     fun testCloudChooseProviderBanner() =
-        mainScope.runTest {
+        testScope.runTest {
             val bannerStateDao = databaseManager.acquireDao(BannerStateDao::class.java)
 
             // Treat privacy explainer as already dismissed since it's a higher priority.
@@ -576,7 +579,7 @@ class CloudMediaFeatureTest : PhotopickerFeatureBaseTest() {
 
     @Test
     fun testCloudChooseProviderBannerAsDismissed() =
-        mainScope.runTest {
+        testScope.runTest {
             val bannerStateDao = databaseManager.acquireDao(BannerStateDao::class.java)
 
             // Treat privacy explainer as already dismissed since it's a higher priority.
