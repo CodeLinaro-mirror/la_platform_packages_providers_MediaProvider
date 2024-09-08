@@ -16,8 +16,11 @@
 
 package com.android.photopicker.features.photogrid
 
+import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -40,15 +43,20 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.paging.LoadState
 import androidx.paging.compose.collectAsLazyPagingItems
 import com.android.photopicker.R
+import com.android.photopicker.core.banners.Banner
+import com.android.photopicker.core.banners.BannerDefinitions
 import com.android.photopicker.core.components.EmptyState
 import com.android.photopicker.core.components.MediaGridItem
 import com.android.photopicker.core.components.mediaGrid
 import com.android.photopicker.core.configuration.LocalPhotopickerConfiguration
+import com.android.photopicker.core.configuration.PhotopickerRuntimeEnv
+import com.android.photopicker.core.embedded.LocalEmbeddedState
 import com.android.photopicker.core.events.Event
 import com.android.photopicker.core.events.LocalEvents
 import com.android.photopicker.core.events.Telemetry
 import com.android.photopicker.core.features.FeatureToken
 import com.android.photopicker.core.features.LocalFeatureManager
+import com.android.photopicker.core.features.Location
 import com.android.photopicker.core.navigation.LocalNavController
 import com.android.photopicker.core.navigation.PhotopickerDestinations
 import com.android.photopicker.core.navigation.PhotopickerDestinations.PHOTO_GRID
@@ -62,6 +70,9 @@ import com.android.photopicker.features.albumgrid.AlbumGridFeature
 import com.android.photopicker.features.navigationbar.NavigationBarButton
 import com.android.photopicker.features.preview.PreviewFeature
 import kotlinx.coroutines.launch
+
+private val MEASUREMENT_BANNER_PADDING =
+    PaddingValues(start = 16.dp, end = 16.dp, top = 0.dp, bottom = 24.dp)
 
 /**
  * Primary composable for drawing the main PhotoGrid on [PhotopickerDestinations.PHOTO_GRID]
@@ -95,33 +106,47 @@ fun PhotoGrid(viewModel: PhotoGridViewModel = obtainViewModel()) {
     val scope = rememberCoroutineScope()
     val configuration = LocalPhotopickerConfiguration.current
 
-    Column(
-        modifier =
-            Modifier.fillMaxSize().pointerInput(Unit) {
-                detectHorizontalDragGestures(
-                    onHorizontalDrag = { _, dragAmount ->
-                        // This may need some additional fine tuning by looking at a certain
-                        // distance in dragAmount, but initial testing suggested this worked
-                        // pretty well as is.
-                        if (dragAmount < 0) {
-                            // Negative is a left swipe
-                            if (featureManager.isFeatureEnabled(AlbumGridFeature::class.java)) {
-                                // Dispatch UI event to indicate switching to albums tab
-                                scope.launch {
-                                    events.dispatch(
-                                        Event.LogPhotopickerUIEvent(
-                                            FeatureToken.ALBUM_GRID.token,
-                                            configuration.sessionId,
-                                            configuration.callingPackageUid ?: -1,
-                                            Telemetry.UiEvent.SWITCH_PICKER_TAB
-                                        )
+    // Modifier applied when photo grid to album grid navigation is disabled
+    val baseModifier = Modifier.fillMaxSize()
+    // Modifier applied when photo grid to album grid navigation is enabled
+    val modifierWithNavigation =
+        Modifier.fillMaxSize().pointerInput(Unit) {
+            detectHorizontalDragGestures(
+                onHorizontalDrag = { _, dragAmount ->
+                    // This may need some additional fine tuning by looking at a certain
+                    // distance in dragAmount, but initial testing suggested this worked
+                    // pretty well as is.
+                    if (dragAmount < 0) {
+                        // Negative is a left swipe
+                        if (featureManager.isFeatureEnabled(AlbumGridFeature::class.java)) {
+                            // Dispatch UI event to indicate switching to albums tab
+                            scope.launch {
+                                events.dispatch(
+                                    Event.LogPhotopickerUIEvent(
+                                        FeatureToken.ALBUM_GRID.token,
+                                        configuration.sessionId,
+                                        configuration.callingPackageUid ?: -1,
+                                        Telemetry.UiEvent.SWITCH_PICKER_TAB
                                     )
-                                }
-                                navController.navigateToAlbumGrid()
+                                )
                             }
+                            navController.navigateToAlbumGrid()
                         }
                     }
-                )
+                }
+            )
+        }
+
+    val isEmbedded =
+        LocalPhotopickerConfiguration.current.runtimeEnv == PhotopickerRuntimeEnv.EMBEDDED
+    val isExpanded = LocalEmbeddedState.current?.isExpanded ?: false
+    val isEmbeddedAndCollapsed = isEmbedded && !isExpanded
+
+    Column(
+        modifier =
+            when (isEmbeddedAndCollapsed) {
+                true -> baseModifier
+                false -> modifierWithNavigation
             }
     ) {
         val isEmptyAndNoMorePages =
@@ -143,10 +168,17 @@ fun PhotoGrid(viewModel: PhotoGridViewModel = obtainViewModel()) {
                 )
             }
             else -> {
+
+                // When the PhotoGrid is ready to show, also collect the latest banner
+                // data from [BannerManager] so it can be placed inside of the mediaGrid's
+                // scroll container.
+                val currentBanner by viewModel.banners.collectAsStateWithLifecycle()
+
                 mediaGrid(
                     items = items,
                     isExpandedScreen = isExpandedScreen,
                     selection = selection,
+                    bannerContent = { AnimatedBannerWrapper(currentBanner) },
                     onItemClick = { item ->
                         if (item is MediaGridItem.MediaItem) {
                             viewModel.handleGridItemSelection(
@@ -210,6 +242,36 @@ fun PhotoGrid(viewModel: PhotoGridViewModel = obtainViewModel()) {
                     )
                 }
             }
+        }
+    }
+}
+
+/**
+ * A container that animates its size to show the banner if one is defined. It also handles the
+ * banner's onDismiss action by sending the dismissal to the [PhotoGridViewModel].
+ *
+ * @param currentBanner The current banner that [BannerManager] is exposing.
+ */
+@Composable
+private fun AnimatedBannerWrapper(
+    currentBanner: Banner?,
+    viewModel: PhotoGridViewModel = obtainViewModel(),
+) {
+    Box(modifier = Modifier.animateContentSize()) {
+        currentBanner?.let {
+            Banner(
+                it,
+                modifier = Modifier.padding(MEASUREMENT_BANNER_PADDING),
+                onDismiss = {
+                    val declaration = it.declaration
+
+                    // Coerce the type back to [BannerDefinitions]
+                    // so that it can be dismissed.
+                    if (declaration is BannerDefinitions) {
+                        viewModel.markBannerAsDismissed(declaration)
+                    }
+                }
+            )
         }
     }
 }

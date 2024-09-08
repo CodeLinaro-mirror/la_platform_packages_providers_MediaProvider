@@ -33,7 +33,6 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.android.modules.utils.build.SdkLevel
 import com.android.photopicker.R
 import com.android.photopicker.core.PhotopickerMain
-import com.android.photopicker.core.banners.BannerManager
 import com.android.photopicker.core.configuration.ConfigurationManager
 import com.android.photopicker.core.configuration.LocalPhotopickerConfiguration
 import com.android.photopicker.core.events.Events
@@ -47,6 +46,8 @@ import com.android.photopicker.core.theme.PhotopickerTheme
 import com.android.photopicker.data.model.Media
 import com.android.photopicker.tests.utils.mockito.mockSystemService
 import com.android.photopicker.tests.utils.mockito.whenever
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
 import org.mockito.Mockito.any
 import org.mockito.Mockito.anyInt
 import org.mockito.Mockito.anyString
@@ -137,8 +138,8 @@ abstract class PhotopickerFeatureBaseTest {
         featureManager: FeatureManager,
         selection: Selection<Media>,
         events: Events,
-        bannerManager: BannerManager,
         navController: TestNavHostController = createNavController(),
+        disruptiveDataFlow: Flow<Int> = flow { emit(0) }
     ) {
         val photopickerConfiguration by
             configurationManager.configuration.collectAsStateWithLifecycle()
@@ -151,7 +152,7 @@ abstract class PhotopickerFeatureBaseTest {
             LocalEvents provides events
         ) {
             PhotopickerTheme(config = photopickerConfiguration) {
-                PhotopickerMain(bannerManager = bannerManager)
+                PhotopickerMain(disruptiveDataNotification = disruptiveDataFlow)
             }
         }
     }
