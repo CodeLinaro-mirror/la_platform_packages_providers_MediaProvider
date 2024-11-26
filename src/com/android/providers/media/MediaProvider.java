@@ -3275,6 +3275,7 @@ public class MediaProvider extends ContentProvider {
 
             FileUtils.sanitizeValues(values, /*rewriteHiddenFileName*/ !isFuseThread());
             FileUtils.computeDataFromValues(values, volumePath, isFuseThread());
+            assertFileColumnsConsistent(match, uri, values);
 
             // Create result file
             File res = new File(values.getAsString(MediaColumns.DATA));
@@ -6458,6 +6459,8 @@ public class MediaProvider extends ContentProvider {
                 case IMAGES_MEDIA_ID:
                 case DOWNLOADS_ID:
                 case FILES_ID:
+                    // Check if the caller has the required permissions to do placement
+                    enforceCallingPermission(uri, extras, true);
                     break;
                 default:
                     throw new IllegalArgumentException("Movement of " + uri
