@@ -623,7 +623,7 @@ open class MediaProviderClient {
 
             return resolver
                 .query(SEARCH_SUGGESTIONS_URI, /* projection */ null, input, cancellationSignal)
-                ?.getListOfSearchSuggestions() ?: ArrayList()
+                ?.getListOfSearchSuggestions(availableProviders) ?: ArrayList()
         } catch (e: RuntimeException) {
             throw RuntimeException("Could not fetch search suggestions", e)
         }
@@ -834,12 +834,17 @@ open class MediaProviderClient {
         contentResolver: ContentResolver,
         category: Group.Category,
         config: PhotopickerConfiguration,
+        providers: List<Provider>,
     ) {
         val extras =
             bundleOf(
                 EXTRA_MIME_TYPES to config.mimeTypes,
                 MediaSetsQuery.PARENT_CATEGORY_ID.key to category.id,
                 MediaSetsQuery.PARENT_CATEGORY_AUTHORITY.key to category.authority,
+                MediaQuery.PROVIDERS.key to
+                    ArrayList<String>().apply {
+                        providers.forEach { provider -> add(provider.authority) }
+                    },
             )
 
         try {
@@ -863,12 +868,17 @@ open class MediaProviderClient {
         contentResolver: ContentResolver,
         mediaSet: Group.MediaSet,
         config: PhotopickerConfiguration,
+        providers: List<Provider>,
     ) {
         val extras =
             bundleOf(
                 EXTRA_MIME_TYPES to config.mimeTypes,
-                MediaSetContentsQuery.PARENT_MEDIA_SET_PICKER_ID.key to mediaSet.id,
+                MediaSetContentsQuery.PARENT_MEDIA_SET_PICKER_ID.key to mediaSet.pickerId,
                 MediaSetContentsQuery.PARENT_MEDIA_SET_AUTHORITY.key to mediaSet.authority,
+                MediaQuery.PROVIDERS.key to
+                    ArrayList<String>().apply {
+                        providers.forEach { provider -> add(provider.authority) }
+                    },
             )
 
         try {
@@ -1244,16 +1254,16 @@ open class MediaProviderClient {
     }
 
     /** Creates a list of [SearchSuggestion]-s from the given [Cursor]. */
-    private fun Cursor.getListOfSearchSuggestions(): List<SearchSuggestion> {
+    private fun Cursor.getListOfSearchSuggestions(
+        availableProviders: List<Provider>
+    ): List<SearchSuggestion> {
         val result: MutableList<SearchSuggestion> = mutableListOf<SearchSuggestion>()
+        val authorityToSourceMap: Map<String, MediaSource> =
+            availableProviders.associate { provider -> provider.authority to provider.mediaSource }
 
         if (this.moveToFirst()) {
             do {
                 try {
-                    val uriString: String? =
-                        getString(
-                            getColumnIndexOrThrow(SearchSuggestionsResponse.COVER_MEDIA_URI.key)
-                        )
                     result.add(
                         SearchSuggestion(
                             mediaSetId =
@@ -1278,7 +1288,11 @@ open class MediaProviderClient {
                                         )
                                     )
                                 ),
-                            iconUri = if (uriString != null) Uri.parse(uriString) else null,
+                            icon =
+                                this.getIcon(
+                                    authorityToSourceMap,
+                                    SearchSuggestionsResponse.COVER_MEDIA_URI.key,
+                                ),
                         )
                     )
                 } catch (e: RuntimeException) {
