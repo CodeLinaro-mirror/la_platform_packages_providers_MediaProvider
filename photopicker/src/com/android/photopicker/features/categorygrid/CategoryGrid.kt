@@ -45,8 +45,6 @@ import com.android.photopicker.R
 import com.android.photopicker.core.components.MediaGridItem
 import com.android.photopicker.core.components.mediaGrid
 import com.android.photopicker.core.configuration.LocalPhotopickerConfiguration
-import com.android.photopicker.core.configuration.PhotopickerRuntimeEnv
-import com.android.photopicker.core.embedded.LocalEmbeddedState
 import com.android.photopicker.core.events.Event
 import com.android.photopicker.core.events.LocalEvents
 import com.android.photopicker.core.events.Telemetry
@@ -62,6 +60,7 @@ import com.android.photopicker.extensions.navigateToMediaSetGrid
 import com.android.photopicker.extensions.navigateToPhotoGrid
 import com.android.photopicker.features.navigationbar.NavigationBarButton
 import com.android.photopicker.features.photogrid.PhotoGridFeature
+import com.android.photopicker.features.search.SearchFeature
 import kotlinx.coroutines.launch
 
 /** The number of grid cells per row for Phone / narrow layouts */
@@ -88,10 +87,6 @@ fun CategoryGrid(viewModel: CategoryGridViewModel = obtainViewModel()) {
     val configuration = LocalPhotopickerConfiguration.current
     val events = LocalEvents.current
     val scope = rememberCoroutineScope()
-
-    val isEmbedded =
-        LocalPhotopickerConfiguration.current.runtimeEnv == PhotopickerRuntimeEnv.EMBEDDED
-    val isExpanded = LocalEmbeddedState.current?.isExpanded ?: false
 
     // Use the expanded layout any time the Width is Medium or larger.
     val isExpandedScreen: Boolean =
@@ -134,11 +129,6 @@ fun CategoryGrid(viewModel: CategoryGridViewModel = obtainViewModel()) {
         // the category content for the category that is selected by the user.
         mediaGrid(
             items = items,
-            userScrollEnabled =
-                when (isEmbedded) {
-                    true -> isExpanded
-                    false -> true
-                },
             onItemClick = { item ->
                 if (item is MediaGridItem.AlbumItem) {
                     // Dispatch events to log album related details
@@ -204,6 +194,8 @@ fun CategoryButton(modifier: Modifier) {
     val sessionId = LocalPhotopickerConfiguration.current.sessionId
     val packageUid = LocalPhotopickerConfiguration.current.callingPackageUid ?: -1
     val contentDescriptionString = stringResource(R.string.photopicker_categories_nav_button_label)
+    val featureManager = LocalFeatureManager.current
+    val searchFeatureEnabled = featureManager.isFeatureEnabled(SearchFeature::class.java)
 
     NavigationBarButton(
         onClick = {
@@ -223,13 +215,19 @@ fun CategoryButton(modifier: Modifier) {
         modifier = modifier.semantics { contentDescription = contentDescriptionString },
         isCurrentRoute = { route -> route == PhotopickerDestinations.CATEGORY_GRID.route },
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(
-                imageVector = ImageVector.vectorResource(R.drawable.photopicker_category_icon),
-                contentDescription = contentDescriptionString,
-            )
-            Spacer(Modifier.width(8.dp))
-            Text(stringResource(R.string.photopicker_categories_nav_button_label))
+        when {
+            searchFeatureEnabled -> {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector =
+                            ImageVector.vectorResource(R.drawable.photopicker_category_icon),
+                        contentDescription = contentDescriptionString,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(stringResource(R.string.photopicker_categories_nav_button_label))
+                }
+            }
+            else -> Text(stringResource(R.string.photopicker_categories_nav_button_label))
         }
     }
 }
