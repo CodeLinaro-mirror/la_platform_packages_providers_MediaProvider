@@ -629,6 +629,8 @@ private fun ShowSuggestions(
         LocalPhotopickerConfiguration.current.runtimeEnv == PhotopickerRuntimeEnv.EMBEDDED
     val host = LocalEmbeddedState.current?.host
     val isExpanded = rememberUpdatedState(LocalEmbeddedState.current?.isExpanded ?: false)
+    val events = LocalEvents.current
+    val configuration = LocalPhotopickerConfiguration.current
 
     val historySuggestions = suggestionLists.history
     val faceSuggestions = suggestionLists.face
@@ -684,6 +686,16 @@ private fun ShowSuggestions(
                     isZeroSearchState,
                 )
             }
+        }
+        LaunchedEffect(Unit) {
+            events.dispatch(
+                Event.LogPhotopickerUIEvent(
+                    FeatureToken.SEARCH.token,
+                    configuration.sessionId,
+                    configuration.callingPackageUid ?: -1,
+                    Telemetry.UiEvent.UI_LOADED_SEARCH_SUGGESTIONS,
+                )
+            )
         }
     }
 }
@@ -742,14 +754,19 @@ fun SuggestionItem(suggestion: SearchSuggestion) {
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier.fillMaxWidth().padding(MEASUREMENT_SUGGESTION_ITEM_PADDING),
     ) {
-        Box(
-            modifier =
-                Modifier.background(MaterialTheme.colorScheme.surface, CircleShape).padding(6.dp)
-        ) {
-            Icon(
-                imageVector = getImageVector(suggestion.type),
-                contentDescription = suggestion.displayText ?: "",
-            )
+        if (suggestion.type == SearchSuggestionType.FACE) {
+            ShowSuggestionIcon(suggestion, Modifier.size(MEASUREMENT_OTHER_ICON).clip(CircleShape))
+        } else {
+            Box(
+                modifier =
+                    Modifier.background(MaterialTheme.colorScheme.surface, CircleShape)
+                        .padding(6.dp)
+            ) {
+                Icon(
+                    imageVector = getImageVector(suggestion.type),
+                    contentDescription = suggestion.displayText ?: "",
+                )
+            }
         }
         val text = suggestion.displayText ?: ""
         Text(text = text, modifier = Modifier.padding(start = MEASUREMENT_LARGE_PADDING).weight(1f))
@@ -953,6 +970,17 @@ private fun ResultMediaGrid(
                         }
                     },
                     state = state,
+                )
+            }
+            LaunchedEffect(Unit) {
+                // Dispatch UI event to log loading of search result contents
+                events.dispatch(
+                    Event.LogPhotopickerUIEvent(
+                        FeatureToken.SEARCH.token,
+                        configuration.sessionId,
+                        configuration.callingPackageUid ?: -1,
+                        Telemetry.UiEvent.UI_LOADED_SEARCH_RESULTS,
+                    )
                 )
             }
         }
