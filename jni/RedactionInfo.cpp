@@ -18,8 +18,6 @@
 
 #include <android-base/logging.h>
 
-#include <algorithm>
-
 using std::unique_ptr;
 using std::vector;
 

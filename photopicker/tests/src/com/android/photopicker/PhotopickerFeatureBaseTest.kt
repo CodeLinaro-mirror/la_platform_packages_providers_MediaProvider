@@ -104,8 +104,7 @@ abstract class PhotopickerFeatureBaseTest {
                     resources.getString(R.string.photopicker_profile_unknown_label),
                 )
             // Return default [UserProperties] for all [UserHandle]
-            whenever(mockUserManager.getUserProperties(any(UserHandle::class.java)))
-            @JvmSerializableLambda {
+            whenever(mockUserManager.getUserProperties(any(UserHandle::class.java))) {
                 UserProperties.Builder().build()
             }
         }

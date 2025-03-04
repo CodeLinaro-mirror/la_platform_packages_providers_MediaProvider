@@ -57,7 +57,6 @@ import com.android.providers.media.flags.Flags;
 import com.android.providers.media.photopicker.PickerSyncController;
 import com.android.providers.media.photopicker.data.PickerDatabaseHelper;
 import com.android.providers.media.photopicker.data.PickerDbFacade;
-import com.android.providers.media.photopicker.util.exceptions.RequestObsoleteException;
 import com.android.providers.media.photopicker.v2.model.MediaSetsSyncRequestParams;
 import com.android.providers.media.photopicker.v2.sqlite.MediaSetsDatabaseUtil;
 import com.android.providers.media.photopicker.v2.sqlite.PickerSQLConstants;
@@ -183,7 +182,7 @@ public class MediaInMediaSetsSyncWorkerTest {
 
     @Test
     public void testMediaInMediaSetSyncWithCloudProvider() throws
-            ExecutionException, InterruptedException, RequestObsoleteException {
+            ExecutionException, InterruptedException {
 
         String categoryId = "categoryId";
         String auth = String.valueOf(SYNC_CLOUD_ONLY);
@@ -302,7 +301,7 @@ public class MediaInMediaSetsSyncWorkerTest {
 
     @Test
     public void testMediaInMediaSetsSyncLocalProvider() throws
-            ExecutionException, InterruptedException, RequestObsoleteException {
+            ExecutionException, InterruptedException {
 
         doReturn(SearchProvider.AUTHORITY).when(mMockSyncController).getLocalProvider();
 
@@ -408,7 +407,7 @@ public class MediaInMediaSetsSyncWorkerTest {
     @Test
     @Ignore("Enable when b/391639613 is fixed")
     public void testMediaSetContentsSyncLoop() throws
-            ExecutionException, InterruptedException, RequestObsoleteException {
+            ExecutionException, InterruptedException {
 
         String categoryId = "categoryId";
         String auth = String.valueOf(SYNC_CLOUD_ONLY);
@@ -503,7 +502,7 @@ public class MediaInMediaSetsSyncWorkerTest {
 
     @Test
     public void testMediaInMediaSetSyncComplete() throws
-            ExecutionException, InterruptedException, RequestObsoleteException {
+            ExecutionException, InterruptedException {
 
         String categoryId = "categoryId";
         String auth = String.valueOf(SYNC_CLOUD_ONLY);

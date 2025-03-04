@@ -27,7 +27,6 @@ import android.database.Cursor;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.CancellationSignal;
-import android.os.OperationCanceledException;
 import android.provider.CloudMediaProviderContract;
 import android.provider.CloudMediaProviderContract.SortOrder;
 import android.util.Log;
@@ -153,7 +152,7 @@ public class PickerSearchProviderClient {
 
         final Cursor cursor = mContext.getContentResolver().query(
                 getCloudUriFromPath(CloudMediaProviderContract.URI_PATH_MEDIA_CATEGORY),
-                null, queryArgs, cancellationSignal);
+                null, queryArgs, null);
 
         if (cursor == null) {
             Log.d(TAG, "Categories response from the CMP is null.");
@@ -171,8 +170,7 @@ public class PickerSearchProviderClient {
     @Nullable
     public Cursor fetchMediaSetsFromCmp(
             @NonNull String mediaCategoryId, @Nullable String nextPageToken, int pageSize,
-            @Nullable String[] mimeTypes, @Nullable CancellationSignal cancellationSignal)
-            throws OperationCanceledException {
+            @Nullable String[] mimeTypes, @Nullable CancellationSignal cancellationSignal) {
         final Bundle queryArgs = new Bundle();
         queryArgs.putString(CloudMediaProviderContract.KEY_MEDIA_CATEGORY_ID,
                 requireNonNull(mediaCategoryId));
@@ -184,7 +182,7 @@ public class PickerSearchProviderClient {
 
         final Cursor cursor = mContext.getContentResolver().query(
                 getCloudUriFromPath(CloudMediaProviderContract.URI_PATH_MEDIA_SET),
-                null, queryArgs, cancellationSignal);
+                null, queryArgs, null);
 
         if (cursor == null) {
             Log.d(TAG, "Media sets response from the CMP is null.");
@@ -206,7 +204,7 @@ public class PickerSearchProviderClient {
             int pageSize,
             int sortOrder,
             @Nullable String[] mimeTypes,
-            @Nullable CancellationSignal cancellationSignal) throws OperationCanceledException {
+            @Nullable CancellationSignal cancellationSignal) {
         final Bundle queryArgs = new Bundle();
         queryArgs.putString(CloudMediaProviderContract.KEY_MEDIA_SET_ID,
                 requireNonNull(mediaSetId));
@@ -219,7 +217,7 @@ public class PickerSearchProviderClient {
 
         final Cursor cursor = mContext.getContentResolver().query(
                 getCloudUriFromPath(CloudMediaProviderContract.URI_PATH_MEDIA_IN_MEDIA_SET),
-                null, queryArgs, cancellationSignal);
+                null, queryArgs, null);
 
         if (cursor == null) {
             Log.d(TAG, "Media set contents response from the CMP is null.");

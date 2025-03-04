@@ -225,8 +225,7 @@ class PreviewViewModelTest {
         mockSystemService(mockContext, UserManager::class.java) { mockUserManager }
 
         if (SdkLevel.isAtLeastV()) {
-            whenever(mockUserManager.getUserProperties(any(UserHandle::class.java)))
-            @JvmSerializableLambda {
+            whenever(mockUserManager.getUserProperties(any(UserHandle::class.java))) {
                 UserProperties.Builder().build()
             }
             whenever(mockUserManager.getUserBadge()) {

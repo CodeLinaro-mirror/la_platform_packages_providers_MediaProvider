@@ -58,7 +58,6 @@ import com.android.providers.media.photopicker.PickerSyncController;
 import com.android.providers.media.photopicker.data.PickerDatabaseHelper;
 import com.android.providers.media.photopicker.data.PickerDbFacade;
 import com.android.providers.media.photopicker.sync.PickerSyncLockManager;
-import com.android.providers.media.photopicker.util.exceptions.RequestObsoleteException;
 
 import org.junit.After;
 import org.junit.Before;
@@ -101,7 +100,7 @@ public class MediaInMediaSetsDatabaseUtilTest {
     }
 
     @Test
-    public void testQueryLocalMediaInMediaSet() throws RequestObsoleteException {
+    public void testQueryLocalMediaInMediaSet() {
         final Cursor cursor1 = getLocalMediaCursor(LOCAL_ID_1, 0);
         assertAddMediaOperation(mFacade, LOCAL_PROVIDER, cursor1, 1);
         final Cursor cursor2 = getLocalMediaCursor(LOCAL_ID_2, 0);
@@ -159,7 +158,7 @@ public class MediaInMediaSetsDatabaseUtilTest {
     }
 
     @Test
-    public void testQueryCloudMediaInMediaSet() throws RequestObsoleteException {
+    public void testQueryCloudMediaInMediaSet() {
         final Cursor cursor1 = getCloudMediaCursor(CLOUD_ID_1, null, 0);
         assertAddMediaOperation(mFacade, CLOUD_PROVIDER, cursor1, 1);
         final Cursor cursor2 = getCloudMediaCursor(CLOUD_ID_2, LOCAL_ID_2, 0);
@@ -213,8 +212,7 @@ public class MediaInMediaSetsDatabaseUtilTest {
     }
 
     @Test
-    public void testQueryMediaInMediaSetForSpecificMediaSetPickerId()
-            throws RequestObsoleteException {
+    public void testQueryMediaInMediaSetForSpecificMediaSetPickerId() {
         final Cursor cursor1 = getCloudMediaCursor(CLOUD_ID_1, null, 0);
         assertAddMediaOperation(mFacade, CLOUD_PROVIDER, cursor1, 1);
         final Cursor cursor2 = getCloudMediaCursor(CLOUD_ID_2, LOCAL_ID_2, 0);
@@ -263,7 +261,7 @@ public class MediaInMediaSetsDatabaseUtilTest {
     }
 
     @Test
-    public void testQueryMediaInMediaSetsSortOrder() throws RequestObsoleteException {
+    public void testQueryMediaInMediaSetsSortOrder() {
         final long dateTaken = 0L;
 
         final Cursor cursor1 = getCloudMediaCursor(CLOUD_ID_1, null, dateTaken + 1);
@@ -337,7 +335,7 @@ public class MediaInMediaSetsDatabaseUtilTest {
     }
 
     @Test
-    public void testQueryMediaInMediaSetsPagination() throws RequestObsoleteException {
+    public void testQueryMediaInMediaSetsPagination() {
         final Cursor cursor1 = getCloudMediaCursor(CLOUD_ID_1, null, 0);
         assertAddMediaOperation(mFacade, CLOUD_PROVIDER, cursor1, 1);
         final Cursor cursor2 = getCloudMediaCursor(CLOUD_ID_2, LOCAL_ID_2, 0);
@@ -386,7 +384,7 @@ public class MediaInMediaSetsDatabaseUtilTest {
     }
 
     @Test
-    public void testQueryMediaInMediaSetsMimeTypeFilter() throws RequestObsoleteException {
+    public void testQueryMediaInMediaSetsMimeTypeFilter() {
         final Cursor cursor1 = getMediaCursor(CLOUD_ID_1, DATE_TAKEN_MS, GENERATION_MODIFIED,
                 /* mediaStoreUri */ null, /* sizeBytes */ 1, MP4_VIDEO_MIME_TYPE,
                 STANDARD_MIME_TYPE_EXTENSION, /* isFavorite */ false);
@@ -455,7 +453,7 @@ public class MediaInMediaSetsDatabaseUtilTest {
     }
 
     @Test
-    public void testQueryMediaInMediaSetsLocalProviderFilter() throws RequestObsoleteException {
+    public void testQueryMediaInMediaSetsLocalProviderFilter() {
         final Cursor cursor1 = getCloudMediaCursor(CLOUD_ID_1, null, 0);
         assertAddMediaOperation(mFacade, CLOUD_PROVIDER, cursor1, 1);
         final Cursor cursor2 = getCloudMediaCursor(CLOUD_ID_2, LOCAL_ID_2, 0);
@@ -509,7 +507,7 @@ public class MediaInMediaSetsDatabaseUtilTest {
     }
 
     @Test
-    public void testQueryMediaInMediaSetsCloudProviderFilter() throws RequestObsoleteException {
+    public void testQueryMediaInMediaSetsCloudProviderFilter() {
         final Cursor cursor1 = getCloudMediaCursor(CLOUD_ID_1, null, 0);
         assertAddMediaOperation(mFacade, CLOUD_PROVIDER, cursor1, 1);
         final Cursor cursor2 = getCloudMediaCursor(CLOUD_ID_2, LOCAL_ID_2, 0);
@@ -576,7 +574,7 @@ public class MediaInMediaSetsDatabaseUtilTest {
     }
 
     @Test
-    public void testCacheMediaInMediaSet() throws RequestObsoleteException {
+    public void testCacheMediaInMediaSet() {
         final Cursor cursor1 = getCloudMediaCursor(CLOUD_ID_1, null, 0);
         assertAddMediaOperation(mFacade, CLOUD_PROVIDER, cursor1, 1);
         final Cursor cursor2 = getLocalMediaCursor(LOCAL_ID_2, 0);
@@ -610,7 +608,7 @@ public class MediaInMediaSetsDatabaseUtilTest {
     }
 
     @Test
-    public void testClearMediaInMediaSetCache() throws RequestObsoleteException {
+    public void testClearMediaInMediaSetCache() {
         // Insert data
         final Cursor cursor1 = getCloudMediaCursor(CLOUD_ID_1, null, 0);
         assertAddMediaOperation(mFacade, CLOUD_PROVIDER, cursor1, 1);
@@ -620,7 +618,6 @@ public class MediaInMediaSetsDatabaseUtilTest {
         assertAddMediaOperation(mFacade, CLOUD_PROVIDER, cursor3, 1);
 
         Long mediaSetPickerId = 1L;
-        Long secondMediaSetPickerId = 2L;
 
         final long cloudRowsInsertedCount = MediaInMediaSetsDatabaseUtil.cacheMediaOfMediaSet(
                 mDatabase, List.of(
@@ -633,22 +630,10 @@ public class MediaInMediaSetsDatabaseUtilTest {
                 .that(cloudRowsInsertedCount)
                 .isEqualTo(3);
 
-        final long secondCloudRowsInsertedCount = MediaInMediaSetsDatabaseUtil.cacheMediaOfMediaSet(
-                mDatabase, List.of(
-                        getContentValues(null, CLOUD_ID_3, secondMediaSetPickerId),
-                        getContentValues(LOCAL_ID_2, CLOUD_ID_2, secondMediaSetPickerId),
-                        getContentValues(LOCAL_ID_1, CLOUD_ID_1, secondMediaSetPickerId)
-                ), CLOUD_PROVIDER);
-
-        assertWithMessage("Unexpected number of rows inserted in the search results table")
-                .that(secondCloudRowsInsertedCount)
-                .isEqualTo(3);
-
         // Clear the data
-        MediaInMediaSetsDatabaseUtil.clearMediaInMediaSetsCache(
-                mDatabase, List.of(mediaSetPickerId.toString()));
+        MediaInMediaSetsDatabaseUtil.clearMediaInMediaSetsCache(mDatabase);
 
-        // Retrieved cursor for mediaSetPickerId should be empty
+        // Retrieved cursor should be empty
         Bundle extras = new Bundle();
         extras.putInt("page_size", 100);
         extras.putStringArrayList("providers",
@@ -660,19 +645,6 @@ public class MediaInMediaSetsDatabaseUtilTest {
                 mMockSyncController, mediaInMediaSetQuery, LOCAL_PROVIDER, CLOUD_PROVIDER);
         assertNotNull(mediaCursor);
         assertEquals(/*expected*/0, /*actual*/ mediaCursor.getCount());
-
-        // Retrieved cursor for secondmediaSetPickerId should be non-empty
-        Bundle secondExtras = new Bundle();
-        secondExtras.putInt("page_size", 100);
-        secondExtras.putStringArrayList("providers",
-                new ArrayList<>(Arrays.asList(LOCAL_PROVIDER, CLOUD_PROVIDER)));
-        secondExtras.putString("intent_action", MediaStore.ACTION_PICK_IMAGES);
-        MediaInMediaSetsQuery secondMediaInMediaSetQuery = new MediaInMediaSetsQuery(
-                secondExtras, secondMediaSetPickerId);
-        Cursor secondMediaCursor = MediaInMediaSetsDatabaseUtil.queryMediaInMediaSet(
-                mMockSyncController, secondMediaInMediaSetQuery, LOCAL_PROVIDER, CLOUD_PROVIDER);
-        assertNotNull(secondMediaCursor);
-        assertEquals(/*expected*/3, /*actual*/ secondMediaCursor.getCount());
 
     }
 

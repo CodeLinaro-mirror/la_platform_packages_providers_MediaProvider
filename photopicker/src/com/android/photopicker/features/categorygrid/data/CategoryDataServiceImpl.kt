@@ -380,7 +380,6 @@ class CategoryDataServiceImpl(
         cancellationSignal: CancellationSignal?,
     ): PagingSource<MediaPageKey, Media> = runBlocking {
         return@runBlocking cachedPagingSourceMutex.withLock {
-            refreshMediaSetContents(mediaSet)
             if (
                 mediaSetContentPagingSources.containsKey(mediaSet) &&
                     !mediaSetContentPagingSources[mediaSet]!!.invalid
@@ -395,6 +394,8 @@ class CategoryDataServiceImpl(
                 pagingSource.registerInvalidatedCallback { cancellationSignal?.cancel() }
                 pagingSource
             } else {
+                refreshMediaSetContents(mediaSet)
+
                 val availableProviders: List<Provider> = dataService.availableProviders.value
                 val contentResolver: ContentResolver = dataService.activeContentResolver.value
                 val pagingSource =

@@ -200,13 +200,11 @@ public class PrefetchDataServiceImplTest {
                 resources.getDrawable(R.drawable.android, /* theme= */ null)
             }
             whenever(mockUserManager.getProfileLabel()) { PLATFORM_PROVIDED_PROFILE_LABEL }
-            whenever(mockUserManager.getUserProperties(USER_HANDLE_PRIMARY))
-            @JvmSerializableLambda {
+            whenever(mockUserManager.getUserProperties(USER_HANDLE_PRIMARY)) {
                 UserProperties.Builder().build()
             }
             // By default, allow managed profile to be available
-            whenever(mockUserManager.getUserProperties(USER_HANDLE_MANAGED))
-            @JvmSerializableLambda {
+            whenever(mockUserManager.getUserProperties(USER_HANDLE_MANAGED)) {
                 UserProperties.Builder()
                     .setCrossProfileContentSharingStrategy(
                         UserProperties.CROSS_PROFILE_CONTENT_SHARING_DELEGATE_FROM_PARENT

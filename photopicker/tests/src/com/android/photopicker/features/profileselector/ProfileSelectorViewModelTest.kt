@@ -142,8 +142,7 @@ class ProfileSelectorViewModelTest {
         }
 
         if (SdkLevel.isAtLeastV()) {
-            whenever(mockUserManager.getUserProperties(any(UserHandle::class.java)))
-            @JvmSerializableLambda {
+            whenever(mockUserManager.getUserProperties(any(UserHandle::class.java))) {
                 UserProperties.Builder()
                     .setCrossProfileContentSharingStrategy(
                         UserProperties.CROSS_PROFILE_CONTENT_SHARING_DELEGATE_FROM_PARENT

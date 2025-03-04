@@ -26,9 +26,9 @@ import static com.android.providers.media.photopicker.sync.SyncTrackerRegistry.m
 
 import android.content.Context;
 import android.database.Cursor;
+import android.database.sqlite.SQLiteDatabase;
 import android.os.Bundle;
 import android.os.CancellationSignal;
-import android.os.OperationCanceledException;
 import android.provider.CloudMediaProviderContract;
 import android.util.Log;
 
@@ -38,8 +38,8 @@ import androidx.work.ListenableWorker;
 import androidx.work.Worker;
 import androidx.work.WorkerParameters;
 
+import com.android.providers.media.photopicker.PickerSyncController;
 import com.android.providers.media.photopicker.util.exceptions.RequestObsoleteException;
-import com.android.providers.media.photopicker.v2.PhotopickerSyncHelper;
 import com.android.providers.media.photopicker.v2.PickerNotificationSender;
 import com.android.providers.media.photopicker.v2.sqlite.MediaSetsDatabaseUtil;
 
@@ -59,7 +59,6 @@ public class MediaSetsSyncWorker extends Worker {
     private final Context mContext;
     private final CancellationSignal mCancellationSignal;
     private boolean mMarkedSyncWorkAsComplete = false;
-    private final PhotopickerSyncHelper mPhotopickerSyncHelper;
 
 
     public MediaSetsSyncWorker(@NonNull Context context, @NonNull WorkerParameters parameters) {
@@ -67,7 +66,6 @@ public class MediaSetsSyncWorker extends Worker {
 
         mContext = context;
         mCancellationSignal = new CancellationSignal();
-        mPhotopickerSyncHelper = new PhotopickerSyncHelper();
     }
 
     @NonNull
@@ -126,7 +124,7 @@ public class MediaSetsSyncWorker extends Worker {
     private void syncMediaSets(
             int syncSource, @NonNull String categoryId,
             @NonNull String categoryAuthority, @Nullable String[] mimeTypes)
-            throws RequestObsoleteException, IllegalArgumentException, OperationCanceledException {
+            throws RequestObsoleteException, IllegalArgumentException {
 
         List<String> mimeTypesList = mimeTypes == null || mimeTypes.length == 0 ? null
                 : Arrays.asList(mimeTypes);
@@ -144,7 +142,7 @@ public class MediaSetsSyncWorker extends Worker {
                         searchClient, categoryId, nextPageToken, mimeTypes, mCancellationSignal)) {
                     // Cache the retrieved media sets
                     int numberOfRowsInserted = MediaSetsDatabaseUtil.cacheMediaSets(
-                            mPhotopickerSyncHelper.getDatabase(), mediaSetsCursor, categoryId,
+                            getDatabase(), mediaSetsCursor, categoryId,
                             categoryAuthority, mimeTypesList);
                     Log.i(TAG, "Cached " + numberOfRowsInserted + " media sets");
 
@@ -185,7 +183,7 @@ public class MediaSetsSyncWorker extends Worker {
             String categoryId,
             String nextPageToken,
             String[] mimeTypes,
-            CancellationSignal cancellationSignal) throws OperationCanceledException {
+            CancellationSignal cancellationSignal) {
         final Cursor cursor = client.fetchMediaSetsFromCmp(
                 categoryId, nextPageToken, PAGE_SIZE, mimeTypes, cancellationSignal);
 
@@ -212,16 +210,33 @@ public class MediaSetsSyncWorker extends Worker {
 
     private void checkIfCurrentCloudProviderAuthorityHasChanged(@NonNull String authority)
             throws RequestObsoleteException {
-        if (mPhotopickerSyncHelper.isAuthorityLocal(authority)) {
+        if (isAuthorityLocal(authority)) {
             return;
         }
-        final String currentCloudAuthority =
-                mPhotopickerSyncHelper.getCurrentCloudProviderAuthority();
+        final String currentCloudAuthority = getCurrentCloudProviderAuthority();
         if (!authority.equals(currentCloudAuthority)) {
             throw new RequestObsoleteException("Cloud provider authority has changed."
                     + " Sync will not be continued."
                     + " Current cloud provider authority: " + currentCloudAuthority
                     + " Cloud provider authority to sync with: " + authority);
         }
+    }
+
+    private boolean isAuthorityLocal(@NonNull String authority) {
+        return getLocalProviderAuthority().equals(authority);
+    }
+
+    @Nullable
+    private String getLocalProviderAuthority() {
+        return PickerSyncController.getInstanceOrThrow().getLocalProvider();
+    }
+
+    @Nullable
+    private String getCurrentCloudProviderAuthority() {
+        return PickerSyncController.getInstanceOrThrow().getCloudProvider();
+    }
+
+    private SQLiteDatabase getDatabase() {
+        return PickerSyncController.getInstanceOrThrow().getDbFacade().getDatabase();
     }
 }

@@ -30,7 +30,6 @@ import static org.junit.Assert.assertTrue;
 
 import android.content.Context;
 import android.database.Cursor;
-import android.os.OperationCanceledException;
 import android.platform.test.annotations.RequiresFlagsEnabled;
 import android.platform.test.flag.junit.CheckFlagsRule;
 import android.platform.test.flag.junit.DeviceFlagsValueProvider;
@@ -100,7 +99,7 @@ public class PickerSearchProviderClientTest {
     }
 
     @Test
-    public void testFetchMediasInMediaSetFromCmp() throws OperationCanceledException {
+    public void testFetchMediasInMediaSetFromCmp() {
         Cursor cursor = mPickerSearchProviderClient.fetchMediasInMediaSetFromCmp(TEST_MEDIA_SET_ID,
                 null, 100, CloudMediaProviderContract.SORT_ORDER_DESC_DATE_TAKEN,
                 null, null);
@@ -121,7 +120,7 @@ public class PickerSearchProviderClientTest {
     }
 
     @Test
-    public void testFetchMediaSetsFromCmp() throws OperationCanceledException {
+    public void testFetchMediaSetsFromCmp() {
         Cursor cursor = mPickerSearchProviderClient.fetchMediaSetsFromCmp(TEST_MEDIA_CATEGORY_ID,
                 null, 10, null, null);
         cursor.moveToFirst();

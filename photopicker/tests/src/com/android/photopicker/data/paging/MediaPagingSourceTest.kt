@@ -32,7 +32,6 @@ import com.android.photopicker.data.MediaProviderClient
 import com.android.photopicker.data.TestMediaProvider
 import com.android.photopicker.data.TestPrefetchDataService
 import com.android.photopicker.data.model.MediaPageKey
-import com.android.photopicker.data.model.MediaSource
 import com.android.photopicker.data.model.Provider
 import com.android.photopicker.data.paging.MediaPagingSource
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -55,15 +54,7 @@ class MediaPagingSourceTest {
     private val testSessionId = generatePickerSessionId()
     private val testContentProvider: TestMediaProvider = TestMediaProvider()
     private val contentResolver: ContentResolver = ContentResolver.wrap(testContentProvider)
-    private val availableProviders: List<Provider> =
-        listOf(
-            Provider(
-                authority = "local_authority",
-                mediaSource = MediaSource.LOCAL,
-                uid = 1,
-                displayName = "Local Provider",
-            )
-        )
+    private val availableProviders: List<Provider> = emptyList()
     private val testPhotopickerConfiguration: PhotopickerConfiguration =
         PhotopickerConfiguration(
             action = MediaStore.ACTION_PICK_IMAGES,
@@ -121,7 +112,7 @@ class MediaPagingSourceTest {
                 pageKey,
                 pageSize,
                 contentResolver,
-                availableProviders,
+                emptyList(),
                 testPhotopickerConfiguration,
             )
     }
