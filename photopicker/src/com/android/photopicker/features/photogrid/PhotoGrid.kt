@@ -34,6 +34,7 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Image
+import androidx.compose.material.icons.outlined.PlayCircle
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.windowsizeclass.WindowWidthSizeClass
@@ -48,6 +49,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -363,6 +365,10 @@ fun PhotoGridNavButton(modifier: Modifier) {
     val featureManager = LocalFeatureManager.current
     val categoryFeatureEnabled = featureManager.isFeatureEnabled(CategoryGridFeature::class.java)
     val searchFeatureEnabled = featureManager.isFeatureEnabled(SearchFeature::class.java)
+    val isVideoOnlyMimeType = LocalPhotopickerConfiguration.current.hasOnlyVideoMimeTypes()
+    val buttonText =
+        if (isVideoOnlyMimeType) stringResource(R.string.photopicker_videos_nav_button_label)
+        else stringResource(R.string.photopicker_photos_nav_button_label)
 
     NavigationBarButton(
         onClick = {
@@ -381,24 +387,27 @@ fun PhotoGridNavButton(modifier: Modifier) {
         },
         modifier = modifier,
         isCurrentRoute = { route -> route == PHOTO_GRID.route },
+        currentTabLabel = buttonText,
     ) {
         when {
             categoryFeatureEnabled && searchFeatureEnabled -> {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(
-                        imageVector = Icons.Outlined.Image,
+                        imageVector =
+                            if (isVideoOnlyMimeType) Icons.Outlined.PlayCircle
+                            else Icons.Outlined.Image,
                         contentDescription = null,
                         modifier = Modifier.size(18.dp),
                     )
                     Spacer(Modifier.width(8.dp))
                     Text(
-                        stringResource(R.string.photopicker_photos_nav_button_label),
+                        buttonText,
                         maxLines = 1, // Limit the text to a single line
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
             }
-            else -> Text(stringResource(R.string.photopicker_photos_nav_button_label))
+            else -> Text(buttonText)
         }
     }
 }
