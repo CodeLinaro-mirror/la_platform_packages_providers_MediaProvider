@@ -16,6 +16,7 @@
 
 package com.android.photopicker.features.navigationbar
 
+import android.provider.MediaStore
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.layout.Arrangement
@@ -41,9 +42,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.semantics.clearAndSetSemantics
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.traversalIndex
 import androidx.compose.ui.text.style.TextOverflow
@@ -52,6 +50,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import com.android.photopicker.R
 import com.android.photopicker.core.StateSelector
 import com.android.photopicker.core.animations.standardDecelerate
+import com.android.photopicker.core.configuration.LocalPhotopickerConfiguration
 import com.android.photopicker.core.embedded.LocalEmbeddedState
 import com.android.photopicker.core.features.LocalFeatureManager
 import com.android.photopicker.core.features.Location
@@ -160,8 +159,6 @@ fun NavigationBar(modifier: Modifier = Modifier, params: LocationParams) {
  * @param isCurrentRoute a function which receives the current
  *   [NavController.currentDestination.route] and returns true if that route matches the route this
  *   button represents.
- * @param currentTabLabel label of the current tab used to set the content description of the
- *   navigation button
  * @param buttonContent A composable to render as the button's content. Should most likely be a
  *   string label.
  */
@@ -170,7 +167,6 @@ fun NavigationBarButton(
     onClick: () -> Unit,
     modifier: Modifier,
     isCurrentRoute: (String) -> Boolean,
-    currentTabLabel: String = "",
     buttonContent: @Composable () -> Unit,
 ) {
     val navController = LocalNavController.current
@@ -179,29 +175,14 @@ fun NavigationBarButton(
     val featureManager = LocalFeatureManager.current
     val categoryGridFeatureEnabled =
         featureManager.isFeatureEnabled(CategoryGridFeature::class.java)
-    val navBarButtonContentDescription =
-        when (isCurrentRoute(currentRoute ?: "")) {
-            true ->
-                stringResource(
-                    R.string.photopicker_selected_nav_button_description,
-                    currentTabLabel,
-                )
-            false -> currentTabLabel
-        }
-    val navBarClickActionHint = stringResource(R.string.photopicker_select_action_description)
-    val modifierWithDescription =
-        modifier.clearAndSetSemantics {
-            contentDescription = navBarButtonContentDescription
-            onClick(label = navBarClickActionHint, action = null)
-        }
 
     FilledTonalButton(
         onClick = onClick,
         modifier =
             if (categoryGridFeatureEnabled) {
-                modifierWithDescription.widthIn(min = 120.dp, max = 120.dp)
+                modifier.widthIn(min = 120.dp, max = 120.dp)
             } else {
-                modifierWithDescription
+                modifier
             },
         shape = MaterialTheme.shapes.medium,
         contentPadding = ButtonDefaults.TextButtonContentPadding,
@@ -239,6 +220,11 @@ private fun NavigationBarButtons(modifier: Modifier) {
     val categoryGridFeatureEnabled =
         featureManager.isFeatureEnabled(CategoryGridFeature::class.java)
     val searchFeatureEnabled = featureManager.isFeatureEnabled(SearchFeature::class.java)
+    val configuration = LocalPhotopickerConfiguration.current
+    val showButtonIcon =
+        categoryGridFeatureEnabled &&
+            (searchFeatureEnabled ||
+                MediaStore.ACTION_USER_SELECT_IMAGES_FOR_APP.equals(configuration.action))
     Row(
         // Consume the incoming modifier to get the correct positioning.
         modifier =
@@ -263,11 +249,12 @@ private fun NavigationBarButtons(modifier: Modifier) {
                 Location.NAVIGATION_BAR_NAV_BUTTON,
                 maxSlots = 2,
                 modifier =
-                    if (searchFeatureEnabled && categoryGridFeatureEnabled) {
+                    if (showButtonIcon) {
                         Modifier.weight(1f)
                     } else {
                         Modifier // No modifier needed when search not enabled
                     },
+                params = LocationParams.WithNavButtonIcon { showButtonIcon },
             )
         }
     }
