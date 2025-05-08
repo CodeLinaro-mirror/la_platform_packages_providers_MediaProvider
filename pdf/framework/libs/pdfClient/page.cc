@@ -64,7 +64,12 @@ Page::Page(FPDF_DOCUMENT doc, int page_num, FormFiller* form_filler)
       page_(FPDF_LoadPage(doc, page_num)),
       form_filler_(form_filler),
       invalid_rect_(kEmptyIntRectangle),
-      page_num_(page_num) {}
+      page_num_(page_num) {
+    // For corrupted pdf invalid pages result in -1 page object count return.
+    if (FPDFPage_CountObjects(page_.get()) > 0) {
+        page_objects_.resize(FPDFPage_CountObjects(page_.get()));
+    }
+}
 
 Page::Page(Page&& p) = default;
 
@@ -504,7 +509,7 @@ void* Page::Get() {
 }
 
 std::vector<PageObject*> Page::GetPageObjects(bool refetch) {
-    PopulatePageObjects(refetch);
+    PopulateAllPageObjects(refetch);
 
     std::vector<PageObject*> page_objects;
     for (const auto& page_object : page_objects_) {
@@ -512,6 +517,41 @@ std::vector<PageObject*> Page::GetPageObjects(bool refetch) {
     }
 
     return page_objects;
+}
+
+std::pair<int, PageObject*> Page::GetTopPageObjectAtPosition(
+        Point_f point, const std::unordered_set<int>& type_ids) {
+    int object_count = FPDFPage_CountObjects(page_.get());
+    // Iterate in reverse order to get the top most page object
+    for (int index = object_count - 1; index >= 0; --index) {
+        FPDF_PAGEOBJECT page_object = FPDFPage_GetObject(page_.get(), index);
+        int type = FPDFPageObj_GetType(page_object);
+
+        // If specific object type(s) are provided for filtering, and the current object's
+        // type isn't in that set, skip it.
+        if (!type_ids.empty() && !type_ids.contains(type)) {
+            continue;
+        }
+
+        Rectangle_f bounds{};
+        FPDFPageObj_GetBounds(page_object, &bounds.left, &bounds.bottom,
+                              &bounds.right, &bounds.top);
+
+        // Check if the page point is within the object's bounding box
+        // Note: PDF coordinates typically have Y increasing upwards.
+        // The bounds are (left, bottom, right, top).
+        if (point.x >= bounds.left && point.x <= bounds.right && point.y >= bounds.bottom &&
+            point.y <= bounds.top) {
+          // Found the topmost object containing the point
+            if (!page_objects_[index]) {
+                PopulatePageObject(index);
+            }
+
+            return {index, page_objects_[index].get()};
+        }
+    }
+
+    return {-1, nullptr};
 }
 
 int Page::AddPageObject(std::unique_ptr<PageObject> pageObject) {
@@ -527,15 +567,18 @@ int Page::AddPageObject(std::unique_ptr<PageObject> pageObject) {
     FPDFPage_InsertObject(page_.get(), scoped_page_object.release());
     FPDFPage_GenerateContent(page_.get());
 
-    // Add pageObject in stored list if populated.
-    if (!page_objects_.empty()) {
-        page_objects_.push_back(std::move(pageObject));
-    }
+    // Add pageObject in stored list.
+    page_objects_.push_back(std::move(pageObject));
 
     return FPDFPage_CountObjects(page_.get()) - 1;
 }
 
 bool Page::RemovePageObject(int index) {
+    // Check for valid index
+    if (index < 0 || index >= FPDFPage_CountObjects(page_.get())) {
+        return false;
+    }
+
     FPDF_PAGEOBJECT page_object = FPDFPage_GetObject(page_.get(), index);
     // Remove FPDF PageObject
     if (!FPDFPage_RemoveObject(page_.get(), page_object)) {
@@ -568,6 +611,9 @@ bool Page::UpdatePageObject(int index, std::unique_ptr<PageObject> pageObject) {
     }
 
     FPDFPage_GenerateContent(page_.get());
+
+    // Update pageObject from stored list.
+    PopulatePageObject(index);
 
     return true;
 }
@@ -842,43 +888,53 @@ bool Page::IsUrlLink(FPDF_LINK link) const {
     return action != nullptr && FPDFAction_GetType(action) == PDFACTION_URI;
 }
 
-void Page::PopulatePageObjects(bool refetch) {
-    if (!refetch && !page_objects_.empty()) {
+void Page::PopulateAllPageObjects(bool refetch) {
+    int object_count = FPDFPage_CountObjects(page_.get());
+    for (int index = 0; index < object_count; ++index) {
+        if (!page_objects_[index] || refetch) {
+            PopulatePageObject(index);
+        }
+    }
+}
+
+void Page::PopulatePageObject(int index) {
+    // Check for valid index
+    if (index < 0 || index >= FPDFPage_CountObjects(page_.get())) {
+        LOGE("Invalid page object index");
         return;
     }
 
-    int object_count = FPDFPage_CountObjects(page_.get());
-    // Resize PageObjects
-    page_objects_.resize(object_count);
+    FPDF_PAGEOBJECT page_object = FPDFPage_GetObject(page_.get(), index);
+    if (!page_object) {
+        LOGE("Page object not found!");
+        return;
+    }
+    int type = FPDFPageObj_GetType(page_object);
 
-    for (int index = 0; index < object_count; ++index) {
-        FPDF_PAGEOBJECT page_object = FPDFPage_GetObject(page_.get(), index);
-        int type = FPDFPageObj_GetType(page_object);
+    // Pointer to PageObject
+    std::unique_ptr<PageObject> page_object_ = nullptr;
 
-        // Pointer to PageObject
-        std::unique_ptr<PageObject> page_object_ = nullptr;
-
-        switch (type) {
-            case FPDF_PAGEOBJ_TEXT: {
-                page_object_ = std::make_unique<TextObject>();
-                break;
-            }
-            case FPDF_PAGEOBJ_PATH: {
-                page_object_ = std::make_unique<PathObject>();
-                break;
-            }
-            case FPDF_PAGEOBJ_IMAGE: {
-                page_object_ = std::make_unique<ImageObject>();
-                break;
-            }
-            default:
-                break;
+    switch (type) {
+        case FPDF_PAGEOBJ_TEXT: {
+            page_object_ = std::make_unique<TextObject>();
+            break;
         }
-
-        // Populate PageObject From Page
-        if (page_object_ && page_object_->PopulateFromFPDFInstance(page_object, page_.get())) {
-            page_objects_[index] = std::move(page_object_);
+        case FPDF_PAGEOBJ_PATH: {
+            page_object_ = std::make_unique<PathObject>();
+            break;
         }
+        case FPDF_PAGEOBJ_IMAGE: {
+            page_object_ = std::make_unique<ImageObject>();
+            break;
+        }
+        default:
+            break;
+    }
+
+    // Populate PageObject From Page
+    if (page_object_ &&
+        page_object_->PopulateFromFPDFInstance(page_object, page_.get())) {
+        page_objects_[index] = std::move(page_object_);
     }
 }
 
@@ -960,7 +1016,8 @@ void Page::PopulateAnnotations() {
         }
 
         if (!annotation ||
-            !annotation->PopulateFromPdfiumInstance(scoped_annot.get(), page_.get())) {
+            !annotation->PopulateFromPdfiumInstance(scoped_annot.get(),
+                                                    page_.get())) {
             LOGE("Failed to create a pdfClient's instance of annotation using pdfium "
                  "instance");
         }
@@ -1026,7 +1083,8 @@ bool Page::UpdatePageAnnotation(int index, std::unique_ptr<Annotation> annotatio
         return false;
     }
 
-    if (!annotation->UpdatePdfiumInstance(scoped_annot.get(), document_, page_.get())) {
+    if (!annotation->UpdatePdfiumInstance(scoped_annot.get(), document_,
+                                          page_.get())) {
         LOGE("Failed to update pdfium annotation's instance");
         return false;
     }
