@@ -42,10 +42,13 @@ import static com.android.providers.media.util.DatabaseUtils.getAsLong;
 import static com.android.providers.media.util.DatabaseUtils.parseBoolean;
 import static com.android.providers.media.util.Logging.TAG;
 
+import android.annotation.FlaggedApi;
 import android.content.ClipDescription;
 import android.content.ContentValues;
 import android.content.Context;
 import android.content.pm.PackageManager;
+import android.icu.lang.UCharacter;
+import android.icu.lang.UProperty;
 import android.net.Uri;
 import android.os.Environment;
 import android.os.ParcelFileDescriptor;
@@ -91,6 +94,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.Comparator;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
@@ -1014,9 +1018,6 @@ public class FileUtils {
                     + "(?:\\.picker_transcoded$)|"
                     + "(?:(?:Movies|Music|Pictures)/.thumbnails$))");
 
-    private static final String REGEX_DEFAULT_IGNORABLE_CODE_POINT =
-            "[[:Default_Ignorable_Code_Point:]]";
-
     /**
      * Normalizes the given path to NFD form and removes all default ignorable Unicode characters.
      * These include characters (e.g., invisible zero-width spaces) that are ignored by the lower
@@ -1026,16 +1027,39 @@ public class FileUtils {
      * @return a normalized path string with ignorable characters removed
      */
     public static String normalizeAndFilterDefaultIgnorableCodepoints(String path) {
+        // Normalization is not enabled.
         if (!Flags.enablePathSanitization()) {
             return path;
         }
 
+        // Nothing to normalize.
         if (path == null || path.isEmpty()) {
             return path;
         }
 
-        return Normalizer.normalize(path, Normalizer.Form.NFD)
-                .replaceAll(REGEX_DEFAULT_IGNORABLE_CODE_POINT, "");
+        path = Normalizer.normalize(path, Normalizer.Form.NFD);
+        final int[] codePoints = path.codePoints().toArray();
+
+        boolean hasIgnorableCodepoints = false;
+        for (int codePoint : codePoints) {
+            if (UCharacter.hasBinaryProperty(codePoint, UProperty.DEFAULT_IGNORABLE_CODE_POINT)) {
+                hasIgnorableCodepoints = true;
+                break;
+            }
+        }
+        // Input is already normalized.
+        if (!hasIgnorableCodepoints) {
+            return path;
+        }
+
+        // Remove default ignorable code points.
+        StringBuilder normalizedPath = new StringBuilder(codePoints.length);
+        for (int codePoint : codePoints) {
+            if (!UCharacter.hasBinaryProperty(codePoint, UProperty.DEFAULT_IGNORABLE_CODE_POINT)) {
+                normalizedPath.appendCodePoint(codePoint);
+            }
+        }
+        return normalizedPath.toString();
     }
 
     /**
@@ -1044,40 +1068,44 @@ public class FileUtils {
      */
     public static final String DIRECTORY_RECORDINGS = "Recordings";
 
+    /**
+     * The directory used for storing trash-related files. This directory is hidden
+     * and is intended for internal use. It holds trashed files, including ancestor information
+     * that preserves the original path, which is helpful during restore operations.
+     */
+    @FlaggedApi(Flags.FLAG_ENABLE_TRASH_AND_RESTORE_BY_FILE_PATH_API)
+    public static final String DIRECTORY_TRASH_STORAGE = ".trash-storage";
+
     @VisibleForTesting
     public static final String[] DEFAULT_FOLDER_NAMES;
+
     static {
+        List<String> folderNames = new ArrayList<>(Arrays.asList(
+                Environment.DIRECTORY_MUSIC,
+                Environment.DIRECTORY_PODCASTS,
+                Environment.DIRECTORY_RINGTONES,
+                Environment.DIRECTORY_ALARMS,
+                Environment.DIRECTORY_NOTIFICATIONS,
+                Environment.DIRECTORY_PICTURES,
+                Environment.DIRECTORY_MOVIES,
+                Environment.DIRECTORY_DOWNLOADS,
+                Environment.DIRECTORY_DCIM,
+                Environment.DIRECTORY_DOCUMENTS,
+                Environment.DIRECTORY_AUDIOBOOKS
+        ));
+
         if (SdkLevel.isAtLeastS()) {
-            DEFAULT_FOLDER_NAMES = new String[]{
-                    Environment.DIRECTORY_MUSIC,
-                    Environment.DIRECTORY_PODCASTS,
-                    Environment.DIRECTORY_RINGTONES,
-                    Environment.DIRECTORY_ALARMS,
-                    Environment.DIRECTORY_NOTIFICATIONS,
-                    Environment.DIRECTORY_PICTURES,
-                    Environment.DIRECTORY_MOVIES,
-                    Environment.DIRECTORY_DOWNLOADS,
-                    Environment.DIRECTORY_DCIM,
-                    Environment.DIRECTORY_DOCUMENTS,
-                    Environment.DIRECTORY_AUDIOBOOKS,
-                    Environment.DIRECTORY_RECORDINGS,
-            };
+            // Use Environment.DIRECTORY_RECORDINGS for S and later
+            folderNames.add(Environment.DIRECTORY_RECORDINGS);
+            if (Flags.enableTrashAndRestoreByFilePathApi()) {
+                folderNames.add(DIRECTORY_TRASH_STORAGE);
+            }
         } else {
-            DEFAULT_FOLDER_NAMES = new String[]{
-                    Environment.DIRECTORY_MUSIC,
-                    Environment.DIRECTORY_PODCASTS,
-                    Environment.DIRECTORY_RINGTONES,
-                    Environment.DIRECTORY_ALARMS,
-                    Environment.DIRECTORY_NOTIFICATIONS,
-                    Environment.DIRECTORY_PICTURES,
-                    Environment.DIRECTORY_MOVIES,
-                    Environment.DIRECTORY_DOWNLOADS,
-                    Environment.DIRECTORY_DCIM,
-                    Environment.DIRECTORY_DOCUMENTS,
-                    Environment.DIRECTORY_AUDIOBOOKS,
-                    DIRECTORY_RECORDINGS,
-            };
+            // Use custom DIRECTORY_RECORDINGS for R OS or earlier
+            folderNames.add(DIRECTORY_RECORDINGS);
         }
+
+        DEFAULT_FOLDER_NAMES = folderNames.toArray(new String[0]);
     }
 
     /**

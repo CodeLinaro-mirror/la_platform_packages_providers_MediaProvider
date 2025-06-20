@@ -257,15 +257,6 @@ flag {
 }
 
 flag {
-    name: "enable_photopicker_expressive_theme"
-    is_exported: false
-    namespace: "mediaprovider"
-    description: "This flag controls the material expressive theme in com.android.photopicker"
-    is_fixed_read_only: true
-    bug: "390142346"
-}
-
-flag {
     name: "exclude_unreliable_volumes"
     is_exported: true
     namespace: "mediaprovider"
@@ -397,4 +388,13 @@ flag {
     description: "This flag enables file path sanitization before regex checks"
     is_fixed_read_only: true
     bug: "377888957"
+}
+
+flag {
+    name: "enable_trash_and_restore_by_file_path_api"
+    namespace: "mediaprovider"
+    description: "Enables new APIs for trashing and restoring files/folders by file path"
+    is_fixed_read_only: true
+    is_exported: true
+    bug: "421847749"
 }
