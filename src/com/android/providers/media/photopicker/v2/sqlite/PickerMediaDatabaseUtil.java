@@ -52,8 +52,6 @@ import java.util.Objects;
 public class PickerMediaDatabaseUtil {
     private static final String TAG = "PickerMediaDBUtil";
 
-    private static final String DEFAULT_DISPLAY_NAME = "Album";
-
     /**
      * Query media from the database and prepare a cursor in response.
      *
@@ -336,6 +334,12 @@ public class PickerMediaDatabaseUtil {
                     break;
                 case CloudMediaProviderContract.AlbumColumns.ALBUM_ID_VIDEOS:
                     query = new VideoMediaQuery(queryArgs);
+                    if (!((VideoMediaQuery) query).shouldDisplayVideosAlbum()) {
+                        // Return cursor with zero item count if after applying the input MIME type
+                        // filters videos cannot be displayed
+                        return new MatrixCursor(
+                                CloudMediaProviderContract.AlbumColumns.ALL_PROJECTION);
+                    }
                     break;
                 default:
                     throw new IllegalArgumentException("Cannot recognize album " + albumId);
