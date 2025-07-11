@@ -485,7 +485,7 @@ public class MediaProvider extends ContentProvider {
      */
     private static final long POLLING_TIME_IN_MILLIS = 100;
 
-    private static final long TIMEOUT_MILLIS = 10000;
+    private static final long TIMEOUT_MILLIS = 30_000;
     private static final long POLL_INTERVAL_MILLIS = 100;
     static final String WORK_INFO_STATE = "work_info_state";
     static final String WAIT_FOR_SCAN_COMPLETION = "wait_for_scan_completion";
@@ -7403,10 +7403,7 @@ public class MediaProvider extends ContentProvider {
         }
 
         // Apps cannot access trash API without MANAGE_EXTERNAL_STORAGE permission
-        if (!isCallingPackageManager()) {
-            throw new SecurityException("File trashing operations require the"
-                    + " MANAGE_EXTERNAL_STORAGE permission for the calling package");
-        }
+        verifyCallerHasManageExternalStoragePermission();
 
         Bundle result = new Bundle();
 
@@ -7433,10 +7430,7 @@ public class MediaProvider extends ContentProvider {
         }
 
         // Apps cannot access Restore API without MANAGE_EXTERNAL_STORAGE permission
-        if (!isCallingPackageManager()) {
-            throw new IllegalArgumentException("File restoring operations require the "
-                    + "MANAGE_EXTERNAL_STORAGE permission for the calling package");
-        }
+        verifyCallerHasManageExternalStoragePermission();
 
         Bundle result = new Bundle();
         String trashedPath = null;
@@ -7458,6 +7452,14 @@ public class MediaProvider extends ContentProvider {
         }
 
         return result;
+    }
+
+    @VisibleForTesting
+    protected void verifyCallerHasManageExternalStoragePermission() {
+        if (!isCallingPackageManager()) {
+            throw new IllegalArgumentException("File restoring operations requires the "
+                    + "MANAGE_EXTERNAL_STORAGE permission for the calling package");
+        }
     }
 
     private void callForBulkUpdateOemMetadataColumn() {
@@ -12900,6 +12902,11 @@ public class MediaProvider extends ContentProvider {
             return false;
         }
 
+        return isCallingPackageTargetSdkVersionGreaterThanB();
+    }
+
+    @VisibleForTesting
+    protected boolean isCallingPackageTargetSdkVersionGreaterThanB() {
         // If the calling app's target SDK version is greater than Baklava (API 36)
         return getCallingPackageTargetSdkVersion() > Build.VERSION_CODES.BAKLAVA;
     }
