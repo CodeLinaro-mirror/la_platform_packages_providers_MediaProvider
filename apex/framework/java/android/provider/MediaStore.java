@@ -189,6 +189,8 @@ public final class MediaStore {
     public static final String CREATE_FAVORITE_REQUEST_CALL = "create_favorite_request";
     /** {@hide} */
     public static final String CREATE_DELETE_REQUEST_CALL = "create_delete_request";
+    /** {@hide} */
+    public static final String EXTRA_CALLING_PACKAGE_UID = "calling_package_uid";
 
     /** {@hide} */
     public static final String GET_VERSION_CALL = "get_version";
