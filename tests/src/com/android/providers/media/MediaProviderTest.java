@@ -17,7 +17,7 @@
 package com.android.providers.media;
 
 import static com.android.providers.media.scan.MediaScannerTest.stage;
-import static com.android.providers.media.util.FileUtils.extractRelativePathForDirectory;
+import static com.android.providers.media.util.FileUtils.extractRelativePathWithDisplayName;
 import static com.android.providers.media.util.FileUtils.isDownload;
 import static com.android.providers.media.util.FileUtils.isDownloadDir;
 
@@ -311,6 +311,36 @@ public class MediaProviderTest {
 
         assertEquals(PackageManager.PERMISSION_GRANTED, sIsolatedResolver.checkUriPermission(uri,
                 android.os.Process.myUid(), Intent.FLAG_GRANT_READ_URI_PERMISSION));
+    }
+
+    @Test
+    public void testInsertionWithInvalidFilePath_throwsIllegalArgumentException() {
+        final ContentValues values = new ContentValues();
+        values.put(MediaStore.MediaColumns.RELATIVE_PATH, "Android/media/com.example");
+        values.put(MediaStore.Images.Media.DISPLAY_NAME,
+                "./../../../../../../../../../../../data/media/test.txt");
+
+        assertThrows(
+                IllegalArgumentException.class, () -> sIsolatedResolver.insert(
+                        MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY),
+                        values));
+    }
+
+    @Test
+    public void testUpdationWithInvalidFilePath_throwsIllegalArgumentException() {
+        final ContentValues values = new ContentValues();
+        values.put(MediaStore.MediaColumns.RELATIVE_PATH, "Download");
+        values.put(MediaStore.Images.Media.DISPLAY_NAME, "test.txt");
+        Uri uri = sIsolatedResolver.insert(
+                MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY),
+                values);
+
+        final ContentValues newValues = new ContentValues();
+        newValues.put(MediaStore.MediaColumns.DATA, "/storage/emulated/0/../../../data/media/");
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> sIsolatedResolver.update(uri, newValues, null));
     }
 
     /**
@@ -977,7 +1007,7 @@ public class MediaProviderTest {
                 "Foo.jpg",
                 "storage/Foo"
         }) {
-            assertEquals(null, FileUtils.extractRelativePathForDirectory(path));
+            assertEquals(null, FileUtils.extractRelativePathWithDisplayName(path));
         }
     }
 
@@ -1117,7 +1147,7 @@ public class MediaProviderTest {
 
     private static void assertRelativePathForDirectory(String directoryPath, String relativePath) {
         assertWithMessage("extractRelativePathForDirectory(" + directoryPath + ") :")
-                .that(extractRelativePathForDirectory(directoryPath))
+                .that(extractRelativePathWithDisplayName(directoryPath))
                 .isEqualTo(relativePath);
     }
 

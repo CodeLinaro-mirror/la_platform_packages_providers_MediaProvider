@@ -887,10 +887,32 @@ public class FileUtils {
             "(?i)^/storage/[^/]+/(?:[0-9]+/)?Android/(?:data|media|obb|sandbox)/([^/]+)(/?.*)?");
 
     /**
-     * Regex that matches Android/obb or Android/data path.
+     * Regex that matches exactly Android/obb or Android/data or Android/obb/ or Android/data/
+     * suffix absolute file path.
      */
-    public static final Pattern PATTERN_DATA_OR_OBB_PATH = Pattern.compile(
+    private static final Pattern PATTERN_DATA_OR_OBB_PATH = Pattern.compile(
             "(?i)^/storage/[^/]+/(?:[0-9]+/)?Android/(?:data|obb)/?$");
+
+     /**
+     * Regex that matches paths in all well-known package-specific relative directory
+     * path (as defined in {@link MediaColumns#RELATIVE_PATH})
+     * and which captures the package name as the first group.
+     */
+    private static final Pattern PATTERN_OWNED_RELATIVE_PATH = Pattern.compile(
+            "(?i)^Android/(?:data|media|obb|sandbox)/([^/]+)(/?.*)?");
+
+    /**
+     * Regex that matches Android/obb or Android/data relative path (as defined in
+     * {@link MediaColumns#RELATIVE_PATH})
+     */
+    private static final Pattern PATTERN_DATA_OR_OBB_RELATIVE_PATH = Pattern.compile(
+            "(?i)^Android/(?:data|obb)(?:/.*)?$");
+
+    /**
+     * Regex that matches Android/obb {@link MediaColumns#RELATIVE_PATH}.
+     */
+    private static final Pattern PATTERN_OBB_OR_CHILD_RELATIVE_PATH = Pattern.compile(
+            "(?i)^Android/obb(?:/.*)?$");
 
     @VisibleForTesting
     public static final String[] DEFAULT_FOLDER_NAMES = {
@@ -954,15 +976,24 @@ public class FileUtils {
 
     public static @Nullable String extractRelativePath(@Nullable String data) {
         if (data == null) return null;
-        final Matcher matcher = PATTERN_RELATIVE_PATH.matcher(data);
+
+        final String path;
+        try {
+            path = getCanonicalPath(data);
+        } catch (IOException e) {
+            Log.d(TAG, "Unable to get canonical path from invalid data path: " + data, e);
+            return null;
+        }
+
+        final Matcher matcher = PATTERN_RELATIVE_PATH.matcher(path);
         if (matcher.find()) {
-            final int lastSlash = data.lastIndexOf('/');
+            final int lastSlash = path.lastIndexOf('/');
             if (lastSlash == -1 || lastSlash < matcher.end()) {
                 // This is a file in the top-level directory, so relative path is "/"
                 // which is different than null, which means unknown path
                 return "/";
             } else {
-                return data.substring(matcher.end(), lastSlash + 1);
+                return path.substring(matcher.end(), lastSlash + 1);
             }
         } else {
             return null;
@@ -970,14 +1001,13 @@ public class FileUtils {
     }
 
     /**
-     * Returns relative path for the directory.
+     * Returns relative path with display name.
      */
     @VisibleForTesting
-    public static @Nullable String extractRelativePathForDirectory(@Nullable String directoryPath) {
-        if (directoryPath == null) return null;
+    public static @Nullable String extractRelativePathWithDisplayName(@Nullable String path) {
+        if (path == null) return null;
 
-        if (directoryPath.equals("/storage/emulated") ||
-                directoryPath.equals("/storage/emulated/")) {
+        if (path.equals("/storage/emulated") || path.equals("/storage/emulated/")) {
             // This path is not reachable for MediaProvider.
             return null;
         }
@@ -986,18 +1016,18 @@ public class FileUtils {
         // same PATTERN_RELATIVE_PATH to match relative path for directory. For example, relative
         // path of '/storage/<volume_name>' is null where as relative path for directory is "/", for
         // PATTERN_RELATIVE_PATH to match '/storage/<volume_name>', it should end with "/".
-        if (!directoryPath.endsWith("/")) {
+        if (!path.endsWith("/")) {
             // Relative path for directory should end with "/".
-            directoryPath += "/";
+            path += "/";
         }
 
-        final Matcher matcher = PATTERN_RELATIVE_PATH.matcher(directoryPath);
+        final Matcher matcher = PATTERN_RELATIVE_PATH.matcher(path);
         if (matcher.find()) {
-            if (matcher.end() == directoryPath.length()) {
+            if (matcher.end() == path.length()) {
                 // This is the top-level directory, so relative path is "/"
                 return "/";
             }
-            return directoryPath.substring(matcher.end());
+            return path.substring(matcher.end());
         }
         return null;
     }
@@ -1007,17 +1037,43 @@ public class FileUtils {
         final Matcher m = PATTERN_OWNED_PATH.matcher(path);
         if (m.matches()) {
             return m.group(1);
-        } else {
-            return null;
         }
+        return null;
+    }
+
+    public static @Nullable String extractOwnerPackageNameFromRelativePath(@Nullable String path) {
+        if (path == null) return null;
+        final Matcher m = PATTERN_OWNED_RELATIVE_PATH.matcher(path);
+        if (m.matches()) {
+            return m.group(1);
+        }
+        return null;
+    }
+
+    /**
+     * Returns true if path is Android/data or Android/obb path.
+     */
+    public static boolean isDataOrObbPath(@Nullable String path) {
+        if (path == null) return false;
+        final Matcher m = PATTERN_DATA_OR_OBB_PATH.matcher(path);
+        return m.matches();
     }
 
     /**
      * Returns true if relative path is Android/data or Android/obb path.
      */
-    public static boolean isDataOrObbPath(String path) {
+    public static boolean isDataOrObbRelativePath(@Nullable String path) {
         if (path == null) return false;
-        final Matcher m = PATTERN_DATA_OR_OBB_PATH.matcher(path);
+        final Matcher m = PATTERN_DATA_OR_OBB_RELATIVE_PATH.matcher(path);
+        return m.matches();
+    }
+
+    /**
+     * Returns true if relative path is Android/obb path.
+     */
+    public static boolean isObbOrChildRelativePath(@Nullable String path) {
+        if (path == null) return false;
+        final Matcher m = PATTERN_OBB_OR_CHILD_RELATIVE_PATH.matcher(path);
         return m.matches();
     }
 
@@ -1089,8 +1145,16 @@ public class FileUtils {
         values.remove(MediaColumns.BUCKET_ID);
         values.remove(MediaColumns.BUCKET_DISPLAY_NAME);
 
-        final String data = values.getAsString(MediaColumns.DATA);
+        String data = values.getAsString(MediaColumns.DATA);
         if (TextUtils.isEmpty(data)) return;
+
+        try {
+            data = new File(data).getCanonicalPath();
+            values.put(MediaColumns.DATA, data);
+        } catch (IOException e) {
+            throw new IllegalArgumentException(
+                    String.format(Locale.ROOT, "Invalid file path:%s in request.", data));
+        }
 
         final File file = new File(data);
         final File fileLower = new File(data.toLowerCase(Locale.ROOT));
@@ -1157,9 +1221,18 @@ public class FileUtils {
             resolvedDisplayName = displayName;
         }
 
-        final File filePath = buildPath(volumePath,
-                values.getAsString(MediaColumns.RELATIVE_PATH), resolvedDisplayName);
-        values.put(MediaColumns.DATA, filePath.getAbsolutePath());
+        String relativePath = values.getAsString(MediaColumns.RELATIVE_PATH);
+        if (relativePath == null) {
+          relativePath = "";
+        }
+        try {
+            final File filePath = buildPath(volumePath, relativePath, resolvedDisplayName);
+            values.put(MediaColumns.DATA, filePath.getCanonicalPath());
+        } catch (IOException e) {
+            throw new IllegalArgumentException(
+                    String.format("Failure in conversion to canonical file path. Failure path: %s.",
+                            relativePath.concat(resolvedDisplayName)), e);
+        }
     }
 
     public static void sanitizeValues(@NonNull ContentValues values,
@@ -1259,7 +1332,7 @@ public class FileUtils {
 
         // DCIM/Camera should always be visible regardless of .nomedia presence.
         if (CAMERA_RELATIVE_PATH.equalsIgnoreCase(
-                extractRelativePathForDirectory(dir.getAbsolutePath()))) {
+                extractRelativePathWithDisplayName(dir.getAbsolutePath()))) {
             nomedia.delete();
             return false;
         }
@@ -1321,5 +1394,31 @@ public class FileUtils {
             }
         }
         return status;
+    }
+
+    /**
+     * Returns the canonical {@link File} for the provided abstract pathname.
+     *
+     * @return The canonical pathname string denoting the same file or directory as this abstract
+     *         pathname
+     * @see File#getCanonicalFile()
+     */
+    @NonNull
+    public static File getCanonicalFile(@NonNull String path) throws IOException {
+        Objects.requireNonNull(path);
+        return new File(path).getCanonicalFile();
+    }
+
+    /**
+     * Returns the canonical pathname string of the provided abstract pathname.
+     *
+     * @return The canonical pathname string denoting the same file or directory as this abstract
+     *         pathname.
+     * @see File#getCanonicalPath()
+     */
+    @NonNull
+    public static String getCanonicalPath(@NonNull String path) throws IOException {
+        Objects.requireNonNull(path);
+        return new File(path).getCanonicalPath();
     }
 }
