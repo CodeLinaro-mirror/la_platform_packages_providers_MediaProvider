@@ -99,7 +99,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.offset
 import androidx.compose.ui.unit.sp
 import androidx.paging.compose.LazyPagingItems
 import androidx.paging.compose.collectAsLazyPagingItems
@@ -111,11 +110,9 @@ import com.android.photopicker.core.components.MediaGridItem.Companion.defaultBu
 import com.android.photopicker.core.configuration.LocalPhotopickerConfiguration
 import com.android.photopicker.core.configuration.PhotopickerRuntimeEnv
 import com.android.photopicker.core.embedded.LocalEmbeddedState
-import com.android.photopicker.core.glide.ParcelableGlideLoadable
 import com.android.photopicker.core.glide.Resolution
 import com.android.photopicker.core.glide.loadMedia
 import com.android.photopicker.core.theme.CustomAccentColorScheme
-import com.android.photopicker.data.model.CategoryType
 import com.android.photopicker.data.model.Group.Album
 import com.android.photopicker.data.model.Media
 import com.android.photopicker.extensions.circleBackground
@@ -124,6 +121,7 @@ import com.android.photopicker.extensions.itemIndexAtPosition
 import com.android.photopicker.extensions.toMediaGridItemFromAlbum
 import com.android.photopicker.extensions.toMediaGridItemFromMedia
 import com.android.photopicker.extensions.transferScrollableTouchesToHostInEmbedded
+import com.android.photopicker.features.categorygrid.categoryIcon.IconGrid
 import com.android.photopicker.util.LocalLocalizationHelper
 import com.android.photopicker.util.applyChoice
 import com.android.photopicker.util.applyWhen
@@ -168,6 +166,11 @@ private val MEASUREMENT_SELECTED_ICON_OFFSET = 8.dp
  * highlighted item
  */
 private val MEASUREMENT_SELECTED_ICON_HIGHLIGHT_ITEM_OFFSET = 4.dp
+
+/**
+ * The offset to apply to the badge icon to shift it over the corner of the image for a badged item
+ */
+private val MEASUREMENT_BADGE_ICON_OFFSET = 8.dp
 
 /** Border width for the selected icon */
 private val MEASUREMENT_SELECTED_ICON_BORDER = 2.dp
@@ -245,10 +248,17 @@ val MEASUREMENT_DEFAULT_ALBUM_LABEL_SPACER_SIZE = 12.dp
  *   date formatter. Defaults to a factory providing default item rendering.
  * @param contentSeparatorFactory Optional factory to compose [MediaGridItem.SeparatorItem]s.
  *   Defaults to [defaultBuildSeparator].
+ * @param contentPlaceholderFactory Optional factory to compose placeholders . Defaults to
+ *   [defaultBuildPlaceholder]
  * @param bannerContent Optional composable content to be displayed as a banner at the top of the
  *   grid.
  * @param highlightMediaContent Optional custom implementation for highlight media content to be
  *   displayed at the top of the photogrid.
+ * @Param arePlaceholdersEnabled Whether placeholders are enabled in the grid. Defaults to false.
+ *   When enabled, every item that has not yet been loaded in the grid will display a placeholder.
+ *   This placeholder occupies the same width, height, and aspect ratio as the actual item
+ *   ([MediaGridItem.MediaItem]) it represents. Until the item is loaded, the grid will receive a
+ *   null item in its place.
  */
 @Composable
 fun mediaGrid(
@@ -268,6 +278,7 @@ fun mediaGrid(
     state: LazyGridState = rememberLazyGridState(),
     contentPadding: PaddingValues = PaddingValues(bottom = MEASUREMENT_DEFAULT_CONTENT_PADDING),
     userScrollEnabled: Boolean = true,
+    arePlaceholdersEnabled: Boolean = false,
     spanFactory: (item: MediaGridItem?, currentColumns: Int) -> GridItemSpan = ::defaultBuildSpan,
     contentTypeFactory: (item: MediaGridItem?) -> Int = ::defaultBuildContentType,
     contentItemFactory:
@@ -280,29 +291,21 @@ fun mediaGrid(
             dateFormat: DateFormat,
         ) -> Unit =
         { item, isSelected, onClick, onLongPress, dateFormat ->
-            when (item) {
-                is MediaGridItem.MediaItem ->
-                    defaultBuildMediaItem(
-                        item = item,
-                        isSelected = isSelected,
-                        selectedPosition = selection.indexOf(item.media),
-                        onClick = onClick,
-                        onLongPress = onLongPress,
-                        dragSelectionEnabled = false,
-                        dateFormat = dateFormat,
-                        focusItem = focusItem,
-                    )
-
-                is MediaGridItem.AlbumItem -> defaultBuildAlbumItem(item, onClick, focusItem)
-                is MediaGridItem.CategoryItem -> defaultBuildCategoryItem(item, onClick, focusItem)
-                is MediaGridItem.PersonMediaSetItem -> defaultBuildPersonMediaSetItem(item, onClick)
-                is MediaGridItem.MediaSetItem -> defaultBuildMediaSetItem(item, onClick)
-                else -> {}
-            }
+            defaultContentItemFactory(
+                item = item,
+                isSelected = isSelected,
+                onClick = onClick,
+                onLongPress = onLongPress,
+                dragSelectionEnabled = false,
+                dateFormat = dateFormat,
+                focusItem = focusItem,
+                selection = selection,
+            )
         },
     contentSeparatorFactory: @Composable (item: MediaGridItem.SeparatorItem) -> Unit = { item ->
         defaultBuildSeparator(item)
     },
+    contentPlaceholderFactory: @Composable () -> Unit = { defaultBuildPlaceholder() },
     bannerContent: (@Composable () -> Unit)? = null,
     highlightMediaContent: (@Composable () -> Unit)? = null,
 ) {
@@ -324,10 +327,12 @@ fun mediaGrid(
         state = state,
         contentPadding = contentPadding,
         userScrollEnabled = userScrollEnabled,
+        arePlaceholdersEnabled = arePlaceholdersEnabled,
         spanFactory = spanFactory,
         contentTypeFactory = contentTypeFactory,
         contentItemFactory = contentItemFactory,
         contentSeparatorFactory = contentSeparatorFactory,
+        contentPlaceholderFactory = contentPlaceholderFactory,
         bannerContent = bannerContent,
         highlightMediaContent = highlightMediaContent,
     )
@@ -380,9 +385,16 @@ fun mediaGrid(
  *   Defaults to a factory providing default item rendering.
  * @param contentSeparatorFactory Optional factory for [MediaGridItem.SeparatorItem] composition.
  *   Defaults to [defaultBuildSeparator].
+ * @param contentPlaceholderFactory Optional factory to compose placeholders . Defaults to
+ *   [defaultBuildPlaceholder]
  * @param bannerContent Optional composable banner content at the top of the grid.
  * @param highlightMediaContent Optional custom implementation for highlight media content to be
  *   displayed at the top of the photogrid
+ * @Param arePlaceholdersEnabled Whether placeholders are enabled in the grid. Defaults to false.
+ *   When enabled, every item that has not yet been loaded in the grid will display a placeholder.
+ *   This placeholder occupies the same width, height, and aspect ratio as the actual item
+ *   ([MediaGridItem.MediaItem]) it represents. Until the item is loaded, the grid will receive a
+ *   null item in its place.
  */
 @Composable
 fun mediaGrid(
@@ -404,6 +416,7 @@ fun mediaGrid(
     modifier: Modifier = Modifier,
     contentPadding: PaddingValues = PaddingValues(bottom = MEASUREMENT_DEFAULT_CONTENT_PADDING),
     userScrollEnabled: Boolean = true,
+    arePlaceholdersEnabled: Boolean = false,
     spanFactory: (item: MediaGridItem?, currentColumns: Int) -> GridItemSpan = ::defaultBuildSpan,
     contentTypeFactory: (item: MediaGridItem?) -> Int = ::defaultBuildContentType,
     contentItemFactory:
@@ -416,29 +429,21 @@ fun mediaGrid(
             dateFormat: DateFormat,
         ) -> Unit =
         { item, isSelected, onClick, onLongPress, dateFormat ->
-            when (item) {
-                is MediaGridItem.MediaItem ->
-                    defaultBuildMediaItem(
-                        item = item,
-                        isSelected = isSelected,
-                        selectedPosition = selection.indexOf(item.media),
-                        onClick = onClick,
-                        onLongPress = {}, // Explicitly no-op for this overload
-                        dragSelectionEnabled = dragSelectionEnabled,
-                        dateFormat = dateFormat,
-                        focusItem = focusItem,
-                    )
-
-                is MediaGridItem.AlbumItem -> defaultBuildAlbumItem(item, onClick, focusItem)
-                is MediaGridItem.CategoryItem -> defaultBuildCategoryItem(item, onClick, focusItem)
-                is MediaGridItem.PersonMediaSetItem -> defaultBuildPersonMediaSetItem(item, onClick)
-                is MediaGridItem.MediaSetItem -> defaultBuildMediaSetItem(item, onClick)
-                else -> {}
-            }
+            defaultContentItemFactory(
+                item = item,
+                isSelected = isSelected,
+                onClick = onClick,
+                onLongPress = {}, // Explicitly no-op for this overload
+                dragSelectionEnabled = dragSelectionEnabled,
+                dateFormat = dateFormat,
+                focusItem = focusItem,
+                selection = selection,
+            )
         },
     contentSeparatorFactory: @Composable (item: MediaGridItem.SeparatorItem) -> Unit = { item ->
         defaultBuildSeparator(item)
     },
+    contentPlaceholderFactory: @Composable () -> Unit = { defaultBuildPlaceholder() },
     bannerContent: (@Composable () -> Unit)? = null,
     highlightMediaContent: (@Composable () -> Unit)? = null,
 ) {
@@ -463,10 +468,12 @@ fun mediaGrid(
         state = dragSelectState.gridState,
         contentPadding = contentPadding,
         userScrollEnabled = userScrollEnabled,
+        arePlaceholdersEnabled = arePlaceholdersEnabled,
         spanFactory = spanFactory,
         contentTypeFactory = contentTypeFactory,
         contentItemFactory = contentItemFactory,
         contentSeparatorFactory = contentSeparatorFactory,
+        contentPlaceholderFactory = contentPlaceholderFactory,
         bannerContent = bannerContent,
         highlightMediaContent = highlightMediaContent,
     )
@@ -504,10 +511,12 @@ fun mediaGrid(
  * @param contentTypeFactory Factory to determine content type for items.
  * @param contentItemFactory Factory to compose individual [MediaGridItem]s.
  * @param contentSeparatorFactory Factory to compose [MediaGridItem.SeparatorItem]s.
+ * @param contentPlaceholderFactory Factory to compose placeholders.
  * @param bannerContent Optional composable banner content.
  * @param highlightMediaContent Optional custom implementation for highlight media content to be
  *   displayed at the top of the photogrid
  * @param state The [LazyGridState] to use with the [LazyVerticalGrid].
+ * @Param arePlaceholdersEnabled Whether placeholders are enabled in the grid.
  */
 @Composable
 private fun mediaGrid(
@@ -530,6 +539,7 @@ private fun mediaGrid(
     modifier: Modifier = Modifier,
     contentPadding: PaddingValues = PaddingValues(bottom = MEASUREMENT_DEFAULT_CONTENT_PADDING),
     userScrollEnabled: Boolean = true,
+    arePlaceholdersEnabled: Boolean = false,
     spanFactory: (item: MediaGridItem?, currentColumns: Int) -> GridItemSpan,
     contentTypeFactory: (item: MediaGridItem?) -> Int,
     contentItemFactory:
@@ -542,6 +552,7 @@ private fun mediaGrid(
             dateFormat: DateFormat,
         ) -> Unit,
     contentSeparatorFactory: @Composable (item: MediaGridItem.SeparatorItem) -> Unit,
+    contentPlaceholderFactory: @Composable () -> Unit,
     bannerContent: (@Composable () -> Unit)? = null,
     highlightMediaContent: (@Composable () -> Unit)? = null,
     state: LazyGridState,
@@ -573,6 +584,14 @@ private fun mediaGrid(
                 // too much navigates you away from the current screen, the user can change the zoom
                 // level in the first gesture, and then zoom to preview in a second gesture.
                 zoomCanPreview = currentColumns == pinchToZoomMinColumns
+
+                // When a Pinch gesture begins, ensure that it is not part of the header elements.
+                // If it is, then return true here to cancel the gesture immediately.
+                val headerElementCount =
+                    listOf(bannerContent, highlightMediaContent).count { it != null }
+                val pinchIndex =
+                    state.itemIndexAtPosition(event.offset)?.minus(headerElementCount) ?: 0
+                return@pinchToZoomHandler !(pinchIndex >= 0)
             }
             is PinchToZoomEvent.Changed -> {
                 zoom = (zoom * event.value).coerceIn(minZoomFactor, maxZoomFactor)
@@ -692,29 +711,32 @@ private fun mediaGrid(
                 contentType = { index -> contentTypeFactory(items.peek(index)) },
             ) { index ->
                 val item: MediaGridItem? = items.get(index)
-                item?.let {
-                    when (item) {
-                        is MediaGridItem.MediaItem ->
-                            contentItemFactory(
-                                item,
-                                selection.contains(item.media),
-                                onItemClick,
-                                onItemLongPress,
-                                dateFormat,
-                            )
+                when (item) {
+                    is MediaGridItem.MediaItem ->
+                        contentItemFactory(
+                            item,
+                            selection.contains(item.media),
+                            onItemClick,
+                            onItemLongPress,
+                            dateFormat,
+                        )
 
-                        is MediaGridItem.AlbumItem,
-                        is MediaGridItem.CategoryItem,
-                        is MediaGridItem.MediaSetItem,
-                        is MediaGridItem.PersonMediaSetItem ->
-                            contentItemFactory(
-                                item,
-                                /* isSelected */ false,
-                                onItemClick,
-                                onItemLongPress,
-                                dateFormat,
-                            )
-                        is MediaGridItem.SeparatorItem -> contentSeparatorFactory(item)
+                    is MediaGridItem.AlbumItem,
+                    is MediaGridItem.CategoryItem,
+                    is MediaGridItem.MediaSetItem,
+                    is MediaGridItem.PersonMediaSetItem ->
+                        contentItemFactory(
+                            item,
+                            /* isSelected */ false,
+                            onItemClick,
+                            onItemLongPress,
+                            dateFormat,
+                        )
+                    is MediaGridItem.SeparatorItem -> contentSeparatorFactory(item)
+                    null -> {
+                        if (arePlaceholdersEnabled) {
+                            contentPlaceholderFactory()
+                        }
                     }
                 }
             }
@@ -743,10 +765,43 @@ private fun mediaGrid(
     }
 }
 
+@Composable
+private fun defaultContentItemFactory(
+    item: MediaGridItem,
+    isSelected: Boolean,
+    onClick: ((item: MediaGridItem) -> Unit)?,
+    onLongPress: ((item: MediaGridItem) -> Unit)?,
+    dragSelectionEnabled: Boolean = false,
+    dateFormat: DateFormat,
+    focusItem: MediaGridItem? = null,
+    selection: Set<Media>,
+) {
+    when (item) {
+        is MediaGridItem.MediaItem ->
+            defaultBuildMediaItem(
+                item = item,
+                isSelected = isSelected,
+                selectedPosition = selection.indexOf(item.media),
+                onClick = onClick,
+                onLongPress = onLongPress,
+                dragSelectionEnabled = dragSelectionEnabled,
+                dateFormat = dateFormat,
+                focusItem = focusItem,
+            )
+
+        is MediaGridItem.AlbumItem -> defaultBuildAlbumItem(item, onClick, focusItem)
+        is MediaGridItem.CategoryItem -> defaultBuildCategoryItem(item, onClick, focusItem)
+        is MediaGridItem.PersonMediaSetItem -> defaultBuildPersonMediaSetItem(item, onClick)
+        else -> {}
+    }
+}
+
 /** Default builder for calculating the [GridItemSpan] of the provided [MediaGridItem]. */
 private fun defaultBuildSpan(item: MediaGridItem?, currentColumns: Int): GridItemSpan {
     return when (item) {
-        is MediaGridItem.MediaItem -> GridItemSpan(1)
+        is MediaGridItem.MediaItem,
+        null ->
+            GridItemSpan(1) // Placeholder should take up the same number of columns as a media item
         is MediaGridItem.SeparatorItem -> GridItemSpan(currentColumns)
         is MediaGridItem.AlbumItem -> GridItemSpan(1)
         else -> GridItemSpan(1)
@@ -759,6 +814,20 @@ private fun defaultBuildSpan(item: MediaGridItem?, currentColumns: Int): GridIte
  */
 public fun getCellsPerRow(isExpandedScreen: Boolean): Int {
     return if (isExpandedScreen) CELLS_PER_ROW_EXPANDED else CELLS_PER_ROW
+}
+
+/** Default Placeholder builder that loads placeholder into a square (1:1) aspect ratio GridCell */
+@Composable
+private fun defaultBuildPlaceholder(modifier: Modifier = Modifier) {
+    Box(
+        modifier =
+            modifier
+                .fillMaxSize()
+                .aspectRatio(
+                    1f
+                ) // Ensure it maintains a 1:1 aspect ratio, like [MediaGridItem.MediaItem]
+                .background(MaterialTheme.colorScheme.surfaceContainerHighest)
+    ) {}
 }
 
 /**
@@ -1097,7 +1166,7 @@ private fun SelectedIconOverlay(
  * GridCell, and provides a text title for it just below the thumbnail.
  */
 @Composable
-fun defaultBuildAlbumItem(
+private fun defaultBuildAlbumItem(
     item: MediaGridItem,
     onClick: ((item: MediaGridItem) -> Unit)?,
     focusItem: MediaGridItem? = null,
@@ -1180,7 +1249,7 @@ fun defaultBuildAlbumItem(
 
 /** Default [MediaGridItem.PersonMediaSetItem] builder that loads People and pets mediaset. */
 @Composable
-private fun defaultBuildPersonMediaSetItem(
+fun defaultBuildPersonMediaSetItem(
     item: MediaGridItem.PersonMediaSetItem,
     onClick: ((item: MediaGridItem) -> Unit)?,
 ) {
@@ -1211,45 +1280,6 @@ private fun defaultBuildPersonMediaSetItem(
                     )
                 }
             }
-        }
-    }
-}
-
-/** Default [MediaGridItem.MediaSetItem] builder that loads mediaset. */
-@Composable
-private fun defaultBuildMediaSetItem(
-    item: MediaGridItem.MediaSetItem,
-    onClick: ((item: MediaGridItem) -> Unit)?,
-) {
-    Column(
-        // Apply semantics for the click handlers
-        Modifier.semantics(mergeDescendants = true) {
-                contentDescription = item.mediaSet.displayName ?: ""
-                onClick(
-                    action = {
-                        onClick?.invoke(item)
-                        /* eventHandled= */ true
-                    }
-                )
-            }
-            .pointerInput(Unit) { detectTapGestures(onTap = { onClick?.invoke(item) }) }
-            .padding(bottom = MEASUREMENT_DEFAULT_ALBUM_BOTTOM_PADDING)
-    ) {
-        with(item.mediaSet) {
-            val modifier =
-                Modifier.fillMaxWidth()
-                    .clip(RoundedCornerShape(MEASUREMENT_SELECTED_CORNER_RADIUS_FOR_ALBUMS))
-                    .aspectRatio(1f)
-            loadMedia(media = icon, resolution = Resolution.THUMBNAIL, modifier = modifier)
-            Spacer(Modifier.size(MEASUREMENT_DEFAULT_ALBUM_LABEL_SPACER_SIZE))
-            // Media set title shown on the media set grid.
-            Text(
-                text = displayName ?: "",
-                overflow = TextOverflow.Ellipsis,
-                maxLines = 1,
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
         }
     }
 }
@@ -1297,7 +1327,8 @@ private fun defaultBuildCategoryItem(
                 Modifier.fillMaxWidth()
                     .clip(RoundedCornerShape(MEASUREMENT_SELECTED_CORNER_RADIUS_FOR_ALBUMS))
                     .aspectRatio(1f)
-            IconGrid(icons, modifier = modifier, categoryType)
+            val badgeIconModifier = Modifier.padding(MEASUREMENT_BADGE_ICON_OFFSET)
+            IconGrid(icons, modifier = modifier, categoryType, badge, badgeIconModifier)
             Spacer(Modifier.size(MEASUREMENT_DEFAULT_ALBUM_LABEL_SPACER_SIZE))
             // Category title shown below the category grid.
             Text(
@@ -1309,85 +1340,6 @@ private fun defaultBuildCategoryItem(
             )
         }
     }
-}
-
-@Composable
-fun IconGrid(
-    icons: List<ParcelableGlideLoadable>,
-    modifier: Modifier,
-    categoryType: CategoryType,
-    maxIcon: Int = 4,
-    iconPerRow: Int = 2,
-) {
-    Surface(modifier = modifier, color = MaterialTheme.colorScheme.surfaceContainerHighest) {
-        Column(
-            modifier = Modifier.fillMaxSize().padding(12.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            // Pad the list to ensure we required icons per row
-            val paddedIcons = (icons + List(maxIcon) { null }).take(maxIcon)
-            val iconsInRow = paddedIcons.chunked(iconPerRow)
-
-            val clipShape =
-                when (categoryType) {
-                    CategoryType.PEOPLE_AND_PETS,
-                    CategoryType.APP_FOLDERS -> {
-                        CircleShape
-                    }
-                    else -> {
-                        RoundedCornerShape(MEASUREMENT_SELECTED_CORNER_RADIUS_FOR_ALBUMS)
-                    }
-                }
-
-            val iconGridModifier =
-                Modifier.fillMaxSize()
-                    .size(48.dp)
-                    .clip(clipShape)
-                    .background(MaterialTheme.colorScheme.surface)
-
-            iconsInRow.forEachIndexed { rowIndex, rowItem ->
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    rowItem.forEachIndexed { colIndex, icon ->
-                        Box(modifier = Modifier.weight(1f).aspectRatio(1f)) {
-                            if (icons.isNotEmpty() && icon is ParcelableGlideLoadable) {
-                                CategoryIcon(icon, iconGridModifier)
-                            } else {
-                                if (
-                                    icons.isEmpty() &&
-                                        !(rowIndex == iconsInRow.lastIndex &&
-                                            colIndex == rowItem.lastIndex)
-                                ) {
-                                    CategoryIconPlaceholder(iconGridModifier)
-                                } else {
-                                    CategoryIconPlaceholder(iconGridModifier, false)
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-fun CategoryIconPlaceholder(modifier: Modifier, showPlaceholder: Boolean = true) {
-    Box(
-        modifier =
-            when (showPlaceholder) {
-                true -> modifier
-                false -> Modifier
-            }
-    )
-}
-
-@Composable
-fun CategoryIcon(icon: ParcelableGlideLoadable, modifier: Modifier) {
-    loadMedia(media = icon, resolution = Resolution.THUMBNAIL, modifier = modifier)
 }
 
 /**

@@ -31,6 +31,7 @@ import static android.database.Cursor.FIELD_TYPE_BLOB;
 import static android.provider.CloudMediaProviderContract.EXTRA_ASYNC_CONTENT_PROVIDER;
 import static android.provider.CloudMediaProviderContract.MANAGE_CLOUD_MEDIA_PROVIDERS_PERMISSION;
 import static android.provider.CloudMediaProviderContract.METHOD_GET_ASYNC_CONTENT_PROVIDER;
+import static android.provider.MediaStore.EXTRA_CALLING_PACKAGE_UID;
 import static android.provider.MediaStore.EXTRA_IS_STABLE_URIS_ENABLED;
 import static android.provider.MediaStore.EXTRA_OPEN_ASSET_FILE_REQUEST;
 import static android.provider.MediaStore.EXTRA_OPEN_FILE_REQUEST;
@@ -169,6 +170,7 @@ import static com.android.providers.media.util.FileUtils.isDownload;
 import static com.android.providers.media.util.FileUtils.isExternalMediaDirectory;
 import static com.android.providers.media.util.FileUtils.isObbOrChildRelativePath;
 import static com.android.providers.media.util.FileUtils.sanitizePath;
+import static com.android.providers.media.util.FileUtils.shouldBeVisible;
 import static com.android.providers.media.util.FileUtils.toFuseFile;
 import static com.android.providers.media.util.Logging.LOGV;
 import static com.android.providers.media.util.Logging.TAG;
@@ -241,6 +243,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.CancellationSignal;
 import android.os.Environment;
+import android.os.Handler;
 import android.os.IBinder;
 import android.os.ParcelFileDescriptor;
 import android.os.ParcelFileDescriptor.OnCloseListener;
@@ -379,6 +382,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.function.Consumer;
@@ -485,7 +489,10 @@ public class MediaProvider extends ContentProvider {
      */
     private static final long POLLING_TIME_IN_MILLIS = 100;
 
-    private static final long TIMEOUT_MILLIS = 10000;
+    /**
+     * Constants to test MediaServiceV2. Only to be used to testing.
+     */
+    private static final long TIMEOUT_MILLIS = 60_000;
     private static final long POLL_INTERVAL_MILLIS = 100;
     static final String WORK_INFO_STATE = "work_info_state";
     static final String WAIT_FOR_SCAN_COMPLETION = "wait_for_scan_completion";
@@ -566,8 +573,8 @@ public class MediaProvider extends ContentProvider {
 
     private static final String MEDIAPROVIDER_PREFS = "mediaprovider_prefs";
 
-    private static final String IS_MIME_TYPE_FIXED_IN_ANDROID_15 =
-            "is_mime_type_fixed_in_android_15";
+    private static final String MIME_TYPE_FIX_APPLIED_IN_ANDROID_15 =
+            "mime_type_fix_applied_android_15";
 
     /**
      * Updates the MediaStore versioning schema and format to reduce identifying properties.
@@ -589,6 +596,11 @@ public class MediaProvider extends ContentProvider {
 
     @GuardedBy("mNonHiddenPaths")
     private final LRUCache<String, Integer> mNonHiddenPaths = new LRUCache<>(NON_HIDDEN_CACHE_SIZE);
+
+    private static final Executor sBackgroundThreadExecutor = Flags.enableMediaBackgroundThread()
+            ? MediaBackgroundThread.getExecutor() : BackgroundThread.getExecutor();
+    private static final Handler sBackgroundThreadHandler = Flags.enableMediaBackgroundThread()
+            ? MediaBackgroundThread.getHandler() : BackgroundThread.getHandler();
 
     public void updateVolumes() {
         mVolumeCache.update();
@@ -1086,7 +1098,7 @@ public class MediaProvider extends ContentProvider {
     /**
      * Since these operations are in the critical path of apps working with
      * media, we only collect the {@link Uri} that need to be notified, and all
-     * other side-effect operations are delegated to {@link BackgroundThread} so
+     * other side-effect operations are delegated to background thread so
      * that we return as quickly as possible.
      */
     private final OnFilesChangeListener mFilesListener = new OnFilesChangeListener() {
@@ -1191,6 +1203,9 @@ public class MediaProvider extends ContentProvider {
             mTranscodeHelper.deleteCachedTranscodeFile(deletedRow.getId());
             mPhotoPickerTranscodeHelper.deleteCachedTranscodedFile(
                     PickerSyncController.LOCAL_PICKER_PROVIDER_AUTHORITY, deletedRow.getId());
+            if (Flags.queryLeveldbForFileAttributes()) {
+                mDatabaseBackupAndRecovery.markBackupAsDirty(helper, deletedRow);
+            }
 
             helper.postBackground(() -> {
                 // Item no longer exists, so revoke all access to it
@@ -1626,8 +1641,9 @@ public class MediaProvider extends ContentProvider {
         }
 
         storageNativeBootPropertyChangeListener();
-        mConfigStore.addOnChangeListener(
-                BackgroundThread.getExecutor(), this::storageNativeBootPropertyChangeListener);
+
+        mConfigStore.addOnChangeListener(sBackgroundThreadExecutor,
+                this::storageNativeBootPropertyChangeListener);
 
         PulledMetrics.initialize(context);
 
@@ -1690,7 +1706,10 @@ public class MediaProvider extends ContentProvider {
                 PackageManager.DONT_KILL_APP);
     }
 
-    Optional<DatabaseHelper> getDatabaseHelper(String dbName) {
+    /**
+     * Returns DatabaseHelper object
+     */
+    public Optional<DatabaseHelper> getDatabaseHelper(String dbName) {
         if (dbName.equalsIgnoreCase(INTERNAL_DATABASE_NAME)) {
             return Optional.of(mInternalDatabase);
         } else if (dbName.equalsIgnoreCase(EXTERNAL_DATABASE_NAME)) {
@@ -2003,9 +2022,18 @@ public class MediaProvider extends ContentProvider {
 
         SharedPreferences prefs = context.getSharedPreferences(MEDIAPROVIDER_PREFS,
                 Context.MODE_PRIVATE);
-        if (prefs.getBoolean(IS_MIME_TYPE_FIXED_IN_ANDROID_15, false)) {
+
+        if (prefs.getBoolean(MIME_TYPE_FIX_APPLIED_IN_ANDROID_15, false)) {
             Log.v(TAG, "Mime type already corrected");
             return;
+        }
+
+        // Old key
+        final String isMimeTypeFixedInAndroid15 = "is_mime_type_fixed_in_android_15";
+        // Remove the old preference key to ensure the fix runs if it hasn't already been applied,
+        // as it's now replaced with a new key.
+        if (prefs.contains(isMimeTypeFixedInAndroid15)) {
+            prefs.edit().remove(isMimeTypeFixedInAndroid15).apply();
         }
 
         mExternalDatabase.runWithTransaction(db -> {
@@ -2013,7 +2041,7 @@ public class MediaProvider extends ContentProvider {
             // if success then update the shared pref value
             if (isSuccess) {
                 SharedPreferences.Editor editor = prefs.edit();
-                editor.putBoolean(IS_MIME_TYPE_FIXED_IN_ANDROID_15, true);
+                editor.putBoolean(MIME_TYPE_FIX_APPLIED_IN_ANDROID_15, true);
                 editor.apply();
             }
             return null;
@@ -2426,7 +2454,7 @@ public class MediaProvider extends ContentProvider {
     @Keep
     public void onFileCreatedForFuse(String path) {
         // Make sure we update the quota type of the file
-        BackgroundThread.getExecutor().execute(() -> {
+        sBackgroundThreadExecutor.execute(() -> {
             File file = new File(path);
             int mediaType = MimeUtils.resolveMediaType(MimeUtils.resolveMimeType(file));
             updateQuotaTypeForFileInternal(file, mediaType);
@@ -2733,8 +2761,8 @@ public class MediaProvider extends ContentProvider {
         final String[] segments = path.split("/");
         if (segments.length != 11) {
             Log.e(TAG, "Picker file open failed. Unexpected segments: " + path);
-            return new FileOpenResult(OsConstants.ENOENT /* status */, uid, /* transformsUid */ 0,
-                    new long[0]);
+            return new FileOpenResult(
+                    OsConstants.ENOENT /* status */, uid, /* transformsUid */ 0, new long[0]);
         }
 
         // ['', 'storage', 'emulated', '0', 'transforms', 'synthetic',
@@ -2763,21 +2791,35 @@ public class MediaProvider extends ContentProvider {
             }
         } else {
             final Uri uri = getMediaUri(authority).buildUpon().appendPath(mediaId).build();
-            IBinder binder = getContext().getContentResolver()
-                    .call(uri, METHOD_GET_ASYNC_CONTENT_PROVIDER, null, null)
-                    .getBinder(EXTRA_ASYNC_CONTENT_PROVIDER);
-            if (binder == null) {
-                Log.e(TAG, "Picker file open failed. No cloud media provider found.");
+            ContentProviderClient client =
+                    getContext().getContentResolver().acquireUnstableContentProviderClient(uri);
+            if (client == null) {
+                Log.e(TAG, "Picker file open failed. Failed to acquire cloud provider.");
                 return FileOpenResult.createError(OsConstants.ENOENT, uid);
             }
-            IAsyncContentProvider iAsyncProvider = IAsyncContentProvider.Stub.asInterface(binder);
-            AsyncContentProvider asyncContentProvider = new AsyncContentProvider(iAsyncProvider);
+
             try {
+                IBinder binder =
+                        client.call(METHOD_GET_ASYNC_CONTENT_PROVIDER, null, null)
+                                .getBinder(EXTRA_ASYNC_CONTENT_PROVIDER);
+
+                if (binder == null) {
+                    Log.e(TAG, "Picker file open failed. No async provider found.");
+                    return FileOpenResult.createError(OsConstants.ENOENT, uid);
+                }
+
+                IAsyncContentProvider iAsyncProvider =
+                        IAsyncContentProvider.Stub.asInterface(binder);
+                AsyncContentProvider asyncContentProvider =
+                        new AsyncContentProvider(iAsyncProvider);
+
                 pfd = asyncContentProvider.openMedia(uri, "r");
             } catch (FileNotFoundException | ExecutionException | InterruptedException
                      | TimeoutException | RemoteException e) {
                 Log.e(TAG, "Picker file open failed. Failed to open URI: " + uri, e);
                 return FileOpenResult.createError(OsConstants.ENOENT, uid);
+            } finally {
+                client.close();
             }
         }
 
@@ -7403,10 +7445,7 @@ public class MediaProvider extends ContentProvider {
         }
 
         // Apps cannot access trash API without MANAGE_EXTERNAL_STORAGE permission
-        if (!isCallingPackageManager()) {
-            throw new SecurityException("File trashing operations require the"
-                    + " MANAGE_EXTERNAL_STORAGE permission for the calling package");
-        }
+        verifyCallerHasManageExternalStoragePermission();
 
         Bundle result = new Bundle();
 
@@ -7433,10 +7472,7 @@ public class MediaProvider extends ContentProvider {
         }
 
         // Apps cannot access Restore API without MANAGE_EXTERNAL_STORAGE permission
-        if (!isCallingPackageManager()) {
-            throw new IllegalArgumentException("File restoring operations require the "
-                    + "MANAGE_EXTERNAL_STORAGE permission for the calling package");
-        }
+        verifyCallerHasManageExternalStoragePermission();
 
         Bundle result = new Bundle();
         String trashedPath = null;
@@ -7458,6 +7494,14 @@ public class MediaProvider extends ContentProvider {
         }
 
         return result;
+    }
+
+    @VisibleForTesting
+    protected void verifyCallerHasManageExternalStoragePermission() {
+        if (!isCallingPackageManager()) {
+            throw new SecurityException("File restoring operations requires the "
+                    + "MANAGE_EXTERNAL_STORAGE permission for the calling package");
+        }
     }
 
     private void callForBulkUpdateOemMetadataColumn() {
@@ -7690,8 +7734,10 @@ public class MediaProvider extends ContentProvider {
         // db after the sync
         syncAllMedia();
         ForegroundThread.waitForIdle();
-        final CountDownLatch latch = new CountDownLatch(1);
+        final CountDownLatch latch = new CountDownLatch(3);
         BackgroundThread.getExecutor().execute(latch::countDown);
+        MediaBackgroundThread.getDbOpsExecutor().execute(latch::countDown);
+        MediaBackgroundThread.getExecutor().execute(latch::countDown);
         try {
             latch.await(30, TimeUnit.SECONDS);
         } catch (InterruptedException e) {
@@ -7866,6 +7912,7 @@ public class MediaProvider extends ContentProvider {
 
         if (!authority.equals(MediaDocumentsProvider.AUTHORITY)
                 && !authority.equals(DocumentsContract.EXTERNAL_STORAGE_PROVIDER_AUTHORITY)) {
+            restoreCallingIdentity(token);
             throw new IllegalArgumentException("Provider for this Uri is not supported.");
         }
 
@@ -8420,6 +8467,10 @@ public class MediaProvider extends ContentProvider {
                         + Binder.getCallingUid());
 
         try {
+            WorkManager workManager =  WorkManager.getInstance(getContext());
+            // cancel all existing works so that it does interfere with our test
+            workManager.cancelAllWork();
+
             Optional<UUID> uuidOptional;
             MediaVolume volume;
 
@@ -8450,8 +8501,6 @@ public class MediaProvider extends ContentProvider {
             }
 
             UUID uuid = uuidOptional.get();
-
-            WorkManager workManager =  WorkManager.getInstance(getContext());
 
             boolean waitForScanCompletion = extras.getBoolean(WAIT_FOR_SCAN_COMPLETION, true);
             if (waitForScanCompletion) {
@@ -8704,6 +8753,7 @@ public class MediaProvider extends ContentProvider {
 
         final Context context = getContext();
         final Intent intent = new Intent(method, null, context, PermissionActivity.class);
+        extras.putInt(EXTRA_CALLING_PACKAGE_UID, getCallingUidOrSelf());
         intent.putExtras(extras);
         final ActivityOptions options = ActivityOptions.makeBasic();
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
@@ -8804,7 +8854,9 @@ public class MediaProvider extends ContentProvider {
                     } catch (NumberFormatException e) {
                     }
 
-                    Log.v(TAG, "Deleting stale thumbnail " + thumbFile);
+                    Logging.logIfLoggable(TAG, "Deleting stale thumbnail " + thumbFile,
+                            Log.VERBOSE, /* logOnlyIfDebuggable */ true);
+
                     deleteAndInvalidate(thumbFile);
                     prunedCount++;
                 }
@@ -9303,8 +9355,15 @@ public class MediaProvider extends ContentProvider {
             }
 
             final LocalCallingIdentity token = clearLocalCallingIdentity();
-            final Uri genericUri = MediaStore.Files.getContentUri(volumeName,
-                    ContentUris.parseId(uri));
+
+            final Uri genericUri;
+            try {
+                genericUri = MediaStore.Files.getContentUri(volumeName, ContentUris.parseId(uri));
+            } catch (NumberFormatException e) {
+                restoreLocalCallingIdentity(token);
+                throw e;
+            }
+
             try (Cursor c = queryForSingleItem(genericUri,
                     sPlacementColumns.toArray(new String[0]), userWhere, userWhereArgs, null)) {
                 for (int i = 0; i < c.getColumnCount(); i++) {
@@ -9368,7 +9427,9 @@ public class MediaProvider extends ContentProvider {
                     }
                 }
 
-                Log.d(TAG, "Moving " + beforePath + " to " + afterPath);
+
+                Logging.logIfLoggable(TAG, "Moving " + beforePath + " to " + afterPath,
+                        Log.DEBUG, /* logOnlyIfDebuggable */true);
                 try {
                     Os.rename(beforePath, afterPath);
                     invalidateFuseDentry(beforePath);
@@ -9569,7 +9630,7 @@ public class MediaProvider extends ContentProvider {
             return;
         }
 
-        BackgroundThread.getExecutor().execute(() -> {
+        sBackgroundThreadExecutor.execute(() -> {
             final LocalCallingIdentity token = clearLocalCallingIdentity();
             try {
                 mTranscodeHelper.onUriPublished(uri);
@@ -9585,7 +9646,7 @@ public class MediaProvider extends ContentProvider {
             return;
         }
 
-        BackgroundThread.getExecutor().execute(() -> {
+        sBackgroundThreadExecutor.execute(() -> {
             final LocalCallingIdentity token = clearLocalCallingIdentity();
             try {
                 mTranscodeHelper.onFileOpen(path, ioPath, uid, transformsReason);
@@ -10459,11 +10520,15 @@ public class MediaProvider extends ContentProvider {
     private ParcelFileDescriptor openWithFuse(String filePath, int uid, int mediaCapabilitiesUid,
             int modeBits, boolean shouldRedact, boolean shouldTranscode, int transcodeReason)
             throws FileNotFoundException {
-        Log.d(TAG, "Open with FUSE. FilePath: " + filePath
+
+        String logMessage = "Open with FUSE"
+                + Logging.messageOrEmptyIfNotDebuggable(". FilePath: " + filePath)
                 + ". Uid: " + uid
                 + ". Media Capabilities Uid: " + mediaCapabilitiesUid
                 + ". ShouldRedact: " + shouldRedact
-                + ". ShouldTranscode: " + shouldTranscode);
+                + ". ShouldTranscode: " + shouldTranscode;
+        Logging.logIfLoggable(TAG, logMessage, Log.DEBUG, /* logOnlyIfDebuggable */ false);
+
 
         int tid = android.os.Process.myTid();
         synchronized (mPendingOpenInfo) {
@@ -10531,6 +10596,9 @@ public class MediaProvider extends ContentProvider {
                 // If we are on a FUSE thread, we don't need to invalidate,
                 // (and *must* not, otherwise we'd crash) because the invalidation
                 // is already reflected in the lower filesystem
+                return;
+            } else if (shouldBeVisible(path)) {
+                Log.w(TAG, "Don't delete fuse dentry cache for volume root path " + path);
                 return;
             } else {
                 daemon.invalidateFuseDentryCache(path);
@@ -10707,7 +10775,7 @@ public class MediaProvider extends ContentProvider {
 
             // Second, wrap in any listener that we've requested
             if (!isPending && forWrite) {
-                return ParcelFileDescriptor.wrap(pfd, BackgroundThread.getHandler(), listener);
+                return ParcelFileDescriptor.wrap(pfd, sBackgroundThreadHandler, listener);
             } else {
                 return pfd;
             }
@@ -11271,19 +11339,19 @@ public class MediaProvider extends ContentProvider {
             }
 
             final long leveldbQueryStartTime = SystemClock.elapsedRealtimeNanos();
-            FileAccessAttributes attrsFromLevelDb = queryLevelDbForFileAttributes(path);
+            FileAccessAttributes attrs = queryLevelDbForFileAttributes(path);
             final long leveldbQueryTime =
                     SystemClock.elapsedRealtimeNanos() - leveldbQueryStartTime;
 
-            final long sqlQueryStartTime = SystemClock.elapsedRealtimeNanos();
-            FileAccessAttributes attrs = queryForFileAttributes(path);
-            final long sqlQueryTime = SystemClock.elapsedRealtimeNanos() - sqlQueryStartTime;
-
-            if (attrs != null && attrsFromLevelDb != null) {
-                MediaProviderStatsLog.write(
-                        MediaProviderStatsLog.FILE_ACCESS_ATTRIBUTES_QUERY_REPORTED,
-                        (int) sqlQueryTime, (int) leveldbQueryTime, attrs.equals(attrsFromLevelDb));
+            long sqlQueryTime = 0;
+            if (attrs == null) {
+                final long sqlQueryStartTime = SystemClock.elapsedRealtimeNanos();
+                attrs = queryForFileAttributes(path);
+                sqlQueryTime = SystemClock.elapsedRealtimeNanos() - sqlQueryStartTime;
             }
+
+            MediaProviderStatsLog.write(MediaProviderStatsLog.FILE_ACCESS_ATTRIBUTES_QUERY_REPORTED,
+                    (int) sqlQueryTime, (int) leveldbQueryTime, (sqlQueryTime == 0));
 
             checkIfFileOpenIsPermitted(path, attrs, redactedUriId, forWrite);
 
@@ -12879,7 +12947,7 @@ public class MediaProvider extends ContentProvider {
 
         // Load all the MIME types from various files in the background to reduce the latency
         // caused when this method is called from onCreate
-        BackgroundThread.getExecutor().execute(() -> {
+        sBackgroundThreadExecutor.execute(() -> {
             try {
                 MimeTypeFixHandler.loadMimeTypes(context);
             } catch (Exception e) {
@@ -12900,6 +12968,11 @@ public class MediaProvider extends ContentProvider {
             return false;
         }
 
+        return isCallingPackageTargetSdkVersionGreaterThanB();
+    }
+
+    @VisibleForTesting
+    protected boolean isCallingPackageTargetSdkVersionGreaterThanB() {
         // If the calling app's target SDK version is greater than Baklava (API 36)
         return getCallingPackageTargetSdkVersion() > Build.VERSION_CODES.BAKLAVA;
     }

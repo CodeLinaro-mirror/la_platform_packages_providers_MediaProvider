@@ -36,6 +36,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.ExperimentalTestApi
+import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertAll
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
@@ -51,6 +52,7 @@ import androidx.compose.ui.test.onChildren
 import androidx.compose.ui.test.onFirst
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.performClick
+import androidx.core.os.bundleOf
 import androidx.test.filters.SdkSuppress
 import androidx.test.platform.app.InstrumentationRegistry
 import com.android.photopicker.R
@@ -440,6 +442,7 @@ class HighlightMediaResultsFeatureTest : PhotopickerFeatureBaseTest() {
             .isEqualTo(false)
     }
 
+    @Test
     @EnableFlags(
         Flags.FLAG_ENABLE_PHOTOPICKER_SEARCH,
         Flags.FLAG_ENABLE_PICKER_HIGHLIGHT_SEARCH_RESULTS_APIS,
@@ -454,6 +457,7 @@ class HighlightMediaResultsFeatureTest : PhotopickerFeatureBaseTest() {
                     queryResultsHighlightType = QueryResultsHighlightType.HIGHLIGHT_MEDIA_SECTION,
                     queryResultsHighlightQuery = HighlightQuery.Search(testQuery),
                 )
+            val callingPackageLabel = "TestPackage"
 
             composeTestRule.setContent {
                 CompositionLocalProvider(
@@ -462,11 +466,13 @@ class HighlightMediaResultsFeatureTest : PhotopickerFeatureBaseTest() {
                             highlightQueryResultsParams(highlightParams)
                             action(MediaStore.ACTION_PICK_IMAGES)
                             intent(Intent(MediaStore.ACTION_PICK_IMAGES))
+                            callingPackageLabel(callingPackageLabel)
                             selectionLimit(50)
                         },
                     LocalNavController provides createNavController(),
                     LocalSelection provides selection,
                     LocalFeatureManager provides featureManager,
+                    LocalEvents provides events,
                     LocalLocalizationHelper provides LocalizationHelper(),
                 ) {
                     PhotopickerTheme(
@@ -476,6 +482,7 @@ class HighlightMediaResultsFeatureTest : PhotopickerFeatureBaseTest() {
                                 highlightQueryResultsParams(highlightParams)
                                 action(MediaStore.ACTION_PICK_IMAGES)
                                 intent(Intent(MediaStore.ACTION_PICK_IMAGES))
+                                selectionLimit(50)
                             },
                     ) {
                         // Calling just the Highlight composable to avoid any assertion conflicts
@@ -486,6 +493,11 @@ class HighlightMediaResultsFeatureTest : PhotopickerFeatureBaseTest() {
                 }
             }
 
+            advanceTimeBy(3000)
+            composeTestRule.waitForIdle()
+            advanceTimeBy(1000)
+            composeTestRule.waitForIdle()
+
             // Verify highlight query text label, Recents label and the SeeAll button are displayed
             val resources = getTestableContext().getResources()
             val highlightText =
@@ -493,6 +505,34 @@ class HighlightMediaResultsFeatureTest : PhotopickerFeatureBaseTest() {
             composeTestRule
                 .onNode(hasText(highlightText), useUnmergedTree = true)
                 .assertIsDisplayed()
+            // Assert the info icon and tooltip display/dismiss behavior
+            composeTestRule
+                .onNode(
+                    hasContentDescription(
+                        resources.getString(R.string.photopicker_hsr_tooltip_icon_description)
+                    )
+                )
+                .assertIsDisplayed()
+                .assert(hasClickAction())
+            composeTestRule
+                .onNode(
+                    hasContentDescription(
+                        resources.getString(R.string.photopicker_hsr_tooltip_icon_description)
+                    )
+                )
+                .performClick()
+
+            val expectedTooltipText =
+                resources.getString(R.string.photopicker_hsr_tooltip_text, callingPackageLabel)
+            composeTestRule
+                .onNode(hasText(expectedTooltipText), useUnmergedTree = true)
+                .assertIsDisplayed()
+
+            composeTestRule.mainClock.advanceTimeBy(5000L)
+
+            composeTestRule
+                .onNode(hasText(expectedTooltipText), useUnmergedTree = true)
+                .assertIsNotDisplayed()
             composeTestRule
                 .onNode(
                     hasText(resources.getString(R.string.photopicker_hsr_see_all_button_label)),
@@ -755,13 +795,26 @@ class HighlightMediaResultsFeatureTest : PhotopickerFeatureBaseTest() {
             composeTestRule.waitForIdle()
             advanceTimeBy(1000)
             composeTestRule.waitForIdle()
-            advanceTimeBy(1000)
+            advanceTimeBy(2000)
 
-            // Verify album name, Recents label and the SeeAll button are displayed
-            composeTestRule
-                .onNode(hasText(highlightAlbum.albumId), useUnmergedTree = true)
-                .assertIsDisplayed()
+            // Verify album name, Recents label and the SeeAll button are displayed but the info
+            // icon is not displayed
             val resources = getTestableContext().getResources()
+            composeTestRule
+                .onNode(
+                    hasContentDescription(
+                        resources.getString(R.string.photopicker_hsr_tooltip_icon_description)
+                    )
+                )
+                .assertIsNotDisplayed()
+            composeTestRule
+                .onNode(
+                    hasText(
+                        HighlightAlbum.getAlbumNameFromAlbum(getTestableContext(), highlightAlbum)
+                    ),
+                    useUnmergedTree = true,
+                )
+                .assertIsDisplayed()
             composeTestRule
                 .onNode(
                     hasText(resources.getString(R.string.photopicker_hsr_see_all_button_label)),
@@ -897,7 +950,12 @@ class HighlightMediaResultsFeatureTest : PhotopickerFeatureBaseTest() {
 
             // Verify the UI elements
             composeTestRule
-                .onNode(hasText(highlightAlbum.albumId), useUnmergedTree = true)
+                .onNode(
+                    hasText(
+                        HighlightAlbum.getAlbumNameFromAlbum(getTestableContext(), highlightAlbum)
+                    ),
+                    useUnmergedTree = true,
+                )
                 .assertIsDisplayed()
             val resources = getTestableContext().getResources()
             composeTestRule
@@ -941,7 +999,12 @@ class HighlightMediaResultsFeatureTest : PhotopickerFeatureBaseTest() {
                 )
                 .assertIsDisplayed()
             composeTestRule
-                .onNode(hasText(highlightAlbum.albumId), useUnmergedTree = true)
+                .onNode(
+                    hasText(
+                        HighlightAlbum.getAlbumNameFromAlbum(getTestableContext(), highlightAlbum)
+                    ),
+                    useUnmergedTree = true,
+                )
                 .assertIsDisplayed()
             composeTestRule
                 .onAllNodes(hasScrollAction(), useUnmergedTree = true)
@@ -969,6 +1032,127 @@ class HighlightMediaResultsFeatureTest : PhotopickerFeatureBaseTest() {
                 .onAllNodes(hasScrollAction(), useUnmergedTree = true)
                 .assertCountEquals(2)
         }
+
+    @Test
+    @EnableFlags(
+        Flags.FLAG_ENABLE_PHOTOPICKER_SEARCH,
+        Flags.FLAG_ENABLE_PICKER_HIGHLIGHT_SEARCH_RESULTS_APIS,
+        Flags.FLAG_HIGHLIGHT_SEARCH_RESULTS_FEATURE,
+        Flags.FLAG_ENABLE_EMBEDDED_PHOTOPICKER,
+    )
+    fun testExpandedHighlightTypeForAlbumHighlight() = runTest {
+        val highlightAlbum = HighlightAlbum.HIGHLIGHT_ALBUM_FAVORITES
+        val highlightParams =
+            HighlightQueryResultsParams(
+                queryResultsHighlightType = QueryResultsHighlightType.HIGHLIGHT_MEDIA_RESULTS,
+                queryResultsHighlightQuery = HighlightQuery.Album(album = highlightAlbum),
+            )
+
+        val testDataService = dataService as? TestDataServiceImpl
+        checkNotNull(testDataService) { "Expected a TestDataServiceImpl" }
+        testDataService.albumMediaSetSize = 0
+        testDataService.albumsList =
+            listOf(
+                Group.Album(
+                    id = ALBUM_ID_FAVORITES,
+                    pickerId = 1234L,
+                    authority = "a",
+                    displayName = "Favorites",
+                    coverUri =
+                        Uri.EMPTY.buildUpon()
+                            .apply {
+                                scheme("content")
+                                authority("a")
+                                path("1234")
+                            }
+                            .build(),
+                    dateTakenMillisLong = 12345678L,
+                    coverMediaSource = MediaSource.LOCAL,
+                )
+            )
+        testDataService.albumMediaList = StubProvider.getTestMediaFromStubProvider(count = 15)
+        testDataService._availableProviders.value =
+            listOf(
+                Provider(
+                    authority = "local_authority",
+                    mediaSource = MediaSource.LOCAL,
+                    uid = 1,
+                    displayName = "Local Provider",
+                )
+            )
+
+        composeTestRule.setContent {
+            CompositionLocalProvider(
+                LocalFeatureManager provides featureManager,
+                LocalPhotopickerConfiguration provides
+                    TestPhotopickerConfiguration.build {
+                        startDestination(PhotopickerDestinations.HIGHLIGHT_ALBUM_MEDIA_GRID)
+                        highlightQueryResultsParams(highlightParams)
+                        action(MediaStore.ACTION_PICK_IMAGES)
+                        intent(Intent(MediaStore.ACTION_PICK_IMAGES))
+                        selectionLimit(50)
+                    },
+                LocalNavController provides createNavController(),
+                LocalSelection provides selection,
+                LocalEvents provides events,
+                LocalLocalizationHelper provides LocalizationHelper(),
+            ) {
+                PhotopickerTheme(
+                    isDarkTheme = false,
+                    config =
+                        TestPhotopickerConfiguration.build {
+                            highlightQueryResultsParams(highlightParams)
+                            startDestination(PhotopickerDestinations.HIGHLIGHT_ALBUM_MEDIA_GRID)
+                            action(MediaStore.ACTION_PICK_IMAGES)
+                            intent(Intent(MediaStore.ACTION_PICK_IMAGES))
+                        },
+                ) {
+                    // Compose the entire tree to test button behaviour
+                    PhotopickerMain(disruptiveDataNotification = flow { emit(0) })
+                }
+            }
+        }
+
+        // Wait sufficiently for album list to be available
+        advanceTimeBy(3000)
+        composeTestRule.waitForIdle()
+        advanceTimeBy(1000)
+        composeTestRule.waitForIdle()
+        advanceTimeBy(1000)
+        composeTestRule.waitForIdle()
+        advanceTimeBy(1000)
+
+        val resources = getTestableContext().getResources()
+        val route = navController.currentBackStackEntry?.destination?.route
+        assertWithMessage("Current destination should be the album media grid")
+            .that(route)
+            .isEqualTo(PhotopickerDestinations.HIGHLIGHT_ALBUM_MEDIA_GRID.route)
+
+        composeTestRule
+            .onNode(
+                hasContentDescription(resources.getString(R.string.photopicker_back_option)),
+                useUnmergedTree = true,
+            )
+            .assertIsDisplayed()
+        composeTestRule
+            .onNode(
+                hasText(HighlightAlbum.getAlbumNameFromAlbum(getTestableContext(), highlightAlbum)),
+                useUnmergedTree = true,
+            )
+            .assertIsDisplayed()
+
+        // Verify back takes you the collections grid
+        composeTestRule
+            .onNode(
+                hasContentDescription(resources.getString(R.string.photopicker_back_option)),
+                useUnmergedTree = true,
+            )
+            .performClick()
+        val backRoute = navController.currentBackStackEntry?.destination?.route
+        assertWithMessage("Current destination should be the photo grid")
+            .that(backRoute)
+            .isEqualTo(PhotopickerDestinations.ALBUM_GRID.route)
+    }
 
     @Test
     @EnableFlags(
@@ -1764,6 +1948,164 @@ class HighlightMediaResultsFeatureTest : PhotopickerFeatureBaseTest() {
                     )
                 )
                 .assertCountEquals(1)
+        }
+
+    @Test
+    @EnableFlags(
+        Flags.FLAG_ENABLE_PHOTOPICKER_SEARCH,
+        Flags.FLAG_ENABLE_PICKER_HIGHLIGHT_SEARCH_RESULTS_APIS,
+        Flags.FLAG_HIGHLIGHT_SEARCH_RESULTS_FEATURE,
+        Flags.FLAG_ENABLE_EMBEDDED_PHOTOPICKER,
+    )
+    fun testExpandedHighlightTypeForNonEmptySearchQuery() =
+        testScope.runTest {
+            val testQuery = "cats"
+            val bundle =
+                bundleOf(
+                    MediaStore.KEY_PICK_IMAGES_HIGHLIGHT_TYPE to
+                        MediaStore.PICK_IMAGES_HIGHLIGHT_TYPE_EXPANDED,
+                    MediaStore.KEY_PICK_IMAGES_HIGHLIGHT_SEARCH_TEXT_QUERY to testQuery,
+                )
+            val intent =
+                Intent(MediaStore.ACTION_PICK_IMAGES).apply {
+                    putExtra(MediaStore.EXTRA_PICK_IMAGES_HIGHLIGHT_SEARCH_RESULTS, bundle)
+                }
+            // The params need to be set in the intent itself because the view model uses the
+            // config manager itself when its init block is executed.
+            configurationManager.get().setIntent(intent)
+
+            composeTestRule.setContent {
+                CompositionLocalProvider(
+                    LocalFeatureManager provides featureManager,
+                    LocalPhotopickerConfiguration provides
+                        TestPhotopickerConfiguration.build {
+                            action(MediaStore.ACTION_PICK_IMAGES)
+                            intent(intent)
+                            selectionLimit(50)
+                        },
+                    LocalNavController provides createNavController(),
+                    LocalSelection provides selection,
+                    LocalEvents provides events,
+                    LocalLocalizationHelper provides LocalizationHelper(),
+                ) {
+                    PhotopickerTheme(
+                        isDarkTheme = false,
+                        config =
+                            TestPhotopickerConfiguration.build {
+                                action(MediaStore.ACTION_PICK_IMAGES)
+                                intent(intent)
+                            },
+                    ) {
+                        PhotopickerMain(disruptiveDataNotification = flow { emit(0) })
+                    }
+                }
+            }
+
+            // Assert components of the search page that opens up: back button and the search
+            // query text is visible since the search text is set as the highlight query.
+            // Also assert on current destination. For search page, the underlying destination
+            // is the PhotoGrid itself with an expanded search bar.
+            val resources = getTestableContext().getResources()
+            val route = navController.currentBackStackEntry?.destination?.route
+            assertWithMessage("Current destination should be the photo grid")
+                .that(route)
+                .isEqualTo(PhotopickerDestinations.PHOTO_GRID.route)
+
+            composeTestRule
+                .onNode(
+                    hasContentDescription(resources.getString(R.string.photopicker_back_option)),
+                    useUnmergedTree = true,
+                )
+                .assertIsDisplayed()
+            composeTestRule.onNode(hasText(testQuery), useUnmergedTree = true).assertIsDisplayed()
+
+            // Assert back button navigates back to the photogrid
+            composeTestRule
+                .onNode(
+                    hasContentDescription(resources.getString(R.string.photopicker_back_option)),
+                    useUnmergedTree = true,
+                )
+                .performClick()
+
+            val backRoute = navController.currentBackStackEntry?.destination?.route
+            assertWithMessage("Current destination should be the photo grid")
+                .that(backRoute)
+                .isEqualTo(PhotopickerDestinations.PHOTO_GRID.route)
+            // Search bar with placeholder text
+            composeTestRule
+                .onNode(hasText(resources.getString(R.string.photopicker_search_placeholder_text)))
+                .assertIsDisplayed()
+        }
+
+    @Test
+    @EnableFlags(
+        Flags.FLAG_ENABLE_PHOTOPICKER_SEARCH,
+        Flags.FLAG_ENABLE_PICKER_HIGHLIGHT_SEARCH_RESULTS_APIS,
+        Flags.FLAG_HIGHLIGHT_SEARCH_RESULTS_FEATURE,
+        Flags.FLAG_ENABLE_EMBEDDED_PHOTOPICKER,
+    )
+    fun testExpandedHighlightTypeForEmptySearchQuery() =
+        testScope.runTest {
+            val testQuery = ""
+            val bundle =
+                bundleOf(
+                    MediaStore.KEY_PICK_IMAGES_HIGHLIGHT_TYPE to
+                        MediaStore.PICK_IMAGES_HIGHLIGHT_TYPE_EXPANDED,
+                    MediaStore.KEY_PICK_IMAGES_HIGHLIGHT_SEARCH_TEXT_QUERY to testQuery,
+                )
+            val intent =
+                Intent(MediaStore.ACTION_PICK_IMAGES).apply {
+                    putExtra(MediaStore.EXTRA_PICK_IMAGES_HIGHLIGHT_SEARCH_RESULTS, bundle)
+                }
+            // The params need to be set in the intent itself because the view model uses the
+            // config manager itself when its init block is executed.
+            configurationManager.get().setIntent(intent)
+
+            composeTestRule.setContent {
+                CompositionLocalProvider(
+                    LocalFeatureManager provides featureManager,
+                    LocalPhotopickerConfiguration provides
+                        TestPhotopickerConfiguration.build {
+                            action(MediaStore.ACTION_PICK_IMAGES)
+                            intent(Intent(MediaStore.ACTION_PICK_IMAGES))
+                            selectionLimit(50)
+                        },
+                    LocalNavController provides createNavController(),
+                    LocalSelection provides selection,
+                    LocalEvents provides events,
+                    LocalLocalizationHelper provides LocalizationHelper(),
+                ) {
+                    PhotopickerTheme(
+                        isDarkTheme = false,
+                        config =
+                            TestPhotopickerConfiguration.build {
+                                action(MediaStore.ACTION_PICK_IMAGES)
+                                intent(Intent(MediaStore.ACTION_PICK_IMAGES))
+                            },
+                    ) {
+                        PhotopickerMain(disruptiveDataNotification = flow { emit(0) })
+                    }
+                }
+            }
+
+            val resources = getTestableContext().getResources()
+            // Assert that no back button is visible. There's no point on asserting on empty
+            // highlight string matcher.
+            // It will give a match. Assert on other picker components instead.
+            composeTestRule
+                .onNode(
+                    hasContentDescription(resources.getString(R.string.photopicker_back_option)),
+                    useUnmergedTree = true,
+                )
+                .assertIsNotDisplayed()
+            val backRoute = navController.currentBackStackEntry?.destination?.route
+            assertWithMessage("Current destination should be the photo grid")
+                .that(backRoute)
+                .isEqualTo(PhotopickerDestinations.PHOTO_GRID.route)
+            // Search bar with placeholder text
+            composeTestRule
+                .onNode(hasText(resources.getString(R.string.photopicker_search_placeholder_text)))
+                .assertIsDisplayed()
         }
 
     @Composable

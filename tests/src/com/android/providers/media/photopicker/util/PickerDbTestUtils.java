@@ -17,11 +17,13 @@
 package com.android.providers.media.photopicker.util;
 
 import static android.provider.CloudMediaProviderContract.SEARCH_SUGGESTION_ALBUM;
+import static android.provider.MediaStore.MY_USER_ID;
 
 import static com.android.providers.media.util.MimeUtils.getExtensionFromMimeType;
 
 import static com.google.common.truth.Truth.assertWithMessage;
 
+import android.annotation.NonNull;
 import android.content.ContentResolver;
 import android.database.Cursor;
 import android.database.MatrixCursor;
@@ -32,6 +34,7 @@ import android.provider.MediaStore;
 import com.android.providers.media.MediaGrants;
 import com.android.providers.media.PickerUriResolver;
 import com.android.providers.media.photopicker.data.PickerDbFacade;
+import com.android.providers.media.photopicker.v2.sqlite.PickerSQLConstants;
 
 import java.util.Locale;
 
@@ -366,8 +369,8 @@ public class PickerDbTestUtils {
 
         String[] coverIds = new String[] {LOCAL_ID_1, LOCAL_ID_2};
         if (CloudMediaProviderContract.MEDIA_CATEGORY_TYPE_APP_FOLDERS.equals(categoryType)) {
-            coverIds[0] = getDrawableMediaId(PACKAGE_NAME1, RES_ID1, USER_ID);
-            coverIds[1] = getDrawableMediaId(PACKAGE_NAME2, RES_ID2, USER_ID);
+            coverIds[0] = getDrawableMediaId(PACKAGE_NAME1, RES_ID1);
+            coverIds[1] = getDrawableMediaId(PACKAGE_NAME2, RES_ID2);
         } else if (CloudMediaProviderContract.MEDIA_CATEGORY_TYPE_PEOPLE_AND_PETS.equals(
                 categoryType)
                 || CloudMediaProviderContract.MEDIA_CATEGORY_TYPE_USER_ALBUMS.equals(
@@ -392,20 +395,54 @@ public class PickerDbTestUtils {
     }
 
     /**
+     * Creates a {@link MatrixCursor} containing a single row representing a media set.
+     *
+     * @param categoryType The category type to which the media set belongs. This is used to
+     *                     construct a unique media set ID.
+     * @param mediaSetName The display name for the media set.
+     * @return A {@link MatrixCursor} containing a single row with the details of the specified
+     *         media set.
+     */
+    public static Cursor getMediaSetsCursor(@NonNull String categoryType, String mediaSetName) {
+        String[] projectionKey = new String[]{
+                PickerSQLConstants.MediaSetsTableColumns.PICKER_ID.getColumnName(),
+                PickerSQLConstants.MediaSetsTableColumns.CATEGORY_ID.getColumnName(),
+                PickerSQLConstants.MediaSetsTableColumns.MEDIA_SET_ID.getColumnName(),
+                PickerSQLConstants.MediaSetsTableColumns.DISPLAY_NAME.getColumnName(),
+                PickerSQLConstants.MediaSetsTableColumns.COVER_ID.getColumnName(),
+                PickerSQLConstants.MediaSetsTableColumns.MEDIA_SET_AUTHORITY.getColumnName(),
+        };
+
+        String mediaSetId = categoryType + ":" + mediaSetName;
+
+        String[] projectionValue = new String[]{
+                LOCAL_ID,
+                categoryType,
+                mediaSetId,
+                mediaSetName,
+                LOCAL_ID,
+                LOCAL_PROVIDER
+        };
+
+        MatrixCursor cursor = new MatrixCursor(projectionKey);
+        cursor.addRow(projectionValue);
+        return cursor;
+    }
+
+    /**
      * Builds an Android resource URI string:
      * {@code "android.resource://<userId>@<packageName>/<resId>"}.
      *
      * @param packageName The application's package name.
      * @param resId The integer resource ID.
-     * @param userId The user ID that the resource belongs
      * @return The resource URI string.
      */
-    public static String getAndroidResourceUriString(String packageName, int resId, int userId) {
+    public static String getAndroidResourceUriString(String packageName, int resId) {
         return String.format(
                 Locale.ROOT,
                 "%s://%s@%s/%s",
                 ContentResolver.SCHEME_ANDROID_RESOURCE,
-                userId,
+                MY_USER_ID,
                 packageName,
                 resId);
     }
@@ -415,16 +452,14 @@ public class PickerDbTestUtils {
      *
      * @param packageName The application's package name.
      * @param resId The integer resource ID.
-     * @param userId The user ID that the resource belongs
      * @return The media ID.
      */
-    public static String getDrawableMediaId(String packageName, int resId, int userId) {
+    public static String getDrawableMediaId(String packageName, int resId) {
         return String.format(
                 Locale.ROOT,
-                "%s/%s/%s",
+                "%s/%s",
                 packageName,
-                resId,
-                userId);
+                resId);
     }
 
     /**

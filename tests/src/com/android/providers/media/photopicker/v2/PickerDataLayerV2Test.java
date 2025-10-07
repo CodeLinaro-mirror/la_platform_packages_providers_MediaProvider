@@ -16,6 +16,7 @@
 
 package com.android.providers.media.photopicker.v2;
 
+import static android.provider.MediaStore.MY_USER_ID;
 import static android.provider.MediaStore.PER_USER_RANGE;
 
 import static com.android.providers.media.photopicker.util.PickerDbTestUtils.ALBUM_ID;
@@ -42,7 +43,9 @@ import static com.android.providers.media.photopicker.util.PickerDbTestUtils.LOC
 import static com.android.providers.media.photopicker.util.PickerDbTestUtils.LOCAL_PROVIDER;
 import static com.android.providers.media.photopicker.util.PickerDbTestUtils.MP4_VIDEO_MIME_TYPE;
 import static com.android.providers.media.photopicker.util.PickerDbTestUtils.ORIENTATION;
+import static com.android.providers.media.photopicker.util.PickerDbTestUtils.PACKAGE_NAME1;
 import static com.android.providers.media.photopicker.util.PickerDbTestUtils.PNG_IMAGE_MIME_TYPE;
+import static com.android.providers.media.photopicker.util.PickerDbTestUtils.RES_ID1;
 import static com.android.providers.media.photopicker.util.PickerDbTestUtils.STANDARD_MIME_TYPE_EXTENSION;
 import static com.android.providers.media.photopicker.util.PickerDbTestUtils.TEST_DIFFERENT_PACKAGE_NAME;
 import static com.android.providers.media.photopicker.util.PickerDbTestUtils.TEST_PACKAGE_NAME;
@@ -52,12 +55,13 @@ import static com.android.providers.media.photopicker.util.PickerDbTestUtils.ass
 import static com.android.providers.media.photopicker.util.PickerDbTestUtils.assertInsertGrantsOperation;
 import static com.android.providers.media.photopicker.util.PickerDbTestUtils.getAlbumCursor;
 import static com.android.providers.media.photopicker.util.PickerDbTestUtils.getAlbumMediaCursor;
-import static com.android.providers.media.photopicker.util.PickerDbTestUtils.getMediaCategoriesCursor;
 import static com.android.providers.media.photopicker.util.PickerDbTestUtils.getCloudMediaCursor;
 import static com.android.providers.media.photopicker.util.PickerDbTestUtils.getLocalMediaCursor;
+import static com.android.providers.media.photopicker.util.PickerDbTestUtils.getMediaCategoriesCursor;
 import static com.android.providers.media.photopicker.util.PickerDbTestUtils.getMediaCursor;
 import static com.android.providers.media.photopicker.util.PickerDbTestUtils.getMediaGrantsCursor;
 import static com.android.providers.media.photopicker.v2.PickerDataLayerV2.COLUMN_GRANTS_COUNT;
+import static com.android.providers.media.photopicker.v2.PickerDataLayerV2.PREFS_KEY_SEARCH_STATE_ENABLED;
 import static com.android.providers.media.photopicker.v2.model.AlbumsCursorWrapper.EMPTY_MEDIA_ID;
 
 import static com.google.common.truth.Truth.assertThat;
@@ -65,7 +69,9 @@ import static com.google.common.truth.Truth.assertWithMessage;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 import static org.junit.Assume.assumeTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
@@ -73,6 +79,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 import static org.mockito.MockitoAnnotations.initMocks;
 
 import android.Manifest;
@@ -80,6 +87,7 @@ import android.compat.testing.PlatformCompatChangeRule;
 import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.ProviderInfo;
@@ -138,6 +146,7 @@ import com.android.providers.media.photopicker.v2.sqlite.SearchSuggestionsDataba
 import com.android.providers.media.photopicker.v2.sqlite.SearchSuggestionsQuery;
 
 import com.google.common.util.concurrent.ListenableFuture;
+import com.google.common.util.concurrent.MoreExecutors;
 
 import libcore.junit.util.compat.CoreCompatChangeRule.EnableCompatChanges;
 
@@ -160,6 +169,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.Executor;
 
@@ -183,6 +193,10 @@ public class PickerDataLayerV2Test {
     private ListenableFuture<Operation.State.SUCCESS> mMockFuture;
     @Mock
     CategoriesState mCategoriesState;
+    @Mock
+    private SharedPreferences mUserPrefs;
+    @Mock
+    private SharedPreferences.Editor mEditor;
     private PickerDbFacade mFacade;
     private Context mContext;
     private MockContentResolver mMockContentResolver;
@@ -430,6 +444,49 @@ public class PickerDataLayerV2Test {
                                             .DISPLAY_NAME.getColumnName()))
             );
         }
+    }
+
+    @Test
+    public void testGetSearchProvidersReturnsProviderAndCachesSearchState() {
+
+        when(mMockSyncController.getSearchState()).thenReturn(mSearchState);
+        when(mMockSyncController.getCloudProviderOrDefault(null))
+                .thenReturn(CLOUD_PROVIDER);
+        when(mUserPrefs.edit()).thenReturn(mEditor);
+        // The cloud provider is capable of search
+        when(mSearchState.doesPickerSupportSearch(any(), anyString()))
+                .thenReturn(true);
+        when(mSearchState.doesCloudProviderSupportSearch(any(), anyString()))
+                .thenReturn(true);
+
+        Bundle result = PickerDataLayerV2.getSearchProviders(
+                mContext,
+                MoreExecutors.directExecutor(),
+                MoreExecutors.directExecutor()
+        );
+
+        assertTrue(result.getStringArrayList(PickerSQLConstants.EXTRA_SEARCH_PROVIDER_AUTHORITIES)
+                .contains(CLOUD_PROVIDER));
+
+        // The 'true' result was cached
+        verify(mMockSyncController).cacheCloudSearchCapability(true);
+    }
+
+    @Test
+    public void testGetSearchProvidersReadsFromCacheForSearchState() {
+        // Pre-populate the cache with 'true'
+        when(mMockSyncController.readLastKnownSearchCapability()).thenReturn(true);
+        when(mUserPrefs.getBoolean(PREFS_KEY_SEARCH_STATE_ENABLED, false))
+                .thenReturn(true);
+        when(mSearchState.doesPickerSupportSearch(any(), anyString()))
+                .thenReturn(true);
+
+        // Since we can't easily timeout CompletableFuture.get(), the key is to
+        // verify the fallback logic. We can assume the timeout will trigger the catch block.
+        boolean searchCapability = PickerDataLayerV2.readLastKnownSearchCapability(
+                mMockSyncController);
+
+        assertTrue(searchCapability);
     }
 
     @Test
@@ -1079,18 +1136,8 @@ public class PickerDataLayerV2Test {
                 /* writeCount */1);
         assertAddMediaOperation(mFacade, LOCAL_PROVIDER, cursorForMediaWithGrants,
                 /* writeCount */1);
-        // testUid should be selected such that the userId computed from this uid later in the code
-        // flow matches the current userId. UserId is computed using
-        // PickerSyncController#uidToUser() where the userId = uid / PER_USER_RANGE.
-        // So testUid is =
-        // (a random number smaller than PER_USER_RANGE) + (PER_USER_RANGE * UserHandle.myUserId())
-        int testUid = 11 + (PER_USER_RANGE * UserHandle.myUserId());
-        doReturn(mMockPackageManager)
-                .when(mMockContext).getPackageManager();
-        String[] packageNames = new String[]{TEST_PACKAGE_NAME};
-        doReturn(packageNames).when(mMockPackageManager).getPackagesForUid(testUid);
-        // insert a grant for the second item inserted in media.
-        assertInsertGrantsOperation(mFacade, getMediaGrantsCursor(LOCAL_ID_2), /* writeCount */1);
+
+        int testUid = setupAndGetTestUid();
 
         doReturn(false).when(mMockSyncController).shouldQueryCloudMedia(any());
 
@@ -1145,8 +1192,8 @@ public class PickerDataLayerV2Test {
 
             cr.moveToFirst();
             for (int i = 0; i < totalCount; i++) {
-                int id = cr.getInt(cr.getColumnIndex("id"));
-                int isPreGranted = cr.getInt(cr.getColumnIndex("is_pre_granted"));
+                int id = cr.getInt(cr.getColumnIndexOrThrow("id"));
+                int isPreGranted = cr.getInt(cr.getColumnIndexOrThrow("is_pre_granted"));
                 assertEquals(idVsExpectedPreGrantedValue.get(String.valueOf(id)).intValue(),
                         isPreGranted);
                 cr.moveToNext();
@@ -1174,7 +1221,7 @@ public class PickerDataLayerV2Test {
         queryArgs.putInt(Intent.EXTRA_UID, Process.myUid());
         try (Cursor cr = PickerDataLayerV2.fetchCountForPreGrantedItems(mMockContext, queryArgs)) {
             cr.moveToFirst();
-            assertEquals(totalPreGranted, cr.getInt(cr.getColumnIndex(COLUMN_GRANTS_COUNT)));
+            assertEquals(totalPreGranted, cr.getInt(cr.getColumnIndexOrThrow(COLUMN_GRANTS_COUNT)));
         }
     }
 
@@ -1206,8 +1253,8 @@ public class PickerDataLayerV2Test {
             assertEquals(totalPreGranted, cr.getCount());
             cr.moveToFirst();
             for (int i = 0; i < totalPreGranted; i++) {
-                int id = cr.getInt(cr.getColumnIndex("id"));
-                int preGranted = cr.getInt(cr.getColumnIndex("is_pre_granted"));
+                int id = cr.getInt(cr.getColumnIndexOrThrow("id"));
+                int preGranted = cr.getInt(cr.getColumnIndexOrThrow("is_pre_granted"));
                 assertEquals(1, (int) idVsPreGranted.get(String.valueOf(id)));
                 assertEquals(1, preGranted);
                 cr.moveToNext();
@@ -1222,40 +1269,40 @@ public class PickerDataLayerV2Test {
         // 1. ownerPackageName != TEST_PACKAGE_NAME and no media grants.
         // preGranted should be false
         Cursor cursorWithDifferentOwnerPackageName = getMediaCursorWithOwnerPackageNameAndUserId(
-                "101", TEST_DIFFERENT_PACKAGE_NAME);
+                LOCAL_ID_1, TEST_DIFFERENT_PACKAGE_NAME);
         assertAddMediaOperation(mFacade, LOCAL_PROVIDER, cursorWithDifferentOwnerPackageName,
                 /*writeCount*/ 1);
-        idVsExpectedPreGrantedValue.put("101", 0);
+        idVsExpectedPreGrantedValue.put(LOCAL_ID_1, 0);
 
         // 2. ownerPackageName == TEST_PACKAGE_NAME and no media grants.
         // preGranted should be true
         Cursor cursorWithCorrectOwnerPackageName = getMediaCursorWithOwnerPackageNameAndUserId(
-                "102", TEST_PACKAGE_NAME);
+                LOCAL_ID_2, TEST_PACKAGE_NAME);
         assertAddMediaOperation(mFacade, LOCAL_PROVIDER, cursorWithCorrectOwnerPackageName,
                 /*writeCount*/ 1);
-        idVsExpectedPreGrantedValue.put("102", 1);
+        idVsExpectedPreGrantedValue.put(LOCAL_ID_2, 1);
 
         // 3. ownerPackageName != TEST_PACKAGE_NAME
         // and media_grants with packageName == TEST_PACKAGE_NAME.
         // preGranted should be true
         Cursor cursorWithCorrectMediaGrants = getMediaCursorWithOwnerPackageNameAndUserId(
-                "103", TEST_DIFFERENT_PACKAGE_NAME);
+                LOCAL_ID_3, TEST_DIFFERENT_PACKAGE_NAME);
         assertAddMediaOperation(mFacade, LOCAL_PROVIDER, cursorWithCorrectMediaGrants,
                 /*writeCount*/ 1);
-        assertInsertGrantsOperation(mFacade, getMediaGrantsCursor("103", TEST_PACKAGE_NAME,
+        assertInsertGrantsOperation(mFacade, getMediaGrantsCursor(LOCAL_ID_3, TEST_PACKAGE_NAME,
                 UserHandle.myUserId()), /*writeCount*/ 1);
-        idVsExpectedPreGrantedValue.put("103", 1);
+        idVsExpectedPreGrantedValue.put(LOCAL_ID_3, 1);
 
         // 4. ownerPackageName != TEST_PACKAGE_NAME
         // and media_grants with packageName != TEST_PACKAGE_NAME.
         // preGranted should be false
         Cursor cursorWithDifferentMediaGrants = getMediaCursorWithOwnerPackageNameAndUserId(
-                "104", TEST_DIFFERENT_PACKAGE_NAME);
+                LOCAL_ID_4, TEST_DIFFERENT_PACKAGE_NAME);
         assertAddMediaOperation(mFacade, LOCAL_PROVIDER, cursorWithDifferentMediaGrants,
                 /*writeCount*/ 1);
-        assertInsertGrantsOperation(mFacade, getMediaGrantsCursor("104",
+        assertInsertGrantsOperation(mFacade, getMediaGrantsCursor(LOCAL_ID_4,
                 TEST_DIFFERENT_PACKAGE_NAME, UserHandle.myUserId()), /*writeCount*/ 1);
-        idVsExpectedPreGrantedValue.put("104", 0);
+        idVsExpectedPreGrantedValue.put(LOCAL_ID_4, 0);
 
         return idVsExpectedPreGrantedValue;
     }
@@ -1321,20 +1368,7 @@ public class PickerDataLayerV2Test {
         assertAddMediaOperation(mFacade, LOCAL_PROVIDER, cursorForMediaWithGrantsButDeSelected,
                 /* writeCount */1);
 
-        // testUid should be selected such that the userId computed from this uid later in the code
-        // flow matches the current userId. UserId is computed using
-        // PickerSyncController#uidToUser() where the userId = uid / PER_USER_RANGE.
-        // So testUid is =
-        // (a random number smaller than PER_USER_RANGE) + (PER_USER_RANGE * UserHandle.myUserId())
-        int testUid = 11 + (PER_USER_RANGE * UserHandle.myUserId());
-        doReturn(mMockPackageManager)
-                .when(mMockContext).getPackageManager();
-        String[] packageNames = new String[]{TEST_PACKAGE_NAME};
-        doReturn(packageNames).when(mMockPackageManager).getPackagesForUid(testUid);
-        // insert a grant for the second item inserted in media.
-        assertInsertGrantsOperation(mFacade, getMediaGrantsCursor(LOCAL_ID_2), /* writeCount */1);
-        // insert a grant for the third item inserted in media.
-        assertInsertGrantsOperation(mFacade, getMediaGrantsCursor(LOCAL_ID_3), /* writeCount */1);
+        int testUid = setupAndGetTestUid();
 
         doReturn(false).when(mMockSyncController).shouldQueryCloudMedia(any());
 
@@ -1375,16 +1409,25 @@ public class PickerDataLayerV2Test {
     }
 
     @Test
-    public void testQueryMediaSets() throws RequestObsoleteException {
+    public void testQueryMediaSets()
+            throws RequestObsoleteException, PackageManager.NameNotFoundException {
         List<String> mimeTypes = new ArrayList<>();
         mimeTypes.add("image/*");
-        String mediaSetId1 = "mediaSetId1";
+        String mediaSetId1 = CloudMediaProviderContract.MEDIA_CATEGORY_TYPE_APP_FOLDERS + ":"
+                + PACKAGE_NAME1;
         String mediaSetId2 = "mediaSetId2";
         String displayName1 = "displayName1";
         String displayName2 = "displayName2";
         String coverId1 = "56";
         String coverId2 = "76";
         String categoryId = "id";
+
+        doReturn(mMockPackageManager)
+                .when(mMockContext).getPackageManager();
+        ApplicationInfo applicationInfo = new ApplicationInfo();
+        applicationInfo.icon = RES_ID1;
+        doReturn(applicationInfo).when(mMockPackageManager).getApplicationInfo(PACKAGE_NAME1, 0);
+
 
         String[] columns = new String[]{
                 CloudMediaProviderContract.MediaSetColumns.ID,
@@ -1411,7 +1454,7 @@ public class PickerDataLayerV2Test {
         extras.putString(MediaSetsSyncRequestParams.KEY_PARENT_CATEGORY_ID, categoryId);
         extras.putStringArrayList("providers", new ArrayList<>(List.of(SearchProvider.AUTHORITY)));
 
-        try (Cursor mediaSets = PickerDataLayerV2.queryMediaSets(extras)) {
+        try (Cursor mediaSets = PickerDataLayerV2.queryMediaSets(mMockContext, extras)) {
             assertNotNull(mediaSets);
             assertEquals(2, mediaSets.getCount());
 
@@ -1421,12 +1464,21 @@ public class PickerDataLayerV2Test {
                 assertEquals(mediaSetId1, retrievedMediaSetId1);
                 String retrievedDisplayName1 = mediaSets.getString(mediaSets.getColumnIndexOrThrow(
                         PickerSQLConstants.MediaGroupResponseColumns.DISPLAY_NAME.getColumnName()));
-                assertEquals(retrievedDisplayName1, displayName1);
+                assertEquals(displayName1, retrievedDisplayName1);
                 String retrievedUri1 = mediaSets.getString(mediaSets.getColumnIndexOrThrow(
                         PickerSQLConstants.MediaGroupResponseColumns.UNWRAPPED_COVER_URI
                                 .getColumnName()
                 ));
                 assertTrue(retrievedUri1.contains(coverId1));
+                String retrievedBadgeUri1 = mediaSets.getString(mediaSets.getColumnIndexOrThrow(
+                        PickerSQLConstants.MediaGroupResponseColumns.BADGE_ICON_URI
+                                .getColumnName()
+                ));
+                String expectedBadgeUri = String.format(
+                        Locale.ROOT,
+                        "android.resource://%s@%s/%s",
+                        MY_USER_ID, PACKAGE_NAME1, RES_ID1);
+                assertEquals(expectedBadgeUri, retrievedBadgeUri1);
 
                 mediaSets.moveToNext();
                 String retrievedMediaSetId2 = mediaSets.getString(mediaSets.getColumnIndexOrThrow(
@@ -1434,13 +1486,17 @@ public class PickerDataLayerV2Test {
                 assertEquals(mediaSetId2, retrievedMediaSetId2);
                 String retrievedDisplayName2 = mediaSets.getString(mediaSets.getColumnIndexOrThrow(
                         PickerSQLConstants.MediaGroupResponseColumns.DISPLAY_NAME.getColumnName()));
-                assertEquals(retrievedDisplayName2, displayName2);
+                assertEquals(displayName2, retrievedDisplayName2);
                 String retrievedUri2 = mediaSets.getString(mediaSets.getColumnIndexOrThrow(
                         PickerSQLConstants.MediaGroupResponseColumns.UNWRAPPED_COVER_URI
                                 .getColumnName()
                 ));
                 assertTrue(retrievedUri2.contains(coverId2));
-
+                String retrievedBadgeUri2 = mediaSets.getString(mediaSets.getColumnIndexOrThrow(
+                        PickerSQLConstants.MediaGroupResponseColumns.BADGE_ICON_URI
+                                .getColumnName()
+                ));
+                assertNull(retrievedBadgeUri2);
             }
         }
     }
@@ -1621,7 +1677,8 @@ public class PickerDataLayerV2Test {
                 1);
 
         Bundle extras = new Bundle();
-        extras.putInt("page_size", 100);
+        extras.putInt("current_page_size", 100);
+        extras.putInt("next_page_size", 100);
         extras.putStringArrayList("providers",
                 new ArrayList<>(Arrays.asList(LOCAL_PROVIDER, CLOUD_PROVIDER)));
         extras.putString("intent_action", MediaStore.ACTION_PICK_IMAGES);
@@ -1633,7 +1690,7 @@ public class PickerDataLayerV2Test {
                 LOCAL_PROVIDER);
 
         try (Cursor cursor =
-                     PickerDataLayerV2.queryMediaInMediaSet(extras)) {
+                     PickerDataLayerV2.queryMediaInMediaSet(mMockContext, extras)) {
             assertWithMessage("Cursor should not be null")
                     .that(cursor)
                     .isNotNull();
@@ -1656,6 +1713,170 @@ public class PickerDataLayerV2Test {
         }
     }
 
+    @Test
+    public void testQueryMediaInMediaSetWithGrants() {
+        // Media item without grants
+        final Cursor cursor1 = getLocalMediaCursor(LOCAL_ID_1, 0);
+        assertAddMediaOperation(mFacade, LOCAL_PROVIDER, cursor1, 1);
+        // Media item with grants
+        final Cursor cursor2 = getLocalMediaCursor(LOCAL_ID_2, 0);
+        assertAddMediaOperation(mFacade, LOCAL_PROVIDER, cursor2, 1);
+        final Cursor cursor3 = getCloudMediaCursor(CLOUD_ID_2, LOCAL_ID_2, 0);
+        assertAddMediaOperation(mFacade, CLOUD_PROVIDER, cursor3, 1);
+
+        Long mediaSetPickerId = 1L;
+
+        int cloudRowsInserted = MediaInMediaSetsDatabaseUtil.cacheMediaOfMediaSet(
+                mFacade.getDatabase(), List.of(
+                        getContentValues(LOCAL_ID_2, CLOUD_ID_2, mediaSetPickerId)
+                ), CLOUD_PROVIDER
+        );
+        assertEquals(
+                "Unexpected number of rows inserted for cloud media",
+                /*expected*/1,
+                /*actual*/cloudRowsInserted);
+
+        int localRowsInserted = MediaInMediaSetsDatabaseUtil.cacheMediaOfMediaSet(
+                mFacade.getDatabase(), List.of(
+                        getContentValues(LOCAL_ID_1, null, mediaSetPickerId)
+                ), LOCAL_PROVIDER
+        );
+        assertEquals(
+                "Unexpected number of rows inserted for local media",
+                /*expected*/1,
+                /*actual*/localRowsInserted);
+
+        int testUid = setupAndGetTestUid();
+
+        doReturn(false).when(mMockSyncController).shouldQueryCloudMedia(any());
+
+        Bundle extras = new Bundle();
+        extras.putInt("current_page_size", 100);
+        extras.putInt("next_page_size", 100);
+        extras.putStringArrayList("providers",
+                new ArrayList<>(Arrays.asList(LOCAL_PROVIDER, CLOUD_PROVIDER)));
+        extras.putString("intent_action", MediaStore.ACTION_USER_SELECT_IMAGES_FOR_APP);
+        extras.putInt(Intent.EXTRA_UID, testUid);
+        extras.putLong(
+                MediaInMediaSetSyncRequestParams.KEY_PARENT_MEDIA_SET_PICKER_ID,
+                mediaSetPickerId);
+        extras.putString(
+                MediaInMediaSetSyncRequestParams.KEY_PARENT_MEDIA_SET_AUTHORITY,
+                LOCAL_PROVIDER);
+
+
+        try (Cursor cursor =
+                     PickerDataLayerV2.queryMediaInMediaSet(mMockContext, extras)) {
+            assertWithMessage(
+                    "Unexpected number of rows in media query result")
+                    .that(cursor.getCount()).isEqualTo(2);
+
+            // verify item with isPreGranted as true.
+            cursor.moveToFirst();
+            assertMediaCursor(cursor, LOCAL_ID_2, LOCAL_PROVIDER, 0L,
+                    MP4_VIDEO_MIME_TYPE, MediaStore.ACTION_USER_SELECT_IMAGES_FOR_APP,
+                    /* isPreGranted */ true);
+
+            // verify item with isPreGranted as false.
+            cursor.moveToNext();
+            assertMediaCursor(cursor, LOCAL_ID_1, LOCAL_PROVIDER, 0L, MP4_VIDEO_MIME_TYPE,
+                    MediaStore.ACTION_USER_SELECT_IMAGES_FOR_APP,
+                    /* isPreGranted */ false);
+        }
+    }
+
+    @Test
+    public void testQueryMediaInMediaSetWithGrantsForInvalidUid() {
+        Long mediaSetPickerId = 1L;
+
+        int testUid = -1;
+
+        doReturn(false).when(mMockSyncController).shouldQueryCloudMedia(any());
+
+        Bundle extras = new Bundle();
+        extras.putInt("current_page_size", 100);
+        extras.putInt("next_page_size", 100);
+        extras.putStringArrayList("providers",
+                new ArrayList<>(Arrays.asList(LOCAL_PROVIDER, CLOUD_PROVIDER)));
+        extras.putString("intent_action", MediaStore.ACTION_USER_SELECT_IMAGES_FOR_APP);
+        extras.putInt(Intent.EXTRA_UID, testUid);
+        extras.putLong(
+                MediaInMediaSetSyncRequestParams.KEY_PARENT_MEDIA_SET_PICKER_ID,
+                mediaSetPickerId);
+        extras.putString(
+                MediaInMediaSetSyncRequestParams.KEY_PARENT_MEDIA_SET_AUTHORITY,
+                LOCAL_PROVIDER);
+
+
+        try (Cursor cursor =
+                     PickerDataLayerV2.queryMediaInMediaSet(mMockContext, extras)) {
+            fail("Query should throw runtime exception for invalid uid.");
+        } catch (Exception exception) {
+            assertWithMessage("UnexpectedException thrown for invalid uid.")
+                    .that(exception).isInstanceOf(RuntimeException.class);
+        }
+    }
+
+    @Test
+    @EnableFlags(Flags.FLAG_REVOKE_ACCESS_OWNED_PHOTOS)
+    @EnableCompatChanges({MediaProvider.ENABLE_OWNED_PHOTOS})
+    @SdkSuppress(minSdkVersion = Build.VERSION_CODES.BAKLAVA)
+    public void testQueryMediaInMediaSetWithPreGrantsForOwnedPhotos() {
+        assumeTrue(MediaProvider.isOwnedPhotosEnabled(Process.myUid()));
+
+        doReturn(mMockPackageManager)
+                .when(mMockContext).getPackageManager();
+        String[] packageNames = new String[]{TEST_PACKAGE_NAME};
+        doReturn(packageNames).when(mMockPackageManager).getPackagesForUid(Process.myUid());
+        Map<String, Integer> idVsExpectedPreGrantedValue = populateMediaAndMediaGrantsTable();
+        int totalCount = idVsExpectedPreGrantedValue.size();
+
+        Long mediaSetPickerId = 1L;
+        int localRowsInserted = MediaInMediaSetsDatabaseUtil.cacheMediaOfMediaSet(
+                mFacade.getDatabase(), List.of(
+                        getContentValues(LOCAL_ID_1, null, mediaSetPickerId),
+                        getContentValues(LOCAL_ID_2, null, mediaSetPickerId),
+                        getContentValues(LOCAL_ID_3, null, mediaSetPickerId),
+                        getContentValues(LOCAL_ID_4, null, mediaSetPickerId)
+                ), LOCAL_PROVIDER
+        );
+
+        assertEquals(
+                "Unexpected number of rows inserted for local media",
+                localRowsInserted,
+                totalCount);
+
+        Bundle extras = new Bundle();
+        extras.putInt("current_page_size", 100);
+        extras.putInt("next_page_size", 100);
+        extras.putStringArrayList("providers",
+                new ArrayList<>(Arrays.asList(LOCAL_PROVIDER, CLOUD_PROVIDER)));
+        extras.putString("intent_action", MediaStore.ACTION_USER_SELECT_IMAGES_FOR_APP);
+        extras.putInt(Intent.EXTRA_UID, Process.myUid());
+        extras.putLong(
+                MediaInMediaSetSyncRequestParams.KEY_PARENT_MEDIA_SET_PICKER_ID,
+                mediaSetPickerId);
+        extras.putString(
+                MediaInMediaSetSyncRequestParams.KEY_PARENT_MEDIA_SET_AUTHORITY,
+                LOCAL_PROVIDER);
+
+        try (Cursor cursor = PickerDataLayerV2.queryMediaInMediaSet(
+                mMockContext, extras)) {
+
+            assertWithMessage(
+                    "Unexpected number of rows in media query result")
+                    .that(cursor.getCount()).isEqualTo(totalCount);
+
+            cursor.moveToFirst();
+            for (int i = 0; i < totalCount; i++) {
+                int id = cursor.getInt(cursor.getColumnIndexOrThrow("id"));
+                int isPreGranted = cursor.getInt(cursor.getColumnIndexOrThrow("is_pre_granted"));
+                assertEquals(idVsExpectedPreGrantedValue.get(String.valueOf(id)).intValue(),
+                        isPreGranted);
+                cursor.moveToNext();
+            }
+        }
+    }
 
     @Test
     @DisableFlags(Flags.FLAG_REVOKE_ACCESS_OWNED_PHOTOS)
@@ -2931,6 +3152,11 @@ public class PickerDataLayerV2Test {
                     .that(cr.getExtras().getInt(PickerSQLConstants.MediaResponseExtras
                             .ITEMS_BEFORE_COUNT.getKey(), Integer.MIN_VALUE))
                     .isEqualTo(0);
+
+            assertWithMessage("Unexpected value of items after count in the media cursor.")
+                    .that(cr.getExtras().getInt(PickerSQLConstants.MediaResponseExtras
+                            .ITEMS_AFTER_COUNT.getKey(), Integer.MIN_VALUE))
+                    .isEqualTo(2);
         }
     }
 
@@ -2991,6 +3217,10 @@ public class PickerDataLayerV2Test {
                     .that(cr.getExtras().getInt(PickerSQLConstants.MediaResponseExtras
                             .ITEMS_BEFORE_COUNT.getKey(), Integer.MIN_VALUE))
                     .isEqualTo(3);
+            assertWithMessage("Unexpected value of items before count in the media cursor.")
+                    .that(cr.getExtras().getInt(PickerSQLConstants.MediaResponseExtras
+                            .ITEMS_AFTER_COUNT.getKey(), Integer.MIN_VALUE))
+                    .isEqualTo(0);
         }
     }
 
@@ -3055,6 +3285,11 @@ public class PickerDataLayerV2Test {
                     .that(cr.getExtras().getInt(PickerSQLConstants.MediaResponseExtras
                             .ITEMS_BEFORE_COUNT.getKey(), Integer.MIN_VALUE))
                     .isEqualTo(2);
+
+            assertWithMessage("Unexpected value of items after count in the media cursor.")
+                    .that(cr.getExtras().getInt(PickerSQLConstants.MediaResponseExtras
+                            .ITEMS_AFTER_COUNT.getKey(), Integer.MIN_VALUE))
+                    .isEqualTo(0);
         }
     }
 
@@ -3115,6 +3350,74 @@ public class PickerDataLayerV2Test {
                     .that(cr.getExtras().getInt(PickerSQLConstants.MediaResponseExtras
                             .ITEMS_BEFORE_COUNT.getKey(), Integer.MIN_VALUE))
                     .isEqualTo(2);
+            assertWithMessage("Unexpected value of items after count in the media cursor.")
+                    .that(cr.getExtras().getInt(PickerSQLConstants.MediaResponseExtras
+                            .ITEMS_AFTER_COUNT.getKey(), Integer.MIN_VALUE))
+                    .isEqualTo(1);
+        }
+    }
+
+    @Test
+    public void testPaginationLastPageWhenLastPageItemsLessThanPageSize() {
+        Cursor cursor1 = getLocalMediaCursor(LOCAL_ID, DATE_TAKEN_MS);
+        Cursor cursor2 = getLocalMediaCursor(LOCAL_ID_1, DATE_TAKEN_MS + 1);
+        Cursor cursor3 = getLocalMediaCursor(LOCAL_ID_2, DATE_TAKEN_MS + 2);
+        Cursor cursor4 = getLocalMediaCursor(LOCAL_ID_3, DATE_TAKEN_MS + 3);
+        Cursor cursor5 = getLocalMediaCursor(LOCAL_ID_4, DATE_TAKEN_MS + 4);
+
+        assertAddMediaOperation(mFacade, LOCAL_PROVIDER, cursor1, 1);
+        assertAddMediaOperation(mFacade, LOCAL_PROVIDER, cursor2, 1);
+        assertAddMediaOperation(mFacade, LOCAL_PROVIDER, cursor3, 1);
+        assertAddMediaOperation(mFacade, LOCAL_PROVIDER, cursor4, 1);
+        assertAddMediaOperation(mFacade, LOCAL_PROVIDER, cursor5, 1);
+
+        doReturn(false).when(mMockSyncController).shouldQueryCloudMedia(any());
+        doReturn(false).when(mMockSyncController).shouldQueryCloudMedia(any(), any());
+
+        try (Cursor cr = PickerDataLayerV2.queryMedia(
+                mMockContext, getMediaQueryExtras(Long.MAX_VALUE,
+                        DATE_TAKEN_MS + 1,
+                        /* pageSize */ 3,
+                        new ArrayList<>(Arrays.asList(LOCAL_PROVIDER, CLOUD_PROVIDER))))) {
+            assertWithMessage(
+                    "Unexpected number of rows in media query result")
+                    .that(cr.getCount()).isEqualTo(2);
+
+            cr.moveToFirst();
+            assertMediaCursor(cr, LOCAL_ID_1, LOCAL_PROVIDER, DATE_TAKEN_MS + 1,
+                    MP4_VIDEO_MIME_TYPE);
+
+            cr.moveToNext();
+            assertMediaCursor(cr, LOCAL_ID, LOCAL_PROVIDER, DATE_TAKEN_MS, MP4_VIDEO_MIME_TYPE);
+
+            assertWithMessage("Unexpected value of previous date taken in the media cursor.")
+                    .that(cr.getExtras().getLong(PickerSQLConstants.MediaResponseExtras
+                            .PREV_PAGE_DATE_TAKEN.getKey(), Long.MIN_VALUE))
+                    .isEqualTo(DATE_TAKEN_MS + 4);
+
+            assertWithMessage("Unexpected value of previous picker id in the media cursor.")
+                    .that(cr.getExtras().getLong(PickerSQLConstants.MediaResponseExtras
+                            .PREV_PAGE_ID.getKey(), Long.MIN_VALUE))
+                    .isEqualTo(5);
+
+            assertWithMessage("Unexpected value of next date taken in the media cursor.")
+                    .that(cr.getExtras().getLong(PickerSQLConstants.MediaResponseExtras
+                            .NEXT_PAGE_DATE_TAKEN.getKey(), Long.MIN_VALUE))
+                    .isEqualTo(Long.MIN_VALUE);
+
+            assertWithMessage("Unexpected value of next picker id in the media cursor.")
+                    .that(cr.getExtras().getLong(PickerSQLConstants.MediaResponseExtras
+                            .NEXT_PAGE_ID.getKey(), Long.MIN_VALUE))
+                    .isEqualTo(Long.MIN_VALUE);
+
+            assertWithMessage("Unexpected value of items before count in the media cursor.")
+                    .that(cr.getExtras().getInt(PickerSQLConstants.MediaResponseExtras
+                            .ITEMS_BEFORE_COUNT.getKey(), Integer.MIN_VALUE))
+                    .isEqualTo(3);
+            assertWithMessage("Unexpected value of items before count in the media cursor.")
+                    .that(cr.getExtras().getInt(PickerSQLConstants.MediaResponseExtras
+                            .ITEMS_AFTER_COUNT.getKey(), Integer.MIN_VALUE))
+                    .isEqualTo(0);
         }
     }
 
@@ -4017,9 +4320,12 @@ public class PickerDataLayerV2Test {
         Bundle extras = new Bundle();
         extras.putLong("picker_id", pickerId);
         extras.putLong("date_taken_millis", dateTakenMillis);
-        extras.putInt("page_size", pageSize);
+        extras.putInt("current_page_size", pageSize);
+        extras.putInt("next_page_size", pageSize);
         extras.putStringArrayList("providers", new ArrayList<>(providers));
         extras.putString("intent_action", MediaStore.ACTION_PICK_IMAGES);
+        extras.putBoolean("enable_items_before_count", true);
+        extras.putBoolean("enable_items_after_count", true);
         return extras;
     }
 
@@ -4103,5 +4409,21 @@ public class PickerDataLayerV2Test {
                         .getColumnName(),
                 mediaSetPickerId);
         return contentValues;
+    }
+
+    private int setupAndGetTestUid() {
+        // testUid should be selected such that the userId computed from this uid later in the code
+        // flow matches the current userId. UserId is computed using
+        // PickerSyncController#uidToUser() where the userId = uid / PER_USER_RANGE.
+        // So testUid is =
+        // (a random number smaller than PER_USER_RANGE) + (PER_USER_RANGE * UserHandle.myUserId())
+        int testUid = 11 + (PER_USER_RANGE * UserHandle.myUserId());
+        doReturn(mMockPackageManager)
+                .when(mMockContext).getPackageManager();
+        String[] packageNames = new String[]{TEST_PACKAGE_NAME};
+        doReturn(packageNames).when(mMockPackageManager).getPackagesForUid(testUid);
+        // insert a grant for the second item inserted in media.
+        assertInsertGrantsOperation(mFacade, getMediaGrantsCursor(LOCAL_ID_2), /* writeCount */1);
+        return testUid;
     }
 }

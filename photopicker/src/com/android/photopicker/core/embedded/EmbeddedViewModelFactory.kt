@@ -29,6 +29,8 @@ import com.android.photopicker.data.model.Media
 import com.android.photopicker.features.albumgrid.AlbumGridViewModel
 import com.android.photopicker.features.categorygrid.CategoryGridViewModel
 import com.android.photopicker.features.categorygrid.data.CategoryDataService
+import com.android.photopicker.features.datescrubber.data.DateScrubberDataService
+import com.android.photopicker.features.highlightmediaresults.HighlightMediaViewModel
 import com.android.photopicker.features.photogrid.PhotoGridViewModel
 import com.android.photopicker.features.preparemedia.MediaPreparerViewModel
 import com.android.photopicker.features.preview.PreviewViewModel
@@ -72,6 +74,7 @@ class EmbeddedViewModelFactory(
     val dataService: Lazy<DataService>,
     val searchDataService: Lazy<SearchDataService>,
     val categoryDataService: Lazy<CategoryDataService>,
+    val dateScrubberDataService: Lazy<DateScrubberDataService>,
     val events: Lazy<Events>,
     val featureManager: Lazy<FeatureManager>,
     val selection: Lazy<Selection<Media>>,
@@ -99,6 +102,7 @@ class EmbeddedViewModelFactory(
                         dataService.get(),
                         events.get(),
                         bannerManager.get(),
+                        configurationManager.get(),
                     )
                         as T
                 isAssignableFrom(PreviewViewModel::class.java) ->
@@ -141,6 +145,8 @@ class EmbeddedViewModelFactory(
                         events.get(),
                     )
                         as T
+                isAssignableFrom(HighlightMediaViewModel::class.java) ->
+                    HighlightMediaViewModel(null, backgroundDispatcher, dataService.get()) as T
                 else ->
                     throw IllegalArgumentException(
                         "Unknown ViewModel class: ${modelClass.simpleName}"

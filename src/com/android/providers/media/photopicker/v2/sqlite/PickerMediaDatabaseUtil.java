@@ -21,6 +21,8 @@ import static com.android.providers.media.photopicker.PickerSyncController.getPa
 import static com.android.providers.media.photopicker.v2.PickerDataLayerV2.getDefaultEmptyAlbum;
 import static com.android.providers.media.photopicker.v2.sqlite.MediaProjection.prependTableName;
 
+import static java.lang.Math.max;
+
 import android.content.Context;
 import android.content.res.Resources;
 import android.database.Cursor;
@@ -139,6 +141,21 @@ public class PickerMediaDatabaseUtil {
                     addItemsBeforeCountKey(extraArgs, itemsBeforeCountCursor);
                 }
 
+                if (query.shouldPopulateItemsAfterCount()) {
+                    Cursor itemsAfterCountCursor = database.rawQuery(
+                            getMediaItemsAfterCountIncludingCurrentPageQuery(
+                                    appContext,
+                                    query,
+                                    database,
+                                    PickerSQLConstants.Table.MEDIA,
+                                    localAuthority,
+                                    cloudAuthority
+                            ),
+                            /* selectionArgs */ null
+                    );
+                    addItemsAfterCountKey(extraArgs, itemsAfterCountCursor, query);
+                }
+
                 if (database.inTransaction()) {
                     database.setTransactionSuccessful();
                 }
@@ -234,6 +251,21 @@ public class PickerMediaDatabaseUtil {
                             /* selectionArgs */ null
                     );
                     addItemsBeforeCountKey(extraArgs, itemsBeforeCountCursor);
+                }
+
+                if (query.shouldPopulateItemsAfterCount()) {
+                    Cursor itemsAfterCountCursor = database.rawQuery(
+                            getMediaItemsAfterCountIncludingCurrentPageQuery(
+                                    appContext,
+                                    query,
+                                    database,
+                                    PickerSQLConstants.Table.ALBUM_MEDIA,
+                                    localAuthority,
+                                    cloudAuthority
+                            ),
+                            /* selectionArgs */ null
+                    );
+                    addItemsAfterCountKey(extraArgs, itemsAfterCountCursor, query);
                 }
 
                 if (database.inTransaction()) {
@@ -401,6 +433,21 @@ public class PickerMediaDatabaseUtil {
                             /* selectionArgs */ null
                     );
                     addItemsBeforeCountKey(extraArgs, itemsBeforeCountCursor);
+                }
+
+                if (query.shouldPopulateItemsAfterCount()) {
+                    Cursor itemsAfterCountCursor = database.rawQuery(
+                            getMediaItemsAfterCountIncludingCurrentPageQuery(
+                                    appContext,
+                                    query,
+                                    database,
+                                    PickerSQLConstants.Table.MEDIA,
+                                    localAuthority,
+                                    cloudAuthority
+                            ),
+                            /* selectionArgs */ null
+                    );
+                    addItemsAfterCountKey(extraArgs, itemsAfterCountCursor, query);
                 }
 
                 if (database.inTransaction()) {
@@ -680,7 +727,7 @@ public class PickerMediaDatabaseUtil {
                         query.getCallingPackageUid(), query.getIntentAction()))
                 .setProjection(projectionUtil.getAll())
                 .setSortOrder(getSortOrder(table, /* reverseOrder */ false))
-                .setLimit(query.getPageSize());
+                .setLimit(query.getCurrentPageSize());
 
         query.addWhereClause(
                 queryBuilder,
@@ -798,7 +845,7 @@ public class PickerMediaDatabaseUtil {
             @NonNull PickerSQLConstants.Table table,
             @Nullable String localAuthority,
             @Nullable String cloudAuthority) {
-        if (query.getPageSize() == Integer.MAX_VALUE) {
+        if (query.getCurrentPageSize() == Integer.MAX_VALUE) {
             return null;
         }
 
@@ -819,7 +866,7 @@ public class PickerMediaDatabaseUtil {
                 ))
                 .setSortOrder(getSortOrder(table, /* reverseOrder */ false))
                 .setLimit(1)
-                .setOffset(query.getPageSize());
+                .setOffset(query.getCurrentPageSize());
 
         query.addWhereClause(
                 queryBuilder,
@@ -862,7 +909,7 @@ public class PickerMediaDatabaseUtil {
                         projectionUtil.get(PickerSQLConstants.MediaResponse.PICKER_ID),
                         projectionUtil.get(PickerSQLConstants.MediaResponse.DATE_TAKEN_MS)
                 )).setSortOrder(getSortOrder(table, /* reverseOrder */ true)
-                ).setLimit(query.getPageSize());
+                ).setLimit(query.getNextPageSize());
 
 
         query.addWhereClause(
@@ -906,6 +953,38 @@ public class PickerMediaDatabaseUtil {
 
         return queryBuilder.buildQuery();
     }
+
+    /**
+     * Counts the number of items starting from the first item of the given page
+     * to the end of the Media table in the Picker database.
+     *
+     * The result only contains one row with one column that will hold the count of items (No of
+     * items in given page + No of items after the given page) .
+     */
+    private static String getMediaItemsAfterCountIncludingCurrentPageQuery(
+            @Nullable Context appContext,
+            @NonNull MediaQuery query,
+            @NonNull SQLiteDatabase database,
+            @NonNull PickerSQLConstants.Table table,
+            @Nullable String localAuthority,
+            @Nullable String cloudAuthority) {
+        SelectSQLiteQueryBuilder queryBuilder = new SelectSQLiteQueryBuilder(database)
+                .setTables(
+                        query.getTableWithRequiredJoins(table.toString(), appContext,
+                                query.getCallingPackageUid(), query.getIntentAction()))
+                .setProjection(List.of("Count(*) AS " + PickerSQLConstants.COUNT_COLUMN));
+
+        query.addWhereClause(
+                queryBuilder,
+                table,
+                localAuthority,
+                cloudAuthority,
+                /* reverseOrder */ false
+        );
+
+        return queryBuilder.buildQuery();
+    }
+
 
     /**
      * Adds the previous page key to the cursor extras from the given cursor.
@@ -954,6 +1033,23 @@ public class PickerMediaDatabaseUtil {
         }
     }
 
+    /**
+     * Adds items after count key to the cursor extras from the provided cursor.
+     */
+    private static void addItemsAfterCountKey(Bundle extraArgs, Cursor itemsAfterCountCursor,
+            MediaQuery query) {
+        if (itemsAfterCountCursor.moveToFirst()) {
+            final int itemsAfterCountIndex =
+                    itemsAfterCountCursor.getColumnIndex(PickerSQLConstants.COUNT_COLUMN);
+            // itemsAfterCountCursor contains the total number of items from the start of
+            // the given page to the end of the dataset.(i.e. items on current page + items after)
+            extraArgs.putInt(
+                    PickerSQLConstants.MediaResponseExtras.ITEMS_AFTER_COUNT.getKey(),
+                    max(0, itemsAfterCountCursor.getInt(itemsAfterCountIndex)
+                            - query.getCurrentPageSize())
+            );
+        }
+    }
 
     /**
      * Adds the next page key to the cursor extras from the given cursor.
