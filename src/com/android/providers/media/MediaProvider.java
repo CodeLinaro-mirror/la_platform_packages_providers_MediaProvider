@@ -578,8 +578,8 @@ public class MediaProvider extends ContentProvider {
 
     public static final String MEDIAPROVIDER_PREFS = "mediaprovider_prefs";
 
-    private static final String MIME_TYPE_FIX_APPLIED_IN_ANDROID_15 =
-            "mime_type_fix_applied_android_15";
+    private static final String MIME_TYPE_FIX_APPLIED_IN_ANDROID_15_V2 =
+            "mime_type_fix_applied_android_15_v2";
 
     /**
      * Updates the MediaStore versioning schema and format to reduce identifying properties.
@@ -1259,6 +1259,15 @@ public class MediaProvider extends ContentProvider {
                 if (deletedRow.getVolumeName() != null
                         && deletedRow.getVolumeName().equalsIgnoreCase(VOLUME_EXTERNAL_PRIMARY)) {
                     mExternalPrimaryBackupExecutor.deleteBackupForPath(deletedRow.getPath());
+                }
+
+                // Check if the file was previously trashed and is now being permanently deleted.
+                // In this case, for items in the trash, we also need to clean up any empty
+                // parent directories.
+                if (Flags.enableTrashAndRestoreByFilePathApi()
+                        && FileUtils.isTrashedFileInTrashDirectory(deletedRow.getPath())) {
+                    FileRestoreManager.deleteAllParentIfNonTrashed(new File(deletedRow.getPath()),
+                            parentFile -> scanFileAsMediaProvider(parentFile));
                 }
             });
         }
@@ -2053,17 +2062,22 @@ public class MediaProvider extends ContentProvider {
         SharedPreferences prefs = context.getSharedPreferences(MEDIAPROVIDER_PREFS,
                 Context.MODE_PRIVATE);
 
-        if (prefs.getBoolean(MIME_TYPE_FIX_APPLIED_IN_ANDROID_15, false)) {
+        if (prefs.getBoolean(MIME_TYPE_FIX_APPLIED_IN_ANDROID_15_V2, false)) {
             Log.v(TAG, "Mime type already corrected");
             return;
         }
 
-        // Old key
-        final String isMimeTypeFixedInAndroid15 = "is_mime_type_fixed_in_android_15";
-        // Remove the old preference key to ensure the fix runs if it hasn't already been applied,
-        // as it's now replaced with a new key.
-        if (prefs.contains(isMimeTypeFixedInAndroid15)) {
-            prefs.edit().remove(isMimeTypeFixedInAndroid15).apply();
+        // Old keys
+        String[] oldKeys = new String[] {
+            "is_mime_type_fixed_in_android_15",
+            "mime_type_fix_applied_android_15",
+        };
+        for (String oldKey : oldKeys) {
+            // Remove the old preference key to ensure the fix runs if it hasn't already been
+            // applied, as it's now replaced with a new key.
+            if (prefs.contains(oldKey)) {
+                prefs.edit().remove(oldKey).apply();
+            }
         }
 
         mExternalDatabase.runWithTransaction(db -> {
@@ -2071,7 +2085,7 @@ public class MediaProvider extends ContentProvider {
             // if success then update the shared pref value
             if (isSuccess) {
                 SharedPreferences.Editor editor = prefs.edit();
-                editor.putBoolean(MIME_TYPE_FIX_APPLIED_IN_ANDROID_15, true);
+                editor.putBoolean(MIME_TYPE_FIX_APPLIED_IN_ANDROID_15_V2, true);
                 editor.apply();
             }
             return null;
