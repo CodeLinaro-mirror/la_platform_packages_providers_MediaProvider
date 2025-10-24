@@ -1901,7 +1901,6 @@ public final class MediaStore {
      * will also be trashed recursively.
      * </p>
      * <p>
-     * This API is available starting from Target SDK 37.
      * Apps using this API must declare the
      * {@link android.Manifest.permission#MANAGE_EXTERNAL_STORAGE} permission
      * in their manifest and be granted it by the user.
@@ -1943,9 +1942,11 @@ public final class MediaStore {
      * restoration process. Optionally, a new {@code targetPath} can be specified to restore
      * the item to a different location. If the specified {@code path} refers to a trashed
      * directory, all its trashed contents will also be restored.
+     * If restoring a file would create a name conflict with an existing file, the system
+     * resolves this by appending a numerical suffix. For example, if {@code image.jpeg} exists,
+     * the restored file will be named {@code image (1).jpeg}.
      * </p>
      * <p>
-     * This API is available starting from **Target SDK 37**.
      * Apps using this API must declare the
      * {@link android.Manifest.permission#MANAGE_EXTERNAL_STORAGE} permission
      * in their manifest and be granted it by the user.
@@ -3044,22 +3045,22 @@ public final class MediaStore {
             /**
              * Special format for a file.
              *
-             * Photo Picker requires special format tagging for media files.
+             * Applications require special format tagging for media files.
              * This is essential as {@link Images} collection can include
              * images of various formats like Motion Photos, GIFs etc, which
              * is not identifiable by {@link #MIME_TYPE}.
              *
-             * @hide
              */
-            // @Column(value = Cursor.FIELD_TYPE_INTEGER)
+            @FlaggedApi(Flags.FLAG_ENABLE_SPECIAL_FORMAT_COLUMN)
+            @Column(value = Cursor.FIELD_TYPE_INTEGER)
             public static final String _SPECIAL_FORMAT = "_special_format";
 
             /**
              * Constant for the {@link #_SPECIAL_FORMAT} column indicating
              * that the file doesn't have any special format associated with it.
              *
-             * @hide
              */
+            @FlaggedApi(Flags.FLAG_ENABLE_SPECIAL_FORMAT_COLUMN)
             public static final int _SPECIAL_FORMAT_NONE =
                     CloudMediaProviderContract.MediaColumns.STANDARD_MIME_TYPE_EXTENSION_NONE;
 
@@ -3067,8 +3068,8 @@ public final class MediaStore {
              * Constant for the {@link #_SPECIAL_FORMAT} column indicating
              * that the file is a GIF file.
              *
-             * @hide
              */
+            @FlaggedApi(Flags.FLAG_ENABLE_SPECIAL_FORMAT_COLUMN)
             public static final int _SPECIAL_FORMAT_GIF =
                     CloudMediaProviderContract.MediaColumns.STANDARD_MIME_TYPE_EXTENSION_GIF;
 
@@ -3076,8 +3077,8 @@ public final class MediaStore {
              * Constant for the {@link #_SPECIAL_FORMAT} column indicating
              * that the file is a Motion Photo.
              *
-             * @hide
              */
+            @FlaggedApi(Flags.FLAG_ENABLE_SPECIAL_FORMAT_COLUMN)
             public static final int _SPECIAL_FORMAT_MOTION_PHOTO =
                     CloudMediaProviderContract.MediaColumns.
                             STANDARD_MIME_TYPE_EXTENSION_MOTION_PHOTO;
@@ -3086,8 +3087,8 @@ public final class MediaStore {
              * Constant for the {@link #_SPECIAL_FORMAT} column indicating
              * that the file is an Animated Webp.
              *
-             * @hide
              */
+            @FlaggedApi(Flags.FLAG_ENABLE_SPECIAL_FORMAT_COLUMN)
             public static final int _SPECIAL_FORMAT_ANIMATED_WEBP =
                     CloudMediaProviderContract.MediaColumns.
                             STANDARD_MIME_TYPE_EXTENSION_ANIMATED_WEBP;
