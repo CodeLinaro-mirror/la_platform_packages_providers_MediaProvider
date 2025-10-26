@@ -108,6 +108,7 @@ import com.android.photopicker.core.components.EmptyState
 import com.android.photopicker.core.components.MediaGridItem
 import com.android.photopicker.core.components.getCellsPerRow
 import com.android.photopicker.core.components.mediaGrid
+import com.android.photopicker.core.components.rememberMediaGridState
 import com.android.photopicker.core.configuration.LocalPhotopickerConfiguration
 import com.android.photopicker.core.configuration.PhotopickerRuntimeEnv
 import com.android.photopicker.core.embedded.LocalEmbeddedState
@@ -1198,49 +1199,27 @@ private fun ResultMediaGrid(
                 modifier =
                     Modifier.fillMaxSize().semantics { contentDescription = searchGridDescription }
             ) {
-                when (
-                    // Drag-to-select is enabled only when the flag and multi-selection is
-                    // enabled.
-                    configuration.flags.MEDIA_GRID_TOUCH_FEATURES_ENABLED &&
-                        configuration.selectionLimit > 1
-                ) {
-                    // LongPress + drag will start a drag-to-select action
-                    true -> {
-                        mediaGrid(
-                            items = items,
-                            isExpandedScreen = isExpandedScreen,
-                            selection = selection,
-                            dragSelectionEnabled = true,
-                            pinchToZoomEnabled = true,
-                            onZoomAtMaxZoom = onPreviewItem,
-                            onItemClick = onItemClick,
-                            initialColumns = cellsPerRow,
-                            selectionTransform = {
-                                Media.withSelectable(
-                                    item = it,
-                                    selectionSource = Telemetry.MediaLocation.SEARCH_GRID,
-                                    album = null,
-                                )
-                            },
+                val state = rememberMediaGridState()
+                mediaGrid(
+                    state = state,
+                    items = items,
+                    isExpandedScreen = isExpandedScreen,
+                    selection = selection,
+                    dragSelectionEnabled = configuration.selectionLimit > 1,
+                    pinchToZoomEnabled = true,
+                    onZoomAtMaxZoom = onPreviewItem,
+                    onItemClick = onItemClick,
+                    initialColumns = cellsPerRow,
+                    selectionTransform = {
+                        Media.withSelectable(
+                            item = it,
+                            selectionSource = Telemetry.MediaLocation.SEARCH_GRID,
+                            album = null,
                         )
-                    }
-
-                    // Regular mediaGrid where users can LongPress to preview items.
-                    false -> {
-                        mediaGrid(
-                            items = items,
-                            isExpandedScreen = isExpandedScreen,
-                            selection = selection,
-                            onItemClick = onItemClick,
-                            onItemLongPress = onPreviewItem,
-                            pinchToZoomEnabled =
-                                configuration.flags.MEDIA_GRID_TOUCH_FEATURES_ENABLED,
-                            onZoomAtMaxZoom = onPreviewItem,
-                            initialColumns = cellsPerRow,
-                        )
-                    }
-                }
+                    },
+                )
             }
+
             LaunchedEffect(Unit) {
                 // Dispatch UI event to log loading of search result contents
                 events.dispatch(
