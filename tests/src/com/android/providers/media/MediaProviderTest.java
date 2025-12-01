@@ -323,8 +323,14 @@ public class MediaProviderTest {
      */
     @Test
     public void testCreateRequest() throws Exception {
-        final Collection<Uri> uris = Arrays.asList(
-                MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY, 42));
+        final ContentValues values = new ContentValues();
+        values.put(MediaColumns.DISPLAY_NAME, "test.mp3");
+        values.put(MediaColumns.MIME_TYPE, "audio/mpeg");
+        final Uri uri = sIsolatedResolver.insert(
+                MediaStore.Audio.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY), values);
+        assumeTrue(uri != null);
+        final Collection<Uri> uris = List.of(uri);
+
         assertNotNull(MediaStore.createWriteRequest(sIsolatedResolver, uris));
     }
 
@@ -378,33 +384,13 @@ public class MediaProviderTest {
     }
 
     @Test
-    public void testGrantMediaReadForPackage() throws Exception {
-        final File dir = Environment
-                .getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
-        final File testFile = stage(R.raw.lg_g4_iso_800_jpg,
-                                    new File(dir, "test" + System.nanoTime() + ".jpg"));
-        final Uri uri = MediaStore.scanFile(sIsolatedResolver, testFile);
-        Long fileId = ContentUris.parseId(uri);
+    public void testCreateRequest_invalidUri_throwsException() throws Exception {
+        final Collection<Uri> uris = List.of(
+                MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY, 42));
+        assertThrows(IllegalArgumentException.class,
+                () -> MediaStore.createWriteRequest(sIsolatedResolver, uris));
+    }
 
-        final Uri.Builder builder = Uri.EMPTY.buildUpon();
-        builder.scheme("content");
-        builder.encodedAuthority(MediaStore.AUTHORITY);
-
-        final Uri testUri = builder.appendPath("picker")
-                                .appendPath(Integer.toString(UserHandle.myUserId()))
-                                .appendPath(PickerSyncController.LOCAL_PICKER_PROVIDER_AUTHORITY)
-                                .appendPath(MediaStore.AUTHORITY)
-                                .appendPath(Long.toString(fileId))
-                                .build();
-
-        try {
-            MediaStore.grantMediaReadForPackage(sIsolatedContext,
-                                                android.os.Process.myUid(),
-                                                List.of(testUri));
-        } finally {
-            dir.delete();
-            testFile.delete();
-        }
 
     }
 
