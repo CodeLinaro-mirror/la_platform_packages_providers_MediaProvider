@@ -402,7 +402,11 @@ class SearchFeatureTest : PhotopickerFeatureBaseTest() {
                 .assert(hasClickAction())
                 .performClick()
             composeTestRule.waitForIdle()
-            advanceTimeBy(1000)
+            advanceTimeBy(300)
+            composeTestRule.waitForIdle()
+            advanceTimeBy(300)
+            composeTestRule.waitForIdle()
+            advanceTimeBy(300)
 
             // Search bar with Search text placeholder is displayed
             composeTestRule
@@ -449,7 +453,11 @@ class SearchFeatureTest : PhotopickerFeatureBaseTest() {
                 )
                 .performClick()
             composeTestRule.waitForIdle()
-            advanceTimeBy(1000)
+            advanceTimeBy(300)
+            composeTestRule.waitForIdle()
+            advanceTimeBy(300)
+            composeTestRule.waitForIdle()
+            advanceTimeBy(300)
 
             // Make sure test query is cleared and Search text placeholder is displayed
             composeTestRule.onNodeWithText(testQuery).assertIsNotDisplayed()
@@ -592,10 +600,7 @@ class SearchFeatureTest : PhotopickerFeatureBaseTest() {
         }
 
     @Test
-    @RequiresFlagsEnabled(
-        Flags.FLAG_ENABLE_PHOTOPICKER_SEARCH,
-        Flags.FLAG_ENABLE_MEDIA_GRID_TOUCH_FEATURES,
-    )
+    @RequiresFlagsEnabled(Flags.FLAG_ENABLE_PHOTOPICKER_SEARCH)
     fun testSearchGridDragSelect() =
         testScope.runTest {
 

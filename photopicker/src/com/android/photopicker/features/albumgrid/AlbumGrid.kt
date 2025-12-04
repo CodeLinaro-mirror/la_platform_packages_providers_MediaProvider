@@ -20,7 +20,6 @@ import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.material3.Text
 import androidx.compose.material3.windowsizeclass.WindowWidthSizeClass
 import androidx.compose.runtime.Composable
@@ -30,7 +29,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.paging.compose.collectAsLazyPagingItems
@@ -73,12 +74,12 @@ private val MEASUREMENT_HORIZONTAL_CELL_SPACING_ALBUM_GRID = 16.dp
 fun AlbumGrid(viewModel: AlbumGridViewModel = obtainViewModel()) {
     val itemsFlow = remember { viewModel.getAlbums() }
     val items = itemsFlow.collectAsLazyPagingItems()
-    val state = rememberLazyGridState()
     val navController = LocalNavController.current
     val featureManager = LocalFeatureManager.current
     val configuration = LocalPhotopickerConfiguration.current
     val events = LocalEvents.current
     val scope = rememberCoroutineScope()
+    val layoutDirection = LocalLayoutDirection.current
 
     // Use the expanded layout any time the Width is Medium or larger.
     val isExpandedScreen: Boolean =
@@ -94,11 +95,10 @@ fun AlbumGrid(viewModel: AlbumGridViewModel = obtainViewModel()) {
             Modifier.fillMaxSize().pointerInput(Unit) {
                 detectHorizontalDragGestures(
                     onHorizontalDrag = { _, dragAmount ->
-                        // This may need some additional fine tuning by looking at a certain
-                        // distance in dragAmount, but initial testing suggested this worked
-                        // pretty well as is.
-                        if (dragAmount > 0) {
-                            // Positive is a right swipe
+                        val adjustedDragAmount =
+                            if (layoutDirection == LayoutDirection.Rtl) -dragAmount else dragAmount
+                        if (adjustedDragAmount > 0) {
+                            // Positive adjusted drag amount indicates navigate to photo grid
                             if (featureManager.isFeatureEnabled(PhotoGridFeature::class.java)) {
                                 navController.navigateToPhotoGrid()
                                 // Dispatch UI event to indicate switching to photos tab
@@ -149,7 +149,6 @@ fun AlbumGrid(viewModel: AlbumGridViewModel = obtainViewModel()) {
                     navController.navigateToAlbumMediaGrid(album = item.album)
                 }
             },
-            onItemLongPress = {},
             isExpandedScreen = isExpandedScreen,
             initialColumns =
                 when (isExpandedScreen) {
@@ -159,7 +158,6 @@ fun AlbumGrid(viewModel: AlbumGridViewModel = obtainViewModel()) {
             selection = emptySet(),
             gridCellPadding = MEASUREMENT_HORIZONTAL_CELL_SPACING_ALBUM_GRID,
             contentPadding = PaddingValues(MEASUREMENT_HORIZONTAL_CELL_SPACING_ALBUM_GRID),
-            state = state,
         )
         LaunchedEffect(Unit) {
             // Dispatch UI event to denote loading of media albums

@@ -75,6 +75,7 @@ import static com.android.providers.media.AccessChecker.getWhereForUserSelectedA
 import static com.android.providers.media.AccessChecker.hasAccessToCollection;
 import static com.android.providers.media.AccessChecker.hasUserSelectedAccess;
 import static com.android.providers.media.AccessChecker.isRedactionNeededForPickerUri;
+import static com.android.providers.media.DatabaseBackupAndRecovery.DEFAULT_LEVEL_DB_VERSION;
 import static com.android.providers.media.DatabaseHelper.EXTERNAL_DATABASE_NAME;
 import static com.android.providers.media.DatabaseHelper.INTERNAL_DATABASE_NAME;
 import static com.android.providers.media.LocalCallingIdentity.APPOP_REQUEST_INSTALL_PACKAGES_FOR_SHARED_UID;
@@ -141,6 +142,7 @@ import static com.android.providers.media.PickerUriResolver.PICKER_GET_CONTENT_S
 import static com.android.providers.media.PickerUriResolver.PICKER_SEGMENT;
 import static com.android.providers.media.PickerUriResolver.PICKER_TRANSCODED_SEGMENT;
 import static com.android.providers.media.PickerUriResolver.getMediaUri;
+import static com.android.providers.media.flags.Flags.enableSpecialFormatColumn;
 import static com.android.providers.media.flags.Flags.indexMediaLatitudeLongitude;
 import static com.android.providers.media.flags.Flags.versionLockdown;
 import static com.android.providers.media.photopicker.data.ItemsProvider.EXTRA_MIME_TYPE_SELECTION;
@@ -498,6 +500,14 @@ public class MediaProvider extends ContentProvider {
     static final String REMOVE_VOL_BEFORE_ENQUEUEING = "remove_vol_before_enqueueing";
 
     /**
+     * Constants to test changes related database backup and recovery.
+     * Only to be used to testing.
+     */
+    static final String BACKED_UP_DATA_IN_LEVEL_DB = "backed_up_data_in_level_db";
+    static final String BACKED_UP_FILE_PATH = "backed_up_file_path";
+    static final String BACKED_UP_LEVELDB_VERSION = "backed_up_leveldb_version";
+
+    /**
      * Enable option to defer the scan triggered as part of MediaProvider#update()
      */
     @ChangeId
@@ -568,8 +578,8 @@ public class MediaProvider extends ContentProvider {
 
     public static final String MEDIAPROVIDER_PREFS = "mediaprovider_prefs";
 
-    private static final String MIME_TYPE_FIX_APPLIED_IN_ANDROID_15 =
-            "mime_type_fix_applied_android_15";
+    private static final String MIME_TYPE_FIX_APPLIED_IN_ANDROID_15_V2 =
+            "mime_type_fix_applied_android_15_v2";
 
     /**
      * Updates the MediaStore versioning schema and format to reduce identifying properties.
@@ -1250,6 +1260,15 @@ public class MediaProvider extends ContentProvider {
                         && deletedRow.getVolumeName().equalsIgnoreCase(VOLUME_EXTERNAL_PRIMARY)) {
                     mExternalPrimaryBackupExecutor.deleteBackupForPath(deletedRow.getPath());
                 }
+
+                // Check if the file was previously trashed and is now being permanently deleted.
+                // In this case, for items in the trash, we also need to clean up any empty
+                // parent directories.
+                if (Flags.enableTrashAndRestoreByFilePathApi()
+                        && FileUtils.isTrashedFileInTrashDirectory(deletedRow.getPath())) {
+                    FileRestoreManager.deleteAllParentIfNonTrashed(new File(deletedRow.getPath()),
+                            parentFile -> scanFileAsMediaProvider(parentFile));
+                }
             });
         }
     };
@@ -1273,7 +1292,7 @@ public class MediaProvider extends ContentProvider {
         return null;
     };
 
-    /** {@hide} */
+    /** @hide */
     public static final OnLegacyMigrationListener MIGRATION_LISTENER =
             new OnLegacyMigrationListener() {
         @Override
@@ -2043,17 +2062,22 @@ public class MediaProvider extends ContentProvider {
         SharedPreferences prefs = context.getSharedPreferences(MEDIAPROVIDER_PREFS,
                 Context.MODE_PRIVATE);
 
-        if (prefs.getBoolean(MIME_TYPE_FIX_APPLIED_IN_ANDROID_15, false)) {
+        if (prefs.getBoolean(MIME_TYPE_FIX_APPLIED_IN_ANDROID_15_V2, false)) {
             Log.v(TAG, "Mime type already corrected");
             return;
         }
 
-        // Old key
-        final String isMimeTypeFixedInAndroid15 = "is_mime_type_fixed_in_android_15";
-        // Remove the old preference key to ensure the fix runs if it hasn't already been applied,
-        // as it's now replaced with a new key.
-        if (prefs.contains(isMimeTypeFixedInAndroid15)) {
-            prefs.edit().remove(isMimeTypeFixedInAndroid15).apply();
+        // Old keys
+        String[] oldKeys = new String[] {
+            "is_mime_type_fixed_in_android_15",
+            "mime_type_fix_applied_android_15",
+        };
+        for (String oldKey : oldKeys) {
+            // Remove the old preference key to ensure the fix runs if it hasn't already been
+            // applied, as it's now replaced with a new key.
+            if (prefs.contains(oldKey)) {
+                prefs.edit().remove(oldKey).apply();
+            }
         }
 
         mExternalDatabase.runWithTransaction(db -> {
@@ -2061,7 +2085,7 @@ public class MediaProvider extends ContentProvider {
             // if success then update the shared pref value
             if (isSuccess) {
                 SharedPreferences.Editor editor = prefs.edit();
-                editor.putBoolean(MIME_TYPE_FIX_APPLIED_IN_ANDROID_15, true);
+                editor.putBoolean(MIME_TYPE_FIX_APPLIED_IN_ANDROID_15_V2, true);
                 editor.apply();
             }
             return null;
@@ -4250,6 +4274,13 @@ public class MediaProvider extends ContentProvider {
                     qb, projection,  List.of(LATITUDE, LONGITUDE));
         }
 
+        if (!enableSpecialFormatColumn() && hasColumnsToFilterInProjection(
+                qb, projection, List.of(_SPECIAL_FORMAT)) && !isCallingPackageSelf()) {
+            // Filter _SPECIAL_FORMAT column to return as NULL
+            projection = updateProjectionToFilterColumns(
+                    qb, projection,  List.of(_SPECIAL_FORMAT));
+        }
+
         if (shouldFilterOwnerPackageNameFlag()
                 && shouldFilterOwnerPackageNameInProjection(qb, projection)) {
             Log.i(TAG, String.format("Filtering owner package name for %s, projection: %s",
@@ -4323,13 +4354,21 @@ public class MediaProvider extends ContentProvider {
         List<String> projectionList = Arrays.asList(projection);
         projectionList.replaceAll(String::toLowerCase);
 
+        if (qb.getProjectionAllowlist() == null) {
+            qb.setProjectionAllowlist(new ArrayList<>());
+        }
+
         for (String columnToFilter: columnsToFilter) {
             if (projectionList.contains(columnToFilter)) {
                 int indexOfColumnToBeFiltered = projectionList.indexOf(columnToFilter);
+                String newProjection = constructNullProjectionForColumn(columnToFilter);
                 projectionList.set(
                         indexOfColumnToBeFiltered,
-                        constructNullProjectionForColumn(columnToFilter)
+                        newProjection
                 );
+                // Allow constructed null column in projection
+                final String escapedColumnCase = Pattern.quote(newProjection);
+                qb.getProjectionAllowlist().add(Pattern.compile(escapedColumnCase));
             }
         }
         String[] updatedProjection = new String[projectionList.size()];
@@ -7444,6 +7483,15 @@ public class MediaProvider extends ContentProvider {
             case MediaStore.MEDIA_SERVICE_V2_CALL: {
                 return getResultForMediaServiceV2Call(extras);
             }
+            case MediaStore.RECOVER_DATA_CALL: {
+                return getResultForRecoverData(extras);
+            }
+            case MediaStore.RESET_LEVEL_DB_AT_DEFAULT_VERSION_CALL: {
+                return getResultForSetLevelDbAtDefaultVersionCall(extras);
+            }
+            case MediaStore.ENSURE_LEVEL_DB_AT_LATEST_VERSION_CALL: {
+                return getResultForEnsureLevelDbAtLatestVersionCall(extras);
+            }
             case MediaStore.BULK_UPDATE_OEM_METADATA_CALL: {
                 callForBulkUpdateOemMetadataColumn();
                 return new Bundle();
@@ -8574,6 +8622,65 @@ public class MediaProvider extends ContentProvider {
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
+    }
+
+    private Bundle getResultForRecoverData(Bundle extras) {
+        getContext().enforceCallingPermission(Manifest.permission.WRITE_MEDIA_STORAGE,
+                "Permission missing to call RECOVER_DATA_CALL by uid:"
+                        + Binder.getCallingUid());
+
+        String volumeName = extras.getString(VOLUME_NAME);
+        mExternalDatabase.runWithoutTransaction((db)-> {
+            try {
+                mDatabaseBackupAndRecovery.recoverData(db, volumeName, /* isExternal */ true);
+            } catch (Exception e) {
+                Log.e(TAG, "Recover data call failed", e);
+                throw new RuntimeException(e);
+            }
+            return null;
+        });
+        return null;
+    }
+
+    private Bundle getResultForSetLevelDbAtDefaultVersionCall(Bundle extras) {
+        getContext().enforceCallingPermission(Manifest.permission.WRITE_MEDIA_STORAGE,
+                "Permission missing to call RESET_LEVEL_DB_AT_DEFAULT_VERSION_CALL by uid:"
+                        + Binder.getCallingUid());
+
+        String volumeName = extras.getString(VOLUME_NAME);
+        String filePath = extras.getString(BACKED_UP_FILE_PATH);
+
+        BackupIdRow backedUpRow =
+                mDatabaseBackupAndRecovery.readDataFromBackup(volumeName, filePath).get();
+        backedUpRow.setGenerationModified(0);
+        try {
+            mDatabaseBackupAndRecovery.backupRowInLevelDb(volumeName, filePath, backedUpRow);
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to backup row in level db", e);
+        }
+        mDatabaseBackupAndRecovery.saveVersionInLevelDb(volumeName, DEFAULT_LEVEL_DB_VERSION);
+
+        return null;
+    }
+
+    private Bundle getResultForEnsureLevelDbAtLatestVersionCall(Bundle extras) {
+        getContext().enforceCallingPermission(Manifest.permission.WRITE_MEDIA_STORAGE,
+                "Permission missing to call ENSURE_LEVEL_DB_AT_VERSION_CALL by uid:"
+                        + Binder.getCallingUid());
+
+        String volumeName = extras.getString(VOLUME_NAME);
+        String filePath = extras.getString(BACKED_UP_FILE_PATH);
+
+        mDatabaseBackupAndRecovery.ensureLevelDbAtLatestVersion(volumeName, mExternalDatabase,
+                /* signal */null);
+
+        Bundle result = new Bundle();
+        long levelDbVersion = mDatabaseBackupAndRecovery.getVersionFromLevelDb(volumeName);
+        result.putLong(BACKED_UP_LEVELDB_VERSION, levelDbVersion);
+        BackupIdRow backedUpRow =
+                mDatabaseBackupAndRecovery.readDataFromBackup(volumeName, filePath).get();
+        result.putSerializable(BACKED_UP_DATA_IN_LEVEL_DB, backedUpRow);
+        return result;
     }
 
     private String getSecurityExceptionMessage(String method) {
