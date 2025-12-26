@@ -15,6 +15,9 @@
 -->
 
 <resources>
+    <!-- Config to disable AppOp optimisations -->
+    <bool name="config_disable_appop_optimisations">false</bool>
+
     <string-array name="config_supported_transcoding_relative_paths" translatable="false">
       <item>DCIM/Camera/</item>
     </string-array>
@@ -27,10 +30,14 @@
     <string name="config_default_cloud_provider_authority" translatable="false"></string>
     <!--Config for MediaCognitionService package -->
     <string name="config_default_media_cognition_service_package" translatable="false"></string>
+    <!--Config for MediaProcessingService package -->
+    <string name="config_default_media_processing_service_package" translatable="false"></string>
     <!-- Config for OemMetadataService package -->
     <string name="config_default_oem_metadata_service_package" translatable="false"></string>
     <!-- Config for SearchMediaService package -->
-    <string name="config_default_search_media_service_package" translatable="false"></string>
+    <string name="config_default_search_media_service_package" translatable="false">
+        com.android.providers.media.module
+    </string>
 
     <!-- The subset of folders that should not be created during the default creation of folders on
     the root directory of mounted storage devices by the MediaProvider. This is empty by default.
