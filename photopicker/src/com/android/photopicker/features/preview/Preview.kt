@@ -57,7 +57,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.focusRequester
@@ -233,10 +232,12 @@ fun PreviewSelection(
                             snackbarHostState,
                             /* singleItemPreview */ previewSingleItem,
                             dateFormat,
+                            currentSelection,
                         )
 
-                        // Only show the selection button if not in single select.
-                        if (config.selectionLimit > 1) {
+                        // Only show the selection button if not previewing single item by zooming
+                        // in.
+                        if (!previewSingleItem) {
                             IconButton(
                                 modifier = Modifier.align(Alignment.TopStart).padding(start = 8.dp),
                                 onClick = {
@@ -326,9 +327,12 @@ fun PreviewSelection(
                     val scope = rememberCoroutineScope()
                     val events = LocalEvents.current
 
+                    val isSingleSelectSinglePreviewMode =
+                        config.selectionLimit == 1 && previewSingleItem
+
                     FilledTonalButton(
                         onClick = {
-                            if (config.selectionLimit == 1) {
+                            if (isSingleSelectSinglePreviewMode) {
                                 val media = selection.getOrNull(index = state.currentPage)
                                 media?.let { viewModel.toggleInSelection(it, {}) }
                                 scope.launch {
@@ -355,12 +359,10 @@ fun PreviewSelection(
                     ) {
                         Text(
                             text =
-                                when (config.selectionLimit) {
-                                    1 ->
-                                        stringResource(
-                                            R.string.photopicker_select_current_button_label
-                                        )
-                                    else -> stringResource(R.string.photopicker_done_button_label)
+                                if (isSingleSelectSinglePreviewMode) {
+                                    stringResource(R.string.photopicker_select_current_button_label)
+                                } else {
+                                    stringResource(R.string.photopicker_done_button_label)
                                 }
                         )
                     }
@@ -434,6 +436,7 @@ private fun PreviewPager(
     snackbarHostState: SnackbarHostState,
     singleItemPreview: Boolean,
     dateFormat: DateFormat,
+    currentSelection: Set<Media>,
 ) {
     // Preview session state to keep track if the video player's audio is muted.
     val audioIsMuted = rememberSaveable { mutableStateOf(true) }
@@ -442,19 +445,27 @@ private fun PreviewPager(
         state = state,
         modifier = modifier.semantics(mergeDescendants = true) { traversalIndex = -1f },
     ) { page ->
-        HierarchicalFocusCoordinator(requiresFocus = { state.currentPage == page }) {
+        HierarchicalFocusCoordinator(
+            requiresFocus = {
+                state.currentPage == page &&
+                    /*The system should not grab focus while the preview page is still moving to
+                    avoid the conflicts and flickering issues in RTL layout.*/
+                    !state.isScrollInProgress
+            }
+        ) {
             val focusRequester = rememberActiveFocusRequester()
             val media = selection.get(page)
             if (media != null) {
                 Box(modifier = Modifier.focusRequester(focusRequester).focusable(true)) {
+                    val isSelected = currentSelection.contains(media)
                     val pageDescription =
                         stringResource(
                             R.string.pohtopicker_horizontal_pager_description,
                             state.currentPage + 1,
                             state.pageCount,
                         )
-                    val mediaDescription = getMediaContentDescription(media, dateFormat)
-                    val contentDescription = mediaDescription + pageDescription
+                    val mediaDescription = getMediaContentDescription(media, dateFormat, isSelected)
+                    val contentDescription = "$mediaDescription $pageDescription"
                     when (media) {
                         is Media.Image -> ImageUi(media, singleItemPreview, contentDescription)
                         is Media.Video ->
@@ -505,16 +516,23 @@ private fun ImageUi(image: Media.Image, singleItemPreview: Boolean, contentDescr
             )
         }
     }
-    loadMedia(
-        media = image,
-        resolution = Resolution.FULL,
+    Surface(
         modifier = Modifier.fillMaxSize(),
-        contentDescription = contentDescription,
-        // by default loadMedia center crops, so use a custom request builder
-        requestBuilderTransformation = { media, resolution, builder ->
-            builder.set(RESOLUTION_REQUESTED, resolution).signature(media.getSignature(resolution))
-        },
-    )
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+    ) {
+        loadMedia(
+            media = image,
+            resolution = Resolution.FULL,
+            modifier = Modifier.fillMaxSize(),
+            contentDescription = contentDescription,
+            // by default loadMedia center crops, so use a custom request builder
+            requestBuilderTransformation = { media, resolution, builder ->
+                builder
+                    .set(RESOLUTION_REQUESTED, resolution)
+                    .signature(media.getSignature(resolution))
+            },
+        )
+    }
 }
 
 /**
