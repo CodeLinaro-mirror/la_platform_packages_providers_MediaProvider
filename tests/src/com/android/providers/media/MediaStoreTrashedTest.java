@@ -17,12 +17,16 @@
 package com.android.providers.media;
 
 import static com.android.providers.media.scan.MediaScannerTest.stage;
+import static com.android.providers.media.scan.ModernMediaScannerTest.executeShellCommand;
 import static com.android.providers.media.util.FileUtils.DIRECTORY_TRASH_STORAGE;
+
+import static com.google.common.truth.Truth.assertWithMessage;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 import android.Manifest;
 import android.content.ContentResolver;
@@ -53,6 +57,8 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import java.io.File;
+import java.io.IOException;
+import java.util.Locale;
 
 @RunWith(AndroidJUnit4.class)
 public class MediaStoreTrashedTest {
@@ -630,6 +636,71 @@ public class MediaStoreTrashedTest {
         assertInPlaceRestoreState(uri, file);
     }
 
+    @Test
+    @RequiresFlagsEnabled(Flags.FLAG_ENABLE_TRASH_AND_RESTORE_BY_FILE_PATH_API)
+    public void testTrashTopLevelDefaultDirectory_fails() throws Exception {
+        final File dcim = createTopLevelDir(Environment.DIRECTORY_DCIM);
+
+        try {
+            sIsolatedContext.setByPassTargetSdkCheckForTrash(true);
+            MediaStore.trashFile(sIsolatedResolver, dcim.getPath());
+            fail("Trashing a default directory should have failed");
+        } catch (Exception e) {
+            // expected
+        } finally {
+            sIsolatedContext.setByPassTargetSdkCheckForTrash(false);
+        }
+    }
+
+    @Test
+    @RequiresFlagsEnabled(Flags.FLAG_ENABLE_TRASH_AND_RESTORE_BY_FILE_PATH_API)
+    public void testTrashTopLevelDefaultDirectory_caseInsensitive_fails() throws Exception {
+        final File downloads = createTopLevelDir(Environment.DIRECTORY_DOWNLOADS.toLowerCase(
+                Locale.ROOT));
+
+        try {
+            sIsolatedContext.setByPassTargetSdkCheckForTrash(true);
+            MediaStore.trashFile(sIsolatedResolver, downloads.getPath());
+            fail("Trashing a default directory should have failed");
+        } catch (Exception e) {
+            // expected
+        } finally {
+            sIsolatedContext.setByPassTargetSdkCheckForTrash(false);
+            downloads.delete();
+        }
+    }
+
+    @Test
+    @RequiresFlagsEnabled(Flags.FLAG_ENABLE_TRASH_AND_RESTORE_BY_FILE_PATH_API)
+    public void testTrashTopLevelDirectory_success() throws Exception {
+        final File topLevelFolder = createTopLevelDir(mTestDir.getName());
+
+        try {
+            String trashedPath;
+            try {
+                sIsolatedContext.setByPassTargetSdkCheckForTrash(true);
+                trashedPath = MediaStore.trashFile(sIsolatedResolver, topLevelFolder.getPath());
+            } finally {
+                sIsolatedContext.setByPassTargetSdkCheckForTrash(false);
+            }
+
+            assertTrue(FileUtils.isTrashedFileInTrashDirectory(trashedPath));
+
+            String restoredPath;
+            try {
+                sIsolatedContext.setByPassTargetSdkCheckForTrash(true);
+                restoredPath = MediaStore.restoreFileFromTrash(sIsolatedResolver,
+                        trashedPath, /* targetPath */ null);
+            } finally {
+                sIsolatedContext.setByPassTargetSdkCheckForTrash(false);
+            }
+
+            assertEquals(topLevelFolder.getPath(), restoredPath);
+        } finally {
+            deleteTopLevelDir(topLevelFolder);
+        }
+    }
+
     /**
      * Queries for a media item by its file path, including trashed items.
      *
@@ -754,6 +825,32 @@ public class MediaStoreTrashedTest {
             assertEquals(file.getAbsolutePath(),
                     c.getString(c.getColumnIndexOrThrow(MediaColumns.DATA)));
         }
+    }
+
+    private File createTopLevelDir(String topLevelDirName) throws IOException {
+        // Top Level directory is not allowed by MediaProvider, so the directory is created via
+        // shell command.
+
+        File topLevelDir = new File(Environment.getExternalStorageDirectory(), topLevelDirName);
+
+        final String createTopLevelDirCommand =
+                "mkdir -p " + topLevelDir.getAbsolutePath();
+
+        executeShellCommand(createTopLevelDirCommand);
+
+        // Force the mock MediaProvider to scan.
+        final Uri uri = MediaStore.scanFile(sIsolatedResolver, topLevelDir);
+        assertWithMessage("Uri obtained by scanning file " + topLevelDir)
+                .that(uri)
+                .isNotNull();
+
+        return topLevelDir;
+    }
+
+    private void deleteTopLevelDir(File topLevelDir) throws IOException {
+        final String removeTopLevelDirCommand =
+                "rm -rf " + topLevelDir.getPath();
+        executeShellCommand(removeTopLevelDirCommand);
     }
 
     static class FileTestData {

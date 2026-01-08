@@ -22,6 +22,7 @@ import android.content.ContextWrapper
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.hardware.display.DisplayManager
+import android.net.ConnectivityManager
 import android.net.Uri
 import android.os.Binder
 import android.os.Build
@@ -83,6 +84,7 @@ import com.android.photopicker.tests.HiltTestActivity
 import com.android.photopicker.util.test.MockContentProviderWrapper
 import com.android.photopicker.util.test.StubProvider
 import com.android.photopicker.util.test.capture
+import com.android.photopicker.util.test.mockSystemService
 import com.android.photopicker.util.test.whenever
 import com.android.providers.media.flags.Flags
 import com.google.common.truth.Truth.assertThat
@@ -103,6 +105,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.fail
@@ -171,6 +174,7 @@ class SessionTest : EmbeddedPhotopickerFeatureBaseTest() {
     // Needed for UserMonitor
     @Mock lateinit var mockUserManager: UserManager
     @Mock lateinit var mockPackageManager: PackageManager
+    @Mock lateinit var mockConnectivityManager: ConnectivityManager
     @Inject lateinit var mockContext: Context
     @Inject lateinit var embeddedServiceComponentBuilder: EmbeddedServiceComponentBuilder
     @Inject lateinit var selection: Lazy<Selection<Media>>
@@ -246,6 +250,7 @@ class SessionTest : EmbeddedPhotopickerFeatureBaseTest() {
             getTestableContext().getResources().openRawResourceFd(R.drawable.android)
         }
         setupTestForUserMonitor(mockContext, mockUserManager, contentResolver, mockPackageManager)
+        mockSystemService(mockContext, ConnectivityManager::class.java) { mockConnectivityManager }
     }
 
     @After()
@@ -693,16 +698,37 @@ class SessionTest : EmbeddedPhotopickerFeatureBaseTest() {
             val component = embeddedServiceComponentBuilder.build()
 
             val session = getSessionUnderTest(component)
-            advanceTimeBy(100)
+            advanceUntilIdle()
+
+            // Now the view is in the test's compose tree, so do a simple check to make sure
+            // the view actually initialized and the test can locate the photo grid / modify the
+            // selection.
+            composeTestRule.setContent {
+                // Wrap the surfacePackage inside of an [AndroidView] to make the view accessible to
+                // the test.
+                AndroidView(
+                    factory = {
+                        SurfaceView(getTestableContext()).apply {
+                            setChildSurfacePackage(session.surfacePackage)
+                        }
+                    }
+                )
+            }
+            composeTestRule.waitForIdle()
+
+            composeTestRule.waitUntil { session.getView().width > 0 }
 
             val initialWidth = session.getView().width
             val initialHeight = session.getView().height
 
-            val newWidth = 2 * initialWidth
-            val newHeight = 2 * initialHeight
+            val newWidth = initialWidth / 2
+            val newHeight = initialHeight / 2
 
             session.notifyResized(newWidth, newHeight)
-            advanceTimeBy(100)
+            advanceUntilIdle()
+
+            // Wait for the view to resize
+            composeTestRule.waitUntil { session.getView().width == newWidth }
 
             assertWithMessage("Expected view's width to be resized")
                 .that(session.getView().width)
