@@ -33,6 +33,7 @@ import static android.provider.CloudMediaProviderContract.MANAGE_CLOUD_MEDIA_PRO
 import static android.provider.CloudMediaProviderContract.METHOD_GET_ASYNC_CONTENT_PROVIDER;
 import static android.provider.MediaStore.EXTRA_CALLING_PACKAGE_UID;
 import static android.provider.MediaStore.EXTRA_IS_STABLE_URIS_ENABLED;
+import static android.provider.MediaStore.EXTRA_MEDIA_ITEMS;
 import static android.provider.MediaStore.EXTRA_OPEN_ASSET_FILE_REQUEST;
 import static android.provider.MediaStore.EXTRA_OPEN_FILE_REQUEST;
 import static android.provider.MediaStore.EXTRA_URI_LIST;
@@ -146,6 +147,9 @@ import static com.android.providers.media.PickerUriResolver.getMediaUri;
 import static com.android.providers.media.flags.Flags.enableSpecialFormatColumn;
 import static com.android.providers.media.flags.Flags.indexMediaLatitudeLongitude;
 import static com.android.providers.media.flags.Flags.versionLockdown;
+import static com.android.providers.media.localsearch.MediaProcessingWorkScheduler.LAST_GEN_MODIFIED_WITH_LOCATION_LABEL;
+import static com.android.providers.media.localsearch.MediaProcessingWorkScheduler.LAST_GEN_MODIFIED_WITH_MEDIA_LABEL;
+import static com.android.providers.media.localsearch.MediaProcessingWorkScheduler.LAST_GEN_MODIFIED_WITH_METADATA_LABEL;
 import static com.android.providers.media.photopicker.data.ItemsProvider.EXTRA_MIME_TYPE_SELECTION;
 import static com.android.providers.media.scan.MediaScanner.REASON_DEMAND;
 import static com.android.providers.media.scan.MediaScanner.REASON_IDLE;
@@ -302,6 +306,7 @@ import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.annotation.RequiresApi;
 import androidx.annotation.VisibleForTesting;
+import androidx.appsearch.app.SearchSpec;
 import androidx.work.WorkInfo;
 import androidx.work.WorkManager;
 
@@ -309,6 +314,8 @@ import com.android.modules.utils.BackgroundThread;
 import com.android.modules.utils.build.SdkLevel;
 import com.android.providers.media.DatabaseHelper.OnFilesChangeListener;
 import com.android.providers.media.DatabaseHelper.OnLegacyMigrationListener;
+import com.android.providers.media.appsearch.AppSearchDbManager;
+import com.android.providers.media.appsearch.MediaItem;
 import com.android.providers.media.backupandrestore.BackupAndRestoreUtils;
 import com.android.providers.media.backupandrestore.BackupExecutor;
 import com.android.providers.media.dao.FileRow;
@@ -2250,7 +2257,7 @@ public class MediaProvider extends ContentProvider {
 
                         // Since the operation involves low-level file rename and move
                         // operations, need to invalidate the dentry cache for the affected paths.
-                        invalidateFuseDentry(originalPath);
+                        markPathAsDeletedAndInvalidateFuseDentry(originalPath);
                         invalidateFuseDentry(newPath);
                         return value == 0;
                     }
@@ -2270,7 +2277,7 @@ public class MediaProvider extends ContentProvider {
             @NonNull String newPath) {
         try {
             Os.rename(originalPath, newPath);
-            invalidateFuseDentry(originalPath);
+            markPathAsDeletedAndInvalidateFuseDentry(originalPath);
             invalidateFuseDentry(newPath);
             return true;
         } catch (ErrnoException e) {
@@ -7588,6 +7595,12 @@ public class MediaProvider extends ContentProvider {
             case MediaStore.MEDIA_SERVICE_V2_CALL: {
                 return getResultForMediaServiceV2Call(extras);
             }
+            case MediaStore.CREATE_DOCUMENTS_FOR_SEARCH_MEDIA_CALL: {
+                return getResultForCreateDocumentsForSearchMedia(extras);
+            }
+            case MediaStore.DELETE_DOCUMENTS_FOR_SEARCH_MEDIA_CALL: {
+                return getResultForDeleteDocumentsForSearchMedia();
+            }
             case MediaStore.RECOVER_DATA_CALL: {
                 return getResultForRecoverData(extras);
             }
@@ -7634,7 +7647,7 @@ public class MediaProvider extends ContentProvider {
 
             // Since the trash operation involves low-level file rename and move operations,
             // need to invalidate the dentry cache for the affected paths.
-            invalidateFuseDentry(path);
+            markPathAsDeletedAndInvalidateFuseDentry(path);
             invalidateFuseDentry(trashedPath);
 
             result.putString(MediaStore.FILE_PATH, trashedPath);
@@ -7665,7 +7678,7 @@ public class MediaProvider extends ContentProvider {
 
             // Since the restore operation involves low-level file rename and move operations,
             // need to invalidate the dentry cache for the affected paths.
-            invalidateFuseDentry(trashedPath);
+            markPathAsDeletedAndInvalidateFuseDentry(trashedPath);
             invalidateFuseDentry(restoredPath);
 
             result.putString(MediaStore.FILE_PATH, restoredPath);
@@ -8760,6 +8773,99 @@ public class MediaProvider extends ContentProvider {
         }
     }
 
+    private Bundle getResultForCreateDocumentsForSearchMedia(Bundle extras) {
+        getContext().enforceCallingPermission(android.Manifest.permission.WRITE_MEDIA_STORAGE,
+                "Permission missing to call " + MediaStore.CREATE_DOCUMENTS_FOR_SEARCH_MEDIA_CALL);
+
+        if (!Flags.enableMediaSearch()) {
+            throw new UnsupportedOperationException("Flag enable_media_search should be enabled.");
+        }
+
+        if (!SdkLevel.isAtLeastT()) {
+            throw new UnsupportedOperationException(
+                    "AppSearchDbManager should be used only for T+ devices");
+        }
+
+        final ArrayList<Bundle> documentBundles =
+                extras.getParcelableArrayList(EXTRA_MEDIA_ITEMS);
+
+        if (documentBundles == null) {
+            throw new IllegalArgumentException("Missing required extra: " + EXTRA_MEDIA_ITEMS);
+        }
+
+        // Reconstruct MediaItem objects from the Bundles.
+        final ArrayList<MediaItem> documents = new ArrayList<>();
+        for (Bundle bundle : documentBundles) {
+            MediaItem item = new MediaItem();
+            item.setNamespace(bundle.getString(MediaItem.PROPERTY_NAMESPACE));
+            item.setId(bundle.getString(MediaItem.PROPERTY_ID));
+            item.setFileId(bundle.getLong(MediaItem.PROPERTY_FILE_ID));
+            item.setDateTaken(bundle.getLong(MediaItem.PROPERTY_DATE_TAKEN));
+            item.setMediaType(bundle.getLong(MediaItem.PROPERTY_MEDIA_TYPE));
+            item.setMetadataExtracted(bundle.getString(MediaItem.PROPERTY_METADATA_EXTRACTED));
+            item.setVolumeName(bundle.getString(MediaItem.PROPERTY_VOLUME_NAME));
+            documents.add(item);
+        }
+
+        Log.d(TAG, "Inserting " + documents.size() + " documents.");
+
+        AppSearchDbManager appSearchDbManager = null;
+        try {
+            appSearchDbManager = new AppSearchDbManager(getContext());
+            appSearchDbManager.insertDocuments(documents);
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to create documents in appsearch db", e);
+        } finally {
+            if (appSearchDbManager != null) {
+                appSearchDbManager.disconnect();
+            }
+        }
+
+        return Bundle.EMPTY;
+    }
+
+
+    private Bundle getResultForDeleteDocumentsForSearchMedia() {
+        getContext().enforceCallingPermission(android.Manifest.permission.WRITE_MEDIA_STORAGE,
+                "Permission missing to call " + MediaStore.DELETE_DOCUMENTS_FOR_SEARCH_MEDIA_CALL);
+
+        if (!Flags.enableMediaSearch()) {
+            throw new UnsupportedOperationException("Flag enable_media_search should be enabled.");
+        }
+
+        if (!SdkLevel.isAtLeastT()) {
+            throw new UnsupportedOperationException(
+                    "AppSearchDbManager should be used only for T+ devices");
+        }
+
+        AppSearchDbManager appSearchDbManager = null;
+        try {
+            SearchSpec searchSpec = new SearchSpec.Builder()
+                    .addFilterNamespaces(AppSearchDbManager.NAMESPACE)
+                    .build();
+
+            appSearchDbManager = new AppSearchDbManager(getContext());
+            appSearchDbManager.deleteDocuments(/* query */ "", searchSpec);
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to delete documents from appsearch db", e);
+        } finally {
+            if (appSearchDbManager != null) {
+                appSearchDbManager.disconnect();
+            }
+        }
+
+        // Reset shared preferences used to track generation numbers of different media processing.
+        SharedPreferences prefs = getContext().getSharedPreferences(MEDIAPROVIDER_PREFS,
+                Context.MODE_PRIVATE);
+        prefs.edit()
+                .putLong(LAST_GEN_MODIFIED_WITH_METADATA_LABEL, 0L)
+                .putLong(LAST_GEN_MODIFIED_WITH_LOCATION_LABEL, 0L)
+                .putLong(LAST_GEN_MODIFIED_WITH_MEDIA_LABEL, 0L)
+                .apply();
+
+        return Bundle.EMPTY;
+    }
+
     private Bundle getResultForRecoverData(Bundle extras) {
         getContext().enforceCallingPermission(Manifest.permission.WRITE_MEDIA_STORAGE,
                 "Permission missing to call RECOVER_DATA_CALL by uid:"
@@ -9725,7 +9831,7 @@ public class MediaProvider extends ContentProvider {
                         Log.DEBUG, /* logOnlyIfDebuggable */true);
                 try {
                     Os.rename(beforePath, afterPath);
-                    invalidateFuseDentry(beforePath);
+                    markPathAsDeletedAndInvalidateFuseDentry(beforePath);
                     invalidateFuseDentry(afterPath);
                 } catch (ErrnoException e) {
                     if (e.errno == OsConstants.ENOENT) {
@@ -11151,7 +11257,25 @@ public class MediaProvider extends ContentProvider {
 
     private void deleteAndInvalidate(@NonNull File file) {
         file.delete();
-        invalidateFuseDentry(file);
+        // Mark node as deleted and invalidate Fuse Dentry cache
+        markPathAsDeletedAndInvalidateFuseDentry(file.getAbsolutePath());
+    }
+
+    private void markPathAsDeletedAndInvalidateFuseDentry(@NonNull String path) {
+        try {
+            final FuseDaemon daemon = getFuseDaemonForFile(new File(path), mVolumeCache);
+            if (isFuseThread()) {
+                // If we are on a FUSE thread, we don't need to do this as it is already handled.
+                return;
+            } else if (shouldBeVisible(path)) {
+                Log.w(TAG, "Don't delete fuse dentry cache for volume root path " + path);
+                return;
+            } else {
+                daemon.markPathAsDeletedAndInvalidateFuseDentry(path);
+            }
+        } catch (FileNotFoundException e) {
+            Log.w(TAG, "Failed to mark path as deleted in FUSE", e);
+        }
     }
 
     private void deleteIfAllowed(Uri uri, Bundle extras, String path) {
