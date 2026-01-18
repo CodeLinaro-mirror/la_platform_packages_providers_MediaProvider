@@ -2386,11 +2386,13 @@ public class MediaProvider extends ContentProvider {
             int countDeleted = 0;
             if (cursor != null) {
                 while (cursor.moveToNext()) {
-                    File file = new File(cursor.getString(1));
+                    final String path = cursor.getString(1);
                     // We check for existence to be sure we don't delete files that still exist.
                     // This can happen even if the pair (package, userid) is unknown,
                     // since some framework implementations may rely on special userids.
-                    if (!file.exists()) {
+                    // If the path is null or empty, it cannot exist on disk,
+                    // so we proceed to delete the entry.
+                    if (path == null || !new File(path).exists()) {
                         countDeleted +=
                                 db.delete("files", "_id=?", new String[]{cursor.getString(0)});
                     }
@@ -8796,14 +8798,14 @@ public class MediaProvider extends ContentProvider {
         // Reconstruct MediaItem objects from the Bundles.
         final ArrayList<MediaItem> documents = new ArrayList<>();
         for (Bundle bundle : documentBundles) {
-            MediaItem item = new MediaItem();
+            MediaItem item = new MediaItem(
+                    bundle.getLong(MediaItem.PROPERTY_FILE_ID),
+                    bundle.getLong(MediaItem.PROPERTY_MEDIA_TYPE),
+                    bundle.getLong(MediaItem.PROPERTY_DATE_TAKEN),
+                    bundle.getString(MediaItem.PROPERTY_VOLUME_NAME)
+            );
             item.setNamespace(bundle.getString(MediaItem.PROPERTY_NAMESPACE));
-            item.setId(bundle.getString(MediaItem.PROPERTY_ID));
-            item.setFileId(bundle.getLong(MediaItem.PROPERTY_FILE_ID));
-            item.setDateTaken(bundle.getLong(MediaItem.PROPERTY_DATE_TAKEN));
-            item.setMediaType(bundle.getLong(MediaItem.PROPERTY_MEDIA_TYPE));
             item.setMetadataExtracted(bundle.getString(MediaItem.PROPERTY_METADATA_EXTRACTED));
-            item.setVolumeName(bundle.getString(MediaItem.PROPERTY_VOLUME_NAME));
             documents.add(item);
         }
 
