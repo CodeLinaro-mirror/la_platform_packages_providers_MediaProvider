@@ -25,6 +25,8 @@ import android.platform.test.flag.junit.CheckFlagsRule
 import android.platform.test.flag.junit.DeviceFlagsValueProvider
 import android.provider.MediaStore
 import android.widget.photopicker.EmbeddedPhotoPickerFeatureInfo
+import android.widget.photopicker.PhotoPickerSelectionParams
+import android.widget.photopicker.PhotoPickerUiCustomizationParams
 import androidx.core.os.bundleOf
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.SdkSuppress
@@ -62,6 +64,14 @@ class ConfigurationManagerTest {
     // tests can control the flag values that are returned.
     val deviceConfigProxy = TestDeviceConfigProxyImpl()
     val sessionId = generatePickerSessionId()
+
+    private val MAX_MEDIA_ITEM_SIZE_BYTES = 1024L
+    private val MAX_VIDEO_DURATION_SECONDS = 100L
+    private val MIN_VIDEO_DURATION_SECONDS = 10L
+    private val MAX_MEDIA_ITEM_RESOLUTION_PIXELS = 1000L
+    private val MIN_MEDIA_ITEM_RESOLUTION_PIXELS = 100L
+    private val MIME_TYPES = listOf("image/png", "video/mp4")
+    private val MAX_SELECTION_BATCH_SIZE_BYTES = 2048L
 
     @Before
     fun setup() {
@@ -1874,5 +1884,214 @@ class ConfigurationManagerTest {
             assertThat(emissions.first()).isEqualTo(expectedConfiguration)
             assertThat(emissions.last().locationMetadataAccessRequested).isFalse()
         }
+    }
+
+    /**
+     * Ensures that [ConfigurationManager.configuration] will emit an updated configuration with the
+     * expected custom [PhotoPickerSelectionParams] in activity runtime.
+     */
+    @RequiresFlagsEnabled(Flags.FLAG_ENABLE_PHOTOPICKER_SELECTION_PARAMS_API)
+    @Test
+    fun testSetIntentSetsSelectionParamsForActivityRuntime() {
+        val selectionParams = createTestSelectionParams()
+        val intent =
+            Intent()
+                .setAction(MediaStore.ACTION_PICK_IMAGES)
+                .putExtra(MediaStore.EXTRA_PICK_IMAGES_SELECTION_PARAMS, selectionParams)
+
+        runTest {
+            val configurationManager =
+                ConfigurationManager(
+                    runtimeEnv = PhotopickerRuntimeEnv.ACTIVITY,
+                    scope = this.backgroundScope,
+                    dispatcher = StandardTestDispatcher(this.testScheduler),
+                    deviceConfigProxy,
+                    sessionId = sessionId,
+                )
+            // Expect the default configuration
+            val expectedConfiguration = PhotopickerConfiguration(action = "", sessionId = sessionId)
+
+            val emissions = mutableListOf<PhotopickerConfiguration>()
+            backgroundScope.launch { configurationManager.configuration.toList(emissions) }
+
+            advanceTimeBy(100)
+            configurationManager.setIntent(intent)
+            advanceTimeBy(100)
+
+            assertThat(emissions.size).isEqualTo(2)
+            assertThat(emissions.first()).isEqualTo(expectedConfiguration)
+            assertThat(emissions.last().action).isEqualTo(MediaStore.ACTION_PICK_IMAGES)
+            assertThat(emissions.last().selectionParams).isNotNull()
+            assertTestSelectionParams(emissions.last().selectionParams!!)
+        }
+    }
+
+    /**
+     * Ensures that [ConfigurationManager.configuration] will emit an updated configuration with the
+     * expected custom [PhotoPickerSelectionParams] in embedded runtime.
+     */
+    @RequiresFlagsEnabled(Flags.FLAG_ENABLE_PHOTOPICKER_SELECTION_PARAMS_API)
+    @Test
+    fun testSetEmbeddedPhotopickerFeatureInfoSetsSelectionParamsForEmbeddedRuntime() {
+        val selectionParams = createTestSelectionParams()
+        val featureInfo =
+            EmbeddedPhotoPickerFeatureInfo.Builder().setSelectionParams(selectionParams).build()
+
+        runTest {
+            val configurationManager =
+                ConfigurationManager(
+                    runtimeEnv = PhotopickerRuntimeEnv.EMBEDDED,
+                    scope = this.backgroundScope,
+                    dispatcher = StandardTestDispatcher(this.testScheduler),
+                    deviceConfigProxy,
+                    sessionId = sessionId,
+                )
+            // Expect the default configuration
+            val expectedConfiguration =
+                PhotopickerConfiguration(
+                    runtimeEnv = PhotopickerRuntimeEnv.EMBEDDED,
+                    action = "",
+                    sessionId = sessionId,
+                )
+
+            val emissions = mutableListOf<PhotopickerConfiguration>()
+            backgroundScope.launch { configurationManager.configuration.toList(emissions) }
+
+            advanceTimeBy(100)
+            configurationManager.setEmbeddedPhotopickerFeatureInfo(featureInfo)
+            advanceTimeBy(100)
+
+            assertThat(emissions.size).isEqualTo(2)
+            assertThat(emissions.first()).isEqualTo(expectedConfiguration)
+            assertThat(emissions.last().selectionParams).isNotNull()
+            assertTestSelectionParams(emissions.last().selectionParams!!)
+        }
+    }
+
+    /**
+     * Ensures that [ConfigurationManager.configuration] will emit an updated configuration with the
+     * expected custom [PhotoPickerUiCustomizationParams].
+     */
+    @RequiresFlagsEnabled(Flags.FLAG_ENABLE_PHOTOPICKER_UI_CUSTOMIZATION_PARAMS_API)
+    @Test
+    fun testSetIntentSetsUiCustomizationParamsForActivityRuntime() {
+
+        val uiCustomizationOptions = createTestUiCustomizationParams()
+        val intent =
+            Intent()
+                .setAction(MediaStore.ACTION_PICK_IMAGES)
+                .putExtra(
+                    MediaStore.EXTRA_PICK_IMAGES_UI_CUSTOMIZATION_PARAMS,
+                    uiCustomizationOptions,
+                )
+
+        runTest {
+            val configurationManager =
+                ConfigurationManager(
+                    runtimeEnv = PhotopickerRuntimeEnv.ACTIVITY,
+                    scope = this.backgroundScope,
+                    dispatcher = StandardTestDispatcher(this.testScheduler),
+                    deviceConfigProxy,
+                    sessionId = sessionId,
+                )
+            // Expect the default configuration
+            val expectedConfiguration = PhotopickerConfiguration(action = "", sessionId = sessionId)
+
+            val emissions = mutableListOf<PhotopickerConfiguration>()
+            backgroundScope.launch { configurationManager.configuration.toList(emissions) }
+
+            advanceTimeBy(100)
+            configurationManager.setIntent(intent)
+            advanceTimeBy(100)
+
+            assertThat(emissions.size).isEqualTo(2)
+            assertThat(emissions.first()).isEqualTo(expectedConfiguration)
+            assertThat(emissions.last().action).isEqualTo(MediaStore.ACTION_PICK_IMAGES)
+            assertThat(emissions.last().uiCustomizationParams).isNotNull()
+            assertTestUiCustomizationParams(emissions.last().uiCustomizationParams!!)
+        }
+    }
+
+    /**
+     * Ensures that [ConfigurationManager.configuration] will emit an updated configuration with the
+     * expected custom [PhotoPickerUiCustomizationParams] in embedded runtime.
+     */
+    @Test
+    @SdkSuppress(minSdkVersion = Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
+    @RequiresFlagsEnabled(
+        Flags.FLAG_ENABLE_EMBEDDED_PHOTOPICKER,
+        Flags.FLAG_ENABLE_PHOTOPICKER_UI_CUSTOMIZATION_PARAMS_API,
+    )
+    fun testSetEmbeddedPhotopickerFeatureInfoSetsUiCustomizationParamsForEmbeddedRuntime() {
+        val uiCustomizationOptions = createTestUiCustomizationParams()
+        val featureInfo =
+            EmbeddedPhotoPickerFeatureInfo.Builder()
+                .setUiCustomizationParams(uiCustomizationOptions)
+                .build()
+
+        runTest {
+            val configurationManager =
+                ConfigurationManager(
+                    runtimeEnv = PhotopickerRuntimeEnv.EMBEDDED,
+                    scope = this.backgroundScope,
+                    dispatcher = StandardTestDispatcher(this.testScheduler),
+                    deviceConfigProxy,
+                    sessionId = sessionId,
+                )
+            // Expect the default configuration
+            val expectedConfiguration =
+                PhotopickerConfiguration(
+                    runtimeEnv = PhotopickerRuntimeEnv.EMBEDDED,
+                    action = "",
+                    sessionId = sessionId,
+                )
+
+            val emissions = mutableListOf<PhotopickerConfiguration>()
+            backgroundScope.launch { configurationManager.configuration.toList(emissions) }
+
+            advanceTimeBy(100)
+            configurationManager.setEmbeddedPhotopickerFeatureInfo(featureInfo)
+            advanceTimeBy(100)
+
+            assertThat(emissions.size).isEqualTo(2)
+            assertThat(emissions.first()).isEqualTo(expectedConfiguration)
+            assertThat(emissions.last().uiCustomizationParams).isNotNull()
+            assertTestUiCustomizationParams(emissions.last().uiCustomizationParams!!)
+        }
+    }
+
+    private fun createTestSelectionParams(): PhotoPickerSelectionParams {
+        return PhotoPickerSelectionParams.Builder()
+            .setMaxMediaItemSizeInBytes(MAX_MEDIA_ITEM_SIZE_BYTES)
+            .setMaxVideoDurationInSeconds(MAX_VIDEO_DURATION_SECONDS)
+            .setMinVideoDurationInSeconds(MIN_VIDEO_DURATION_SECONDS)
+            .setMaxMediaItemResolutionInPixels(MAX_MEDIA_ITEM_RESOLUTION_PIXELS)
+            .setMinMediaItemResolutionInPixels(MIN_MEDIA_ITEM_RESOLUTION_PIXELS)
+            .setMimeTypes(MIME_TYPES)
+            .setMaxSelectionBatchSizeInBytes(MAX_SELECTION_BATCH_SIZE_BYTES)
+            .build()
+    }
+
+    private fun createTestUiCustomizationParams(): PhotoPickerUiCustomizationParams {
+        return PhotoPickerUiCustomizationParams.Builder()
+            .setAspectRatio(PhotoPickerUiCustomizationParams.ASPECT_RATIO_PORTRAIT_9_16)
+            .build()
+    }
+
+    private fun assertTestSelectionParams(params: PhotoPickerSelectionParams) {
+        assertThat(params.maxMediaItemSizeInBytes).isEqualTo(MAX_MEDIA_ITEM_SIZE_BYTES)
+        assertThat(params.maxVideoDurationInSeconds).isEqualTo(MAX_VIDEO_DURATION_SECONDS)
+        assertThat(params.minVideoDurationInSeconds).isEqualTo(MIN_VIDEO_DURATION_SECONDS)
+        assertThat(params.maxMediaItemResolutionInPixels)
+            .isEqualTo(MAX_MEDIA_ITEM_RESOLUTION_PIXELS)
+        assertThat(params.minMediaItemResolutionInPixels)
+            .isEqualTo(MIN_MEDIA_ITEM_RESOLUTION_PIXELS)
+        assertThat(params.mimeTypes).isEqualTo(MIME_TYPES)
+        assertThat(params.maxSelectionBatchSizeInBytes).isEqualTo(MAX_SELECTION_BATCH_SIZE_BYTES)
+    }
+
+    private fun assertTestUiCustomizationParams(params: PhotoPickerUiCustomizationParams) {
+        assertThat(params.aspectRatio)
+            .isEqualTo(PhotoPickerUiCustomizationParams.ASPECT_RATIO_PORTRAIT_9_16)
     }
 }
