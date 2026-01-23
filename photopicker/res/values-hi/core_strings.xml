@@ -33,6 +33,7 @@
     <string name="photopicker_select_action_description" msgid="5369819457862091225">"चुनें"</string>
     <string name="photopicker_deselect_action_description" msgid="4986504797441859297">"चुने हुए का निशान हटाएं"</string>
     <string name="photopicker_done_button_label" msgid="2641444126618862287">"हो गया"</string>
+    <string name="photopicker_close_button_description" msgid="2396957460883731300">"बंद करें"</string>
     <string name="photopicker_clear_selection_button_description" msgid="8614016909754648208">"सभी से चुने हुए का निशान हटाएं"</string>
     <string name="photopicker_selection_size_description" msgid="1142474949774463967">"<xliff:g id="COUNT">%1$s</xliff:g> फ़ोटो या वीडियो चुने गए"</string>
     <string name="photopicker_selection_limit_exceeded_snackbar" msgid="9136196524514670280">"ज़्यादा से ज़्यादा <xliff:g id="COUNT">%1$s</xliff:g> आइटम चुनें"</string>
@@ -52,4 +53,6 @@
     <string name="photopicker_banner_no_network_connection_message" msgid="4797953604806666542">"<xliff:g id="APP_NAME">%1$s</xliff:g> से फ़ोटो और वीडियो चुनने के लिए, वाई-फ़ाई या मोबाइल डेटा से कनेक्ट करें"</string>
     <string name="photopicker_banner_no_network_connection_title" msgid="2353038014035707061">"इंटरनेट कनेक्शन ज़रूरी है"</string>
     <string name="photopicker_offline_banner_go_to_settings_button_label" msgid="6642836558571072401">"सेटिंग पर जाएं"</string>
+    <!-- no translation found for photopicker_offline_banner_cloud_app_placeholder (7653739406837936359) -->
+    <skip />
 </resources>

@@ -175,6 +175,14 @@ flag {
 }
 
 flag {
+    name: "enable_photopicker_location_metadata"
+    is_exported: false
+    namespace: "mediaprovider"
+    description: "This flag controls whether to enable location metadata feature in photopicker"
+    bug: "462002765"
+}
+
+flag {
     name: "cloud_media_provider_search"
     is_exported: true
     namespace: "mediaprovider"
@@ -509,4 +517,28 @@ flag {
     namespace: "mediaprovider"
     description: "Enables offline banners shown when there is no network connection available on the device."
     bug: "412985507"
+}
+
+flag {
+    name: "enable_media_processing"
+    is_exported: false
+    namespace: "mediaprovider"
+    description: "This flag enables media processing - location, metadata and media labels - for local search"
+    bug: "428140009"
+}
+
+flag {
+    name: "enable_photopicker_selection_params_usage"
+    is_exported: false
+    namespace: "mediaprovider"
+    description: "Enables usage of selection params api in photopicker."
+    bug: "467334899"
+}
+
+flag {
+    name: "enable_photopicker_ui_customization_params_usage"
+    is_exported: false
+    namespace: "mediaprovider"
+    description: "Enables usage of ui customization params api in photopicker."
+    bug: "467914970"
 }

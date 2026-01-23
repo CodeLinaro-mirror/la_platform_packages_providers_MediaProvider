@@ -33,6 +33,7 @@
     <string name="photopicker_select_action_description" msgid="5369819457862091225">"Selecciona"</string>
     <string name="photopicker_deselect_action_description" msgid="4986504797441859297">"Desselecciona"</string>
     <string name="photopicker_done_button_label" msgid="2641444126618862287">"Fet"</string>
+    <string name="photopicker_close_button_description" msgid="2396957460883731300">"Tanca"</string>
     <string name="photopicker_clear_selection_button_description" msgid="8614016909754648208">"Desselecciona-ho tot"</string>
     <string name="photopicker_selection_size_description" msgid="1142474949774463967">"S\'han seleccionat <xliff:g id="COUNT">%1$s</xliff:g> fotos o vídeos"</string>
     <string name="photopicker_selection_limit_exceeded_snackbar" msgid="9136196524514670280">"Selecciona fins a <xliff:g id="COUNT">%1$s</xliff:g> elements"</string>
@@ -52,4 +53,6 @@
     <string name="photopicker_banner_no_network_connection_message" msgid="4797953604806666542">"Connecta\'t a una xarxa Wi‑Fi o a les dades mòbils per seleccionar fotos i vídeos de <xliff:g id="APP_NAME">%1$s</xliff:g>"</string>
     <string name="photopicker_banner_no_network_connection_title" msgid="2353038014035707061">"Cal disposar de connexió a Internet"</string>
     <string name="photopicker_offline_banner_go_to_settings_button_label" msgid="6642836558571072401">"Ves a Configuració"</string>
+    <!-- no translation found for photopicker_offline_banner_cloud_app_placeholder (7653739406837936359) -->
+    <skip />
 </resources>

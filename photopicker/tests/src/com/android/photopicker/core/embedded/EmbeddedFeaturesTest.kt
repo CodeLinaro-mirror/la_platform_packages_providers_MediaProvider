@@ -20,6 +20,7 @@ import android.content.ContentResolver
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.ConnectivityManager
 import android.net.Uri
 import android.os.Build
 import android.os.Parcel
@@ -70,6 +71,7 @@ import com.android.photopicker.core.Main
 import com.android.photopicker.core.PhotopickerApp
 import com.android.photopicker.core.ViewModelModule
 import com.android.photopicker.core.banners.BannerDefinitions
+import com.android.photopicker.core.banners.BannerLocation
 import com.android.photopicker.core.banners.BannerManager
 import com.android.photopicker.core.banners.BannerState
 import com.android.photopicker.core.banners.BannerStateDao
@@ -111,6 +113,7 @@ import com.android.photopicker.inject.TestOptions
 import com.android.photopicker.tests.HiltTestActivity
 import com.android.photopicker.util.test.MockContentProviderWrapper
 import com.android.photopicker.util.test.dragInIncrements
+import com.android.photopicker.util.test.mockSystemService
 import com.android.photopicker.util.test.nonNullableEq
 import com.android.photopicker.util.test.whenever
 import com.android.providers.media.flags.Flags
@@ -209,6 +212,7 @@ class EmbeddedFeaturesTest : EmbeddedPhotopickerFeatureBaseTest() {
     @Inject lateinit var mockContext: Context
     @Mock lateinit var mockUserManager: UserManager
     @Mock lateinit var mockPackageManager: PackageManager
+    @Mock lateinit var mockConnectivityManager: ConnectivityManager
     @Inject lateinit var deviceConfig: DeviceConfigProxy
     private val USER_HANDLE_MANAGED: UserHandle
     private val USER_ID_MANAGED: Int = 10
@@ -285,6 +289,7 @@ class EmbeddedFeaturesTest : EmbeddedPhotopickerFeatureBaseTest() {
             getTestableContext().getResources().openRawResourceFd(R.drawable.android)
         }
         setupTestForUserMonitor(mockContext, mockUserManager, contentResolver, mockPackageManager)
+        mockSystemService(mockContext, ConnectivityManager::class.java) { mockConnectivityManager }
     }
 
     @Test
@@ -651,7 +656,9 @@ class EmbeddedFeaturesTest : EmbeddedPhotopickerFeatureBaseTest() {
             }
         }
         composeTestRule.waitForIdle()
-        bannerManager.get().showBanner(BannerDefinitions.PRIVACY_EXPLAINER)
+        bannerManager
+            .get()
+            .showBanner(BannerDefinitions.PRIVACY_EXPLAINER, BannerLocation.PHOTO_GRID_BANNER)
         advanceTimeBy(100)
         composeTestRule.onNodeWithText(expectedPrivacyMessage).assertIsNotDisplayed()
     }
@@ -668,6 +675,8 @@ class EmbeddedFeaturesTest : EmbeddedPhotopickerFeatureBaseTest() {
         val resources = getTestableContext().getResources()
         val expectedPrivacyMessage =
             resources.getString(R.string.photopicker_privacy_explainer, "Test Package")
+        bannerManager.get().refreshBanner(BannerLocation.PHOTO_GRID_BANNER)
+        advanceTimeBy(100)
         composeTestRule.setContent {
             CompositionLocalProvider(LocalEmbeddedState provides testEmbeddedStateExpanded) {
                 callEmbeddedPhotopickerMain(
@@ -678,9 +687,18 @@ class EmbeddedFeaturesTest : EmbeddedPhotopickerFeatureBaseTest() {
                 )
             }
         }
-        composeTestRule.waitForIdle()
-        bannerManager.get().showBanner(BannerDefinitions.PRIVACY_EXPLAINER)
         advanceTimeBy(100)
+        composeTestRule.waitForIdle()
+        advanceTimeBy(100)
+        composeTestRule.waitForIdle()
+
+        bannerManager
+            .get()
+            .showBanner(BannerDefinitions.PRIVACY_EXPLAINER, BannerLocation.PHOTO_GRID_BANNER)
+        advanceTimeBy(100)
+        composeTestRule.waitForIdle()
+        advanceTimeBy(100)
+        composeTestRule.waitForIdle()
         composeTestRule.onNodeWithText(expectedPrivacyMessage).assertIsDisplayed()
     }
 
@@ -1133,7 +1151,7 @@ class EmbeddedFeaturesTest : EmbeddedPhotopickerFeatureBaseTest() {
                 resources.getString(R.string.photopicker_banner_cloud_choose_provider_title)
             val expectedMessage =
                 resources.getString(R.string.photopicker_banner_cloud_choose_provider_message)
-            bannerManager.get().refreshBanners()
+            bannerManager.get().refreshBanner(BannerLocation.PHOTO_GRID_BANNER)
             advanceTimeBy(100)
             composeTestRule.setContent {
                 CompositionLocalProvider(LocalEmbeddedState provides testEmbeddedStateExpanded) {
@@ -1219,7 +1237,7 @@ class EmbeddedFeaturesTest : EmbeddedPhotopickerFeatureBaseTest() {
                     cloudProvider.displayName,
                 )
 
-            bannerManager.get().refreshBanners()
+            bannerManager.get().refreshBanner(BannerLocation.PHOTO_GRID_BANNER)
             advanceTimeBy(100)
             composeTestRule.setContent {
                 CompositionLocalProvider(LocalEmbeddedState provides testEmbeddedStateExpanded) {

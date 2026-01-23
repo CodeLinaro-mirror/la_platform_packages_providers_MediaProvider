@@ -20,6 +20,7 @@ import android.content.ContentProvider
 import android.content.ContentResolver
 import android.content.Context
 import android.content.pm.PackageManager
+import android.net.ConnectivityManager
 import android.os.UserManager
 import android.test.mock.MockContentResolver
 import androidx.compose.ui.test.ExperimentalTestApi
@@ -37,6 +38,7 @@ import com.android.photopicker.core.EmbeddedServiceModule
 import com.android.photopicker.core.Main
 import com.android.photopicker.core.ViewModelModule
 import com.android.photopicker.core.banners.BannerDefinitions
+import com.android.photopicker.core.banners.BannerLocation
 import com.android.photopicker.core.banners.BannerManager
 import com.android.photopicker.core.banners.BannerState
 import com.android.photopicker.core.banners.BannerStateDao
@@ -51,6 +53,7 @@ import com.android.photopicker.features.PhotopickerFeatureBaseTest
 import com.android.photopicker.inject.PhotopickerTestModule
 import com.android.photopicker.tests.HiltTestActivity
 import com.android.photopicker.util.test.MockContentProviderWrapper
+import com.android.photopicker.util.test.mockSystemService
 import com.android.photopicker.util.test.nonNullableEq
 import com.android.photopicker.util.test.whenever
 import dagger.Lazy
@@ -123,6 +126,7 @@ class PrivacyExplainerFeatureTest : PhotopickerFeatureBaseTest() {
     // Needed for UserMonitor
     @Mock lateinit var mockUserManager: UserManager
     @Mock lateinit var mockPackageManager: PackageManager
+    @Mock lateinit var mockConnectivityManager: ConnectivityManager
 
     @Inject lateinit var mockContext: Context
     @Inject lateinit var selection: Selection<Media>
@@ -152,6 +156,7 @@ class PrivacyExplainerFeatureTest : PhotopickerFeatureBaseTest() {
             getTestableContext().getResources().openRawResourceFd(R.drawable.android)
         }
         setupTestForUserMonitor(mockContext, mockUserManager, contentResolver, mockPackageManager)
+        mockSystemService(mockContext, ConnectivityManager::class.java) { mockConnectivityManager }
     }
 
     @Test
@@ -173,7 +178,7 @@ class PrivacyExplainerFeatureTest : PhotopickerFeatureBaseTest() {
             val expectedPrivacyMessage =
                 resources.getString(R.string.photopicker_privacy_explainer, "Test Package")
 
-            bannerManager.get().refreshBanners()
+            bannerManager.get().refreshBanner(BannerLocation.PHOTO_GRID_BANNER)
             advanceTimeBy(100)
 
             composeTestRule.setContent {
@@ -184,6 +189,8 @@ class PrivacyExplainerFeatureTest : PhotopickerFeatureBaseTest() {
                 )
             }
             // Wait for the PhotoGrid to load.
+            advanceTimeBy(100)
+            composeTestRule.waitForIdle()
             advanceTimeBy(100)
             composeTestRule.waitForIdle()
             composeTestRule.onNode(hasText(expectedPrivacyMessage)).assertIsDisplayed()
@@ -220,7 +227,7 @@ class PrivacyExplainerFeatureTest : PhotopickerFeatureBaseTest() {
             val expectedPrivacyMessage =
                 resources.getString(R.string.photopicker_privacy_explainer, "Test Package")
 
-            bannerManager.get().refreshBanners()
+            bannerManager.get().refreshBanner(BannerLocation.PHOTO_GRID_BANNER)
             advanceTimeBy(100)
             composeTestRule.setContent {
                 callPhotopickerMain(

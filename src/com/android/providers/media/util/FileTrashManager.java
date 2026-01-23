@@ -16,7 +16,11 @@
 
 package com.android.providers.media.util;
 
+import static com.android.providers.media.util.FileUtils.DEFAULT_FOLDER_NAMES;
 import static com.android.providers.media.util.FileUtils.PREFIX_TRASHED;
+import static com.android.providers.media.util.FileUtils.extractDisplayName;
+import static com.android.providers.media.util.FileUtils.extractRelativePath;
+import static com.android.providers.media.util.FileUtils.sanitizePath;
 
 import android.system.ErrnoException;
 import android.system.Os;
@@ -24,7 +28,9 @@ import android.util.Log;
 
 import java.io.File;
 import java.io.FileNotFoundException;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Locale;
 import java.util.stream.Collectors;
 
@@ -34,6 +40,8 @@ import java.util.stream.Collectors;
 public final class FileTrashManager {
 
     private static final String TAG = "FileTrashManager";
+
+    private static final String DIRECTORY_ANDROID = "Android";
 
 
     /**
@@ -136,6 +144,63 @@ public final class FileTrashManager {
     }
 
     /**
+     * Generates an extended trashed path by replacing the expiration timestamp in each
+     * component of the relative path.
+     *
+     * @param parentPath   The parent path (already extended).
+     * @param relativePath The relative path from the parent (containing old prefixes).
+     * @param dateExpires  The new expiration timestamp.
+     * @return The fully constructed extended trashed path.
+     */
+    public static String getExtendedTrashedPath(String parentPath, String relativePath,
+            long dateExpires) {
+        String newRelativePath = Arrays.stream(relativePath.split("/"))
+                .map(component -> {
+                    // Strip the old .trashed-OLD_EXPIRY- prefix and add the new one
+                    String originalName = FileRestoreManager.cleanTrashPrefix(component);
+                    return String.format(Locale.US, ".%s-%d-%s", PREFIX_TRASHED, dateExpires,
+                            originalName);
+                })
+                .collect(Collectors.joining("/"));
+        return parentPath + "/" + newRelativePath;
+    }
+
+    /**
+     * Recursively updates the expiration timestamp in the filenames of all children on disk.
+     *
+     * @param parentDir      The directory whose children need to be renamed.
+     * @param newDateExpires The new expiration timestamp.
+     * @return 0 on success, or an errno value on failure.
+     */
+    public static int extendChildrenOnDisk(File parentDir, long newDateExpires) {
+        File[] children = parentDir.listFiles();
+        if (children == null) {
+            return 0;
+        }
+
+        for (File child : children) {
+            String originalName = FileRestoreManager.cleanTrashPrefix(child.getName());
+            String newChildName = String.format(Locale.US, ".%s-%d-%s", PREFIX_TRASHED,
+                    newDateExpires, originalName);
+
+            File renamedChildFile = new File(parentDir, newChildName);
+            try {
+                Os.rename(child.getAbsolutePath(), renamedChildFile.getAbsolutePath());
+            } catch (ErrnoException e) {
+                Log.e(TAG, "Rename " + child.getAbsolutePath() + " to "
+                        + renamedChildFile.getAbsolutePath() + " failed.", e);
+                return e.errno;
+            }
+
+            if (renamedChildFile.isDirectory()) {
+                int result = extendChildrenOnDisk(renamedChildFile, newDateExpires);
+                if (result != 0) return result;
+            }
+        }
+        return 0;
+    }
+
+    /**
      * Generates a trashed path by prefixing each component of the relative path.
      *
      * @param parentPath   The parent path.
@@ -168,7 +233,11 @@ public final class FileTrashManager {
         if (relPath.startsWith(File.separator)) {
             relPath = relPath.substring(1);
         }
-        File destParent = new File(trashBaseDir, new File(relPath).getParent());
+        File destParent = trashBaseDir;
+        String relParentPath = new File(relPath).getParent();
+        if (relParentPath != null) {
+            destParent = new File(trashBaseDir, relParentPath);
+        }
         if (!destParent.mkdirs()) {
             if (!destParent.exists()) {
                 throw new IllegalStateException(
@@ -273,7 +342,11 @@ public final class FileTrashManager {
             relPath = relPath.substring(1);
         }
 
-        File destParent = new File(trashBaseDirectory, new File(relPath).getParent());
+        File destParent = trashBaseDirectory;
+        String relParentPath = new File(relPath).getParent();
+        if (relParentPath != null) {
+            destParent = new File(trashBaseDirectory, relParentPath);
+        }
 
         if (!destParent.mkdirs()) {
             if (!destParent.exists()) {
@@ -308,19 +381,52 @@ public final class FileTrashManager {
     }
 
     private static boolean isAllowedToTrash(File file) {
-        String relativePath = FileUtils.extractRelativePath(file.getAbsolutePath());
-        // "/" if file is top-level file/folder
-        if (relativePath == null || relativePath.equals("/")) {
-            Log.w(TAG, "Cannot trash top-level files/folders");
+        final String[] relativePath = sanitizePath(extractRelativePath(file.getAbsolutePath()));
+
+        // Trash not allowed on paths that can't be translated to RELATIVE_PATH.
+        if (relativePath.length == 0) {
+            Log.w(TAG, "Cannot trash, invalid relative path: " + file.getAbsolutePath());
             return false;
         }
 
-        // should not be invisible path
+        // If file is top-level file/folder.
+        if (relativePath.length == 1) {
+            if (isTopLevelDefaultDir(file)) {
+                Log.w(TAG, "Cannot trash default directory: " + file.getAbsolutePath());
+                return false;
+            }
+        }
+
+        // Should not be invisible path.
         if (FileUtils.shouldBeInvisible(file.getAbsolutePath())) {
-            Log.w(TAG, "Cannot trash restricted path");
+            Log.w(TAG, "Cannot trash restricted path: " + file.getAbsolutePath());
+            return false;
+        }
+
+        // Files present in .trash-storage directory can't be trashed.
+        File trashBase = getOrCreateTrashBaseDirectory(file);
+        if (FileUtils.contains(trashBase, file)) {
+            Log.w(TAG, "Cannot trash, item already in trash: " + file.getAbsolutePath());
             return false;
         }
 
         return true;
+    }
+
+    private static boolean isTopLevelDefaultDir(File file) {
+        final List<String> defaultDirs = new ArrayList<>(List.of(DEFAULT_FOLDER_NAMES));
+        defaultDirs.add(DIRECTORY_ANDROID);
+        final String displayName = extractDisplayName(file.getAbsolutePath());
+        if (displayName == null) {
+            return false;
+        }
+
+        for (String defaultFolder : defaultDirs) {
+            if (displayName.equalsIgnoreCase(defaultFolder)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

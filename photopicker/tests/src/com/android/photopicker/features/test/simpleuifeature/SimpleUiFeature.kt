@@ -27,6 +27,7 @@ import androidx.navigation.NavBackStackEntry
 import androidx.navigation.NavDeepLink
 import com.android.photopicker.core.banners.Banner
 import com.android.photopicker.core.banners.BannerDefinitions
+import com.android.photopicker.core.banners.BannerLocation
 import com.android.photopicker.core.banners.BannerState
 import com.android.photopicker.core.configuration.PhotopickerConfiguration
 import com.android.photopicker.core.events.RegisteredEventClass
@@ -38,6 +39,7 @@ import com.android.photopicker.core.features.PhotopickerUiFeature
 import com.android.photopicker.core.features.PrefetchResultKey
 import com.android.photopicker.core.features.Priority
 import com.android.photopicker.core.navigation.Route
+import com.android.photopicker.core.network.NetworkStatus
 import com.android.photopicker.core.user.UserMonitor
 import com.android.photopicker.data.DataService
 import com.android.photopicker.features.overflowmenu.OverflowMenuItem
@@ -72,6 +74,8 @@ open class SimpleUiFeature : PhotopickerUiFeature {
         config: PhotopickerConfiguration,
         dataService: DataService,
         userMonitor: UserMonitor,
+        networkStatus: NetworkStatus,
+        bannerLocation: BannerLocation,
     ): Int {
         // If the banner reports as being dismissed, don't show it.
         if (bannerState?.dismissed == true) {
@@ -86,6 +90,7 @@ open class SimpleUiFeature : PhotopickerUiFeature {
         banner: BannerDefinitions,
         dataService: DataService,
         userMonitor: UserMonitor,
+        isEmbedded: Boolean,
     ): Banner {
         return object : Banner {
             override val declaration = BannerDefinitions.PRIVACY_EXPLAINER

@@ -19,12 +19,19 @@ package com.android.photopicker.core.banners
 import android.os.UserHandle
 import android.util.Log
 import com.android.photopicker.core.configuration.ConfigurationManager
+import com.android.photopicker.core.configuration.PhotopickerRuntimeEnv
 import com.android.photopicker.core.database.DatabaseManager
 import com.android.photopicker.core.features.FeatureManager
 import com.android.photopicker.core.features.PhotopickerUiFeature
+import com.android.photopicker.core.network.NetworkMonitor
+import com.android.photopicker.core.network.NetworkStatus
 import com.android.photopicker.core.user.UserMonitor
 import com.android.photopicker.data.DataService
+import com.android.photopicker.data.model.MediaSource
+import com.android.photopicker.data.model.Provider
 import com.android.photopicker.extensions.pmap
+import com.android.photopicker.features.cloudmedia.CloudMediaFeature
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.TimeoutCancellationException
@@ -32,8 +39,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.updateAndGet
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
@@ -47,6 +55,7 @@ class BannerManagerImpl(
     private val featureManager: FeatureManager,
     private val dataService: DataService,
     private val userMonitor: UserMonitor,
+    private val networkMonitor: NetworkMonitor,
     private val processOwnerHandle: UserHandle,
 ) : BannerManager {
 
@@ -55,8 +64,19 @@ class BannerManagerImpl(
         const val GET_BANNER_PRIORITY_TIMEOUT_MS = 1000L
     }
 
-    val _flow: MutableStateFlow<Banner?> = MutableStateFlow(null)
-    override val flow: StateFlow<Banner?> = _flow
+    private val _bannerFlowBylocation =
+        ConcurrentHashMap<BannerLocation, MutableStateFlow<Banner?>>()
+
+    private val networkStatus: StateFlow<NetworkStatus> = networkMonitor.networkStatus
+
+    /**
+     * Returns a [StateFlow] for the given [bannerLocation]. If a flow for the location does not yet
+     * exist, it is created and stored. Subsequent calls for the same location return the existing
+     * flow.
+     */
+    override fun getBannerFlow(bannerLocation: BannerLocation): StateFlow<Banner?> {
+        return _bannerFlowBylocation.getOrPut(bannerLocation) { MutableStateFlow(null) }
+    }
 
     /**
      * Keeps track of any banners with [DismissStrategy.SESSION] that were dismissed during the
@@ -74,31 +94,57 @@ class BannerManagerImpl(
                 .distinctUntilChanged()
                 .collect { refreshBanners() }
         }
+        if (
+            featureManager.isFeatureEnabled(CloudMediaFeature::class.java) &&
+                configurationManager.configuration.value.flags.PICKER_OFFLINE_BANNERS_ENABLED
+        ) {
+            scope.launch {
+                networkStatus
+                    .drop(1)
+                    .distinctUntilChanged()
+                    .filter { it != NetworkStatus.Unknown }
+                    .collect {
+                        val currentCloudProvider: Provider? =
+                            dataService.availableProviders.value.firstOrNull {
+                                it.mediaSource == MediaSource.REMOTE
+                            }
+                        if (currentCloudProvider != null) {
+                            refreshBanner(BannerLocation.PHOTO_GRID_BANNER)
+                            refreshBanner(BannerLocation.SEARCH_GRID_BANNER)
+                        }
+                    }
+            }
+        }
     }
 
     /**
-     * Attempt to show the requested banner.
+     * Attempt to show the requested banner for the given [BannerLocation].
      *
      * Unless a specific banner is needed, it is better to use [refreshBanners] to allow the banner
      * with the highest priority to be shown.
      */
-    override suspend fun showBanner(banner: BannerDeclaration) {
+    override suspend fun showBanner(banner: BannerDeclaration, bannerLocation: BannerLocation) {
         try {
-            _flow.updateAndGet { generateBanner(banner) }
+            val newBanner = generateBanner(banner)
+            _bannerFlowBylocation.getOrPut(bannerLocation) { MutableStateFlow(newBanner) }.value =
+                newBanner
         } catch (ex: Exception) {
             // Avoid a crash if the banner cannot be generated
             // Instead do nothing and return.
-            Log.e(TAG, "Could now show banner: ${banner.id}", ex)
+            Log.e(TAG, "Could not show banner: ${banner.id} at $bannerLocation", ex)
             return
         }
     }
 
-    /** Hides the current banner, if any. (But does not mark it as dismissed) */
+    /** Hides all banners for all known Banner locations. (But does not mark them as dismissed) */
     override fun hideBanners() {
-        _flow.updateAndGet { null }
+        _bannerFlowBylocation.values.forEach { mutableFlow -> mutableFlow.value = null }
     }
 
-    /** Attempt to mark the banner as dismissed in current context. */
+    /**
+     * Attempt to mark the banner as dismissed in current context. This triggers a refresh for all
+     * active banner locations to ensure the UI is updated consistently.
+     */
     override suspend fun markBannerAsDismissed(banner: BannerDeclaration) {
 
         if (banner.dismissable) {
@@ -107,6 +153,7 @@ class BannerManagerImpl(
             // add the banner to the dismissed set that for this Photopicker session.
             if (banner.dismissableStrategy == DismissStrategy.SESSION) {
                 bannersDismissedInSession.add(banner)
+                refreshBanners()
                 return
             }
 
@@ -140,6 +187,7 @@ class BannerManagerImpl(
                     dismissed = true,
                 )
             )
+            refreshBanners()
         }
     }
 
@@ -198,6 +246,11 @@ class BannerManagerImpl(
         }
     }
 
+    /**
+     * Refreshes banners for all possible [BannerLocation]s. For each location, this method
+     * initialize/re-evaluates the banner state for that location, and displays the one with the
+     * highest priority.
+     */
     override suspend fun refreshBanners() {
 
         Log.d(TAG, "Refresh of banners was requested.")
@@ -211,14 +264,57 @@ class BannerManagerImpl(
         ) {
             Log.d(
                 TAG,
-                "User profile has been changed and is no longer owner, banners will be cleared.",
+                "User profile has been changed and is no longer owner, banners will be cleared for all locations.",
             )
-            _flow.updateAndGet { null }
+            hideBanners()
             return
         }
+        val locationsToRefresh = BannerLocation.values().toList()
+        locationsToRefresh.forEach { location -> refreshBannerInternal(location) }
+    }
 
+    /**
+     * Refreshes the banner for a specific [BannerLocation]. It fetches all available banners from
+     * enabled features, determines their priority and displays the one with the highest priority.
+     */
+    override suspend fun refreshBanner(bannerLocation: BannerLocation) {
+        Log.d(TAG, "Refresh of banners was requested for location: $bannerLocation.")
+
+        // [BannerState] is not accessible cross-profile, so any time the [activeUserProfile]
+        // is not the Process owner's profile, banners need to be hidden to avoid showing
+        // banner content that is not relevant to the active profile.
+        if (
+            userMonitor.userStatus.value.activeUserProfile.handle.identifier !=
+                processOwnerHandle.getIdentifier()
+        ) {
+            Log.d(
+                TAG,
+                "User profile has been changed and is no longer owner, banners will be cleared.",
+            )
+            hideBanners()
+            return
+        }
+        refreshBannerInternal(bannerLocation)
+    }
+
+    /**
+     * Evaluates available banners for a given [BannerLocation], selects the one with the highest
+     * priority, and updates the corresponding banner flow.
+     *
+     * This function performs the core logic for banner refreshes. It gathers all banners from
+     * enabled UI features, calculates their priority for the specified location, and displays the
+     * top-priority banner. If no suitable banner is found, the existing banner for that location is
+     * cleared.
+     */
+    private suspend fun refreshBannerInternal(bannerLocation: BannerLocation) {
         // Force this work to the background
         withContext(backgroundDispatcher) {
+            val currentNetworkStatus =
+                if (configurationManager.configuration.value.flags.PICKER_OFFLINE_BANNERS_ENABLED) {
+                    networkStatus.value
+                } else {
+                    NetworkStatus.Unknown
+                }
 
             // Always ensure providers before requesting a banner refresh, banners depend on
             // having accurate provider information to generate the correct banners.
@@ -247,10 +343,15 @@ class BannerManagerImpl(
                                         configurationManager.configuration.value,
                                         dataService,
                                         userMonitor,
+                                        currentNetworkStatus,
+                                        bannerLocation,
                                     )
                                 }
                             } catch (_: TimeoutCancellationException) {
-                                Log.v(TAG, "getBannerPriority timed out for ${banner.id}")
+                                Log.v(
+                                    TAG,
+                                    "getBannerPriority timed out for ${banner.id} at $bannerLocation",
+                                )
                                 // In the event of a timeout, return a negative number so
                                 // that the banner will be skipped
                                 -1
@@ -266,15 +367,29 @@ class BannerManagerImpl(
             // banner registration order second, and overall feature registration order third.
             allAvailableBanners.sortByDescending { it.second }
 
-            val banner = allAvailableBanners.firstOrNull()
-            banner?.let {
-                Log.d(TAG, "Banner refresh completed, ${banner.first.id} will be shown")
-                showBanner(banner.first)
-            }
-                ?: run {
-                    Log.d(TAG, "Banner refresh completed, no banner was selected.")
-                    _flow.updateAndGet { null }
+            val highestPriorityBanner = allAvailableBanners.firstOrNull()
+            val newBanner =
+                try {
+                    highestPriorityBanner?.let { generateBanner(it.first) }
+                } catch (ex: Exception) {
+                    Log.e(
+                        TAG,
+                        "Could not generate banner: ${highestPriorityBanner?.first?.id} for $bannerLocation",
+                        ex,
+                    )
+                    null
                 }
+
+            if (newBanner != null) {
+                Log.d(
+                    TAG,
+                    "Banner refresh completed for $bannerLocation, ${newBanner.declaration.id} will be shown",
+                )
+            } else {
+                Log.d(TAG, "Banner refresh completed for $bannerLocation, no banner was selected.")
+            }
+            _bannerFlowBylocation.getOrPut(bannerLocation) { MutableStateFlow(newBanner) }.value =
+                newBanner
         }
     }
 
@@ -297,6 +412,7 @@ class BannerManagerImpl(
             },
             dataService,
             userMonitor,
+            configurationManager.configuration.value.runtimeEnv == PhotopickerRuntimeEnv.EMBEDDED,
         )
     }
 }

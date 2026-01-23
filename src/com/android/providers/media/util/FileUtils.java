@@ -1074,6 +1074,9 @@ public class FileUtils {
     @VisibleForTesting
     public static final String[] DEFAULT_FOLDER_NAMES;
 
+    // Note: If you change this list, you may also need to change
+    // frameworks/base/packages/ExternalStorageProvider/src/com/android/externalstorage
+    // /ExternalStorageProvider.java
     static {
         List<String> folderNames = new ArrayList<>(Arrays.asList(
                 Environment.DIRECTORY_MUSIC,
@@ -1144,9 +1147,15 @@ public class FileUtils {
 
     public static @Nullable String extractVolumePath(@Nullable String data) {
         if (data == null) return null;
-        final Matcher matcher = PATTERN_RELATIVE_PATH.matcher(data);
+        // Ensure the path has a trailing slash for consistent regex matching.
+        String path = data;
+        if (!path.endsWith("/")) {
+            path += "/";
+        }
+
+        final Matcher matcher = PATTERN_RELATIVE_PATH.matcher(path);
         if (matcher.find()) {
-            return data.substring(0, matcher.end());
+            return path.substring(0, matcher.end());
         } else {
             return null;
         }

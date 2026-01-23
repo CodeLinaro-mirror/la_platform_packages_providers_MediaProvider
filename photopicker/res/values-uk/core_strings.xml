@@ -33,6 +33,7 @@
     <string name="photopicker_select_action_description" msgid="5369819457862091225">"Вибрати"</string>
     <string name="photopicker_deselect_action_description" msgid="4986504797441859297">"Не вибирати"</string>
     <string name="photopicker_done_button_label" msgid="2641444126618862287">"Готово"</string>
+    <string name="photopicker_close_button_description" msgid="2396957460883731300">"Закрити"</string>
     <string name="photopicker_clear_selection_button_description" msgid="8614016909754648208">"Не вибирати нічого"</string>
     <string name="photopicker_selection_size_description" msgid="1142474949774463967">"Вибрано <xliff:g id="COUNT">%1$s</xliff:g> фото або відео"</string>
     <string name="photopicker_selection_limit_exceeded_snackbar" msgid="9136196524514670280">"Виберіть не більше стількох об’єктів: <xliff:g id="COUNT">%1$s</xliff:g>"</string>
@@ -51,5 +52,7 @@
     <string name="photopicker_media_grid_content_description" msgid="3684287976405167891">"Сітка медіафайлів"</string>
     <string name="photopicker_banner_no_network_connection_message" msgid="4797953604806666542">"Щоб вибрати фотографії і відео з додатка <xliff:g id="APP_NAME">%1$s</xliff:g>, підключіть пристрій до Wi-Fi або мобільного Інтернету"</string>
     <string name="photopicker_banner_no_network_connection_title" msgid="2353038014035707061">"Потрібне інтернет-з’єднання"</string>
-    <string name="photopicker_offline_banner_go_to_settings_button_label" msgid="6642836558571072401">"Перейти в Налаштування"</string>
+    <string name="photopicker_offline_banner_go_to_settings_button_label" msgid="6642836558571072401">"Відкрити налаштування"</string>
+    <!-- no translation found for photopicker_offline_banner_cloud_app_placeholder (7653739406837936359) -->
+    <skip />
 </resources>

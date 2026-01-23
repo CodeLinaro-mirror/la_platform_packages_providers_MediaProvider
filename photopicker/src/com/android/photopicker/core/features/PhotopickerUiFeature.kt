@@ -20,9 +20,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import com.android.photopicker.core.banners.Banner
 import com.android.photopicker.core.banners.BannerDefinitions
+import com.android.photopicker.core.banners.BannerLocation
 import com.android.photopicker.core.banners.BannerState
 import com.android.photopicker.core.configuration.PhotopickerConfiguration
 import com.android.photopicker.core.navigation.Route
+import com.android.photopicker.core.network.NetworkStatus
 import com.android.photopicker.core.user.UserMonitor
 import com.android.photopicker.data.DataService
 
@@ -67,6 +69,7 @@ interface PhotopickerUiFeature : PhotopickerFeature {
      * @param config The current [PhotopickerConfiguration]
      * @param dataService A dataService that can be used to fetch external data.
      * @param userMonitor UserMonitor for UserProfile access.
+     * @param bannerLocation The [BannerLocation] where the banner will be displayed.
      */
     suspend fun getBannerPriority(
         banner: BannerDefinitions,
@@ -74,6 +77,8 @@ interface PhotopickerUiFeature : PhotopickerFeature {
         config: PhotopickerConfiguration,
         dataService: DataService,
         userMonitor: UserMonitor,
+        networkStatus: NetworkStatus,
+        bannerLocation: BannerLocation,
     ): Int {
         return Priority.DISABLED.priority
     }
@@ -86,12 +91,14 @@ interface PhotopickerUiFeature : PhotopickerFeature {
      * @param banner The [BannerDefinitions] that should be constructed.
      * @param dataService A dataService that can be used to fetch external data.
      * @param userMonitor UserMonitor for UserProfile access.
+     * @param isEmbedded Boolean indicating if environment is embedded.
      * @return A [Banner] implementation for the requested [BannerDefinitions]
      */
     suspend fun buildBanner(
         banner: BannerDefinitions,
         dataService: DataService,
         userMonitor: UserMonitor,
+        isEmbedded: Boolean,
     ): Banner {
         throw IllegalArgumentException("Cannot build the requested banner: ${banner.id}")
     }
