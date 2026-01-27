@@ -25,6 +25,7 @@ import static android.content.ContentResolver.QUERY_ARG_SQL_SELECTION;
 import static android.content.ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS;
 import static android.content.pm.PackageManager.PERMISSION_GRANTED;
 import static android.database.Cursor.FIELD_TYPE_BLOB;
+import static android.provider.MediaStore.EXTRA_CALLING_PACKAGE_UID;
 import static android.provider.MediaStore.MATCH_DEFAULT;
 import static android.provider.MediaStore.MATCH_EXCLUDE;
 import static android.provider.MediaStore.MATCH_INCLUDE;
@@ -308,15 +309,6 @@ public class MediaProvider extends ContentProvider {
      * to help identify stale thumbnail collections.
      */
     private static final String FILE_DATABASE_UUID = ".database_uuid";
-
-    /**
-     * Specify what default directories the caller gets full access to. By default, the caller
-     * shouldn't get full access to any default dirs.
-     * But for example, we do an exception for System Gallery apps and allow them full access to:
-     * DCIM, Pictures, Movies.
-     */
-    private static final String INCLUDED_DEFAULT_DIRECTORIES =
-            "android:included-default-directories";
 
     /**
      * Value indicating that operations should include database rows matching the criteria defined
@@ -1138,10 +1130,6 @@ public class MediaProvider extends ContentProvider {
         final long itemCount = mExternalDatabase.runWithTransaction((db) -> {
             return DatabaseHelper.getItemCount(db);
         });
-
-        final long durationMillis = (SystemClock.elapsedRealtime() - startTime);
-        Metrics.logIdleMaintenance(MediaStore.VOLUME_EXTERNAL, itemCount,
-                durationMillis, staleThumbnails, deletedExpiredMedia);
     }
 
     /**
@@ -2022,7 +2010,8 @@ public class MediaProvider extends ContentProvider {
         final String[] selectionArgs = new String[] {path};
 
         final SQLiteQueryBuilder qbForQuery =
-                getQueryBuilder(TYPE_QUERY, match, uri, Bundle.EMPTY, null);
+                getQueryBuilder(TYPE_QUERY, match, uri, Bundle.EMPTY,
+                        null, /* includedDefaultDirectoriesOptional */ Optional.empty());
         try (Cursor c = qbForQuery.query(helper, new String[] {FileColumns.OWNER_PACKAGE_NAME},
                 selection, selectionArgs, null, null, null, null, null)) {
             if (!c.moveToFirst()) {
@@ -2039,7 +2028,8 @@ public class MediaProvider extends ContentProvider {
         }
 
         final SQLiteQueryBuilder qbForUpdate =
-                getQueryBuilder(TYPE_UPDATE, match, uri, Bundle.EMPTY, null);
+                getQueryBuilder(TYPE_UPDATE, match, uri, Bundle.EMPTY, null,
+                        /* includedDefaultDirectoriesOptional */ Optional.empty());
         ContentValues values = new ContentValues();
         values.put(FileColumns.OWNER_PACKAGE_NAME, "null");
         return qbForUpdate.update(helper, values, selection, selectionArgs) == 1;
@@ -2047,14 +2037,15 @@ public class MediaProvider extends ContentProvider {
 
     private boolean updateDatabaseForFuseRename(@NonNull DatabaseHelper helper,
             @NonNull String oldPath, @NonNull String newPath, @NonNull ContentValues values) {
-        return updateDatabaseForFuseRename(helper, oldPath, newPath, values, Bundle.EMPTY);
+        return updateDatabaseForFuseRename(helper, oldPath, newPath, values, Bundle.EMPTY,
+                /* includedDefaultDirectoriesOptional */ Optional.empty());
     }
 
     private boolean updateDatabaseForFuseRename(@NonNull DatabaseHelper helper,
             @NonNull String oldPath, @NonNull String newPath, @NonNull ContentValues values,
-            @NonNull Bundle qbExtras) {
+            @NonNull Bundle qbExtras, Optional<List<String>> includedDefaultDirectoriesOptional) {
         return updateDatabaseForFuseRename(helper, oldPath, newPath, values, qbExtras,
-                FileUtils.getContentUriForPath(oldPath));
+                FileUtils.getContentUriForPath(oldPath), includedDefaultDirectoriesOptional);
     }
 
     /**
@@ -2062,10 +2053,12 @@ public class MediaProvider extends ContentProvider {
      */
     private boolean updateDatabaseForFuseRename(@NonNull DatabaseHelper helper,
             @NonNull String oldPath, @NonNull String newPath, @NonNull ContentValues values,
-            @NonNull Bundle qbExtras, Uri uriOldPath) {
+            @NonNull Bundle qbExtras, Uri uriOldPath,
+            Optional<List<String>> includedDefaultDirectoriesOptional) {
         boolean allowHidden = isCallingPackageAllowedHidden();
         final SQLiteQueryBuilder qbForUpdate = getQueryBuilder(TYPE_UPDATE,
-                matchUri(uriOldPath, allowHidden), uriOldPath, qbExtras, null);
+                matchUri(uriOldPath, allowHidden), uriOldPath, qbExtras, null,
+                  /* includedDefaultDirectoriesOptional */ Optional.empty());
         if (values.containsKey(FileColumns._MODIFIER)) {
             qbForUpdate.allowColumn(FileColumns._MODIFIER);
         }
@@ -2088,7 +2081,8 @@ public class MediaProvider extends ContentProvider {
             // write permission for newPath, delete existing database entry and retry update.
             final Uri uriNewPath = FileUtils.getContentUriForPath(oldPath);
             final SQLiteQueryBuilder qbForDelete = getQueryBuilder(TYPE_DELETE,
-                    matchUri(uriNewPath, allowHidden), uriNewPath, qbExtras, null);
+                    matchUri(uriNewPath, allowHidden), uriNewPath, qbExtras, null,
+                    /* includedDefaultDirectoriesOptional */ Optional.empty());
             if (qbForDelete.delete(helper, selection, new String[] {newPath}) == 1) {
                 Log.i(TAG, "Retrying database update after deleting conflicting entry");
                 count = qbForUpdate.update(helper, values, selection, new String[]{oldPath});
@@ -2210,7 +2204,7 @@ public class MediaProvider extends ContentProvider {
 
         final SQLiteQueryBuilder qb = getQueryBuilder(TYPE_UPDATE,
                 matchUri(uriOldPath, isCallingPackageAllowedHidden()), uriOldPath, Bundle.EMPTY,
-                null);
+                null, /* includedDefaultDirectoriesOptional */ Optional.empty());
         final DatabaseHelper helper;
         try {
             helper = getDatabaseForUri(uriOldPath);
@@ -2302,9 +2296,6 @@ public class MediaProvider extends ContentProvider {
 
         helper.beginTransaction();
         try {
-            final Bundle qbExtras = new Bundle();
-            qbExtras.putStringArrayList(INCLUDED_DEFAULT_DIRECTORIES,
-                    getIncludedDefaultDirectories());
             final boolean wasHidden = FileUtils.isDirectoryHidden(new File(oldPath));
             final boolean isHidden = FileUtils.isDirectoryHidden(new File(newPath));
             for (String filePath : fileList) {
@@ -2313,7 +2304,7 @@ public class MediaProvider extends ContentProvider {
                 if(!updateDatabaseForFuseRename(helper, oldPath + "/" + filePath, newFilePath,
                         getContentValuesForFuseRename(newFilePath, mimeType, wasHidden, isHidden,
                                 /* isSameMimeType */ true),
-                        qbExtras)) {
+                        Bundle.EMPTY, Optional.of(getIncludedDefaultDirectories()))) {
                     Log.e(TAG, "Calling package doesn't have write permission to rename file.");
                     return OsConstants.EPERM;
                 }
@@ -2453,7 +2444,7 @@ public class MediaProvider extends ContentProvider {
             return false;
         }
         return updateDatabaseForFuseRename(helper, oldPath, newPath, contentValues, Bundle.EMPTY,
-                oldPathGrantedUri);
+                oldPathGrantedUri, /* includedDefaultDirectoriesOptional */ Optional.empty());
     }
 
     /**
@@ -2619,7 +2610,8 @@ public class MediaProvider extends ContentProvider {
                 forWrite = false;
             }
 
-            final SQLiteQueryBuilder qb = getQueryBuilder(type, table, uri, Bundle.EMPTY, null);
+            final SQLiteQueryBuilder qb = getQueryBuilder(type, table, uri, Bundle.EMPTY,
+                    null, /* includedDefaultDirectoriesOptional */ Optional.empty());
             try (Cursor c = qb.query(helper,
                     new String[] { BaseColumns._ID }, null, null, null, null, null, null, null)) {
                 if (c.getCount() == 1) {
@@ -2703,9 +2695,6 @@ public class MediaProvider extends ContentProvider {
         PulledMetrics.logVolumeAccessViaMediaProvider(getCallingUidOrSelf(), volumeName);
         queryArgs = (queryArgs != null) ? queryArgs : new Bundle();
 
-        // INCLUDED_DEFAULT_DIRECTORIES extra should only be set inside MediaProvider.
-        queryArgs.remove(INCLUDED_DEFAULT_DIRECTORIES);
-
         final ArraySet<String> honoredArgs = new ArraySet<>();
         DatabaseUtils.resolveQueryArgs(queryArgs, honoredArgs::add, this::ensureCustomCollator);
 
@@ -2750,7 +2739,7 @@ public class MediaProvider extends ContentProvider {
 
         final DatabaseHelper helper = getDatabaseForUri(uri);
         final SQLiteQueryBuilder qb = getQueryBuilder(TYPE_QUERY, table, uri, queryArgs,
-                honoredArgs::add);
+              honoredArgs::add, /* includedDefaultDirectoriesOptional */ Optional.empty());
 
         if (targetSdkVersion < Build.VERSION_CODES.R) {
             // Some apps are abusing "ORDER BY" clauses to inject "LIMIT"
@@ -4010,7 +3999,7 @@ public class MediaProvider extends ContentProvider {
         // row irrespective of is_download=1.
         final Uri uri = FileUtils.getContentUriForPath(path);
         SQLiteQueryBuilder qb = getQueryBuilder(TYPE_UPDATE, matchUri(uri, allowHidden), uri,
-                extras, null);
+                extras, null, /* includedDefaultDirectoriesOptional */ Optional.empty());
 
         // We won't be able to update columns that are not part of projection map of Files table. We
         // have already checked strict columns in previous insert operation which failed with
@@ -4084,9 +4073,6 @@ public class MediaProvider extends ContentProvider {
         extras = (extras != null) ? extras : new Bundle();
         // REDACTED_URI_BUNDLE_KEY extra should only be set inside MediaProvider.
         extras.remove(QUERY_ARG_REDACTED_URI);
-
-        // INCLUDED_DEFAULT_DIRECTORIES extra should only be set inside MediaProvider.
-        extras.remove(INCLUDED_DEFAULT_DIRECTORIES);
 
         final boolean allowHidden = isCallingPackageAllowedHidden();
         final int match = matchUri(uri, allowHidden);
@@ -4230,7 +4216,8 @@ public class MediaProvider extends ContentProvider {
         long rowId = -1;
         Uri newUri = null;
 
-        final SQLiteQueryBuilder qb = getQueryBuilder(TYPE_INSERT, match, uri, extras, null);
+        final SQLiteQueryBuilder qb = getQueryBuilder(TYPE_INSERT, match, uri, extras, null,
+                /* includedDefaultDirectoriesOptional */ Optional.empty());
 
         switch (match) {
             case IMAGES_MEDIA: {
@@ -4508,7 +4495,8 @@ public class MediaProvider extends ContentProvider {
         // We already handle the required permission checks for the app before we get here
         final LocalCallingIdentity token = clearLocalCallingIdentity();
         try {
-            return getQueryBuilder(type, match, uri, extras, honored);
+            return getQueryBuilder(type, match, uri, extras, honored,
+                    /* includedDefaultDirectoriesOptional */ Optional.empty());
         } finally {
             restoreLocalCallingIdentity(token);
         }
@@ -4530,17 +4518,20 @@ public class MediaProvider extends ContentProvider {
      * </ul>
      */
     private @NonNull SQLiteQueryBuilder getQueryBuilder(int type, int match,
-            @NonNull Uri uri, @NonNull Bundle extras, @Nullable Consumer<String> honored) {
+            @NonNull Uri uri, @NonNull Bundle extras, @Nullable Consumer<String> honored,
+             Optional<List<String>> includedDefaultDirectoriesOptional) {
         Trace.beginSection("getQueryBuilder");
         try {
-            return getQueryBuilderInternal(type, match, uri, extras, honored);
+            return getQueryBuilderInternal(type, match, uri, extras, honored,
+                    includedDefaultDirectoriesOptional);
         } finally {
             Trace.endSection();
         }
     }
 
     private @NonNull SQLiteQueryBuilder getQueryBuilderInternal(int type, int match,
-            @NonNull Uri uri, @NonNull Bundle extras, @Nullable Consumer<String> honored) {
+            @NonNull Uri uri, @NonNull Bundle extras, @Nullable Consumer<String> honored,
+            Optional<List<String>> includedDefaultDirectoriesOptional) {
         final boolean forWrite;
         switch (type) {
             case TYPE_QUERY: forWrite = false; break;
@@ -4595,9 +4586,6 @@ public class MediaProvider extends ContentProvider {
         int matchPending = extras.getInt(QUERY_ARG_MATCH_PENDING, MATCH_DEFAULT);
         int matchTrashed = extras.getInt(QUERY_ARG_MATCH_TRASHED, MATCH_DEFAULT);
         int matchFavorite = extras.getInt(QUERY_ARG_MATCH_FAVORITE, MATCH_DEFAULT);
-
-        final ArrayList<String> includedDefaultDirs = extras.getStringArrayList(
-                INCLUDED_DEFAULT_DIRECTORIES);
 
         // Handle callers using legacy arguments
         if (MediaStore.getIncludePending(uri)) matchPending = MATCH_INCLUDE;
@@ -5010,7 +4998,9 @@ public class MediaProvider extends ContentProvider {
                         options.add(matchSharedPackagesClause
                                 + " AND media_type=0 AND mime_type LIKE 'image/%'");
                     }
-                    if (includedDefaultDirs != null) {
+                    if (includedDefaultDirectoriesOptional.isPresent()) {
+                        List<String> includedDefaultDirs =
+                          includedDefaultDirectoriesOptional.get();
                         for (String defaultDir : includedDefaultDirs) {
                             options.add(FileColumns.RELATIVE_PATH + " LIKE '" + defaultDir + "/%'");
                         }
@@ -5186,9 +5176,6 @@ public class MediaProvider extends ContentProvider {
             return 0;
         }
 
-        // INCLUDED_DEFAULT_DIRECTORIES extra should only be set inside MediaProvider.
-        extras.remove(INCLUDED_DEFAULT_DIRECTORIES);
-
         uri = safeUncanonicalize(uri);
         final boolean allowHidden = isCallingPackageAllowedHidden();
         final int match = matchUri(uri, allowHidden);
@@ -5266,7 +5253,8 @@ public class MediaProvider extends ContentProvider {
             }
         }
 
-        final SQLiteQueryBuilder qb = getQueryBuilder(TYPE_DELETE, match, uri, extras, null);
+        final SQLiteQueryBuilder qb = getQueryBuilder(TYPE_DELETE, match, uri, extras, null,
+                /* includedDefaultDirectoriesOptional */ Optional.empty());
 
         {
             // Give callers interacting with a specific media item a chance to
@@ -5396,7 +5384,8 @@ public class MediaProvider extends ContentProvider {
                 // 2. delete file row from the db
                 final boolean allowHidden = isCallingPackageAllowedHidden();
                 final SQLiteQueryBuilder qb = getQueryBuilder(TYPE_DELETE,
-                        matchUri(uriGranted, allowHidden), uriGranted, extras, null);
+                        matchUri(uriGranted, allowHidden), uriGranted, extras, null,
+                        /* includedDefaultDirectoriesOptional */ Optional.empty());
                 int count = qb.delete(helper, BaseColumns._ID + "=" + id, null);
 
                 if (isDownload == 1) {
@@ -5892,6 +5881,7 @@ public class MediaProvider extends ContentProvider {
 
         final Context context = getContext();
         final Intent intent = new Intent(method, null, context, PermissionActivity.class);
+        extras.putInt(EXTRA_CALLING_PACKAGE_UID, getCallingUidOrSelf());
         intent.putExtras(extras);
         return PendingIntent.getActivity(context, PermissionActivity.REQUEST_CODE, intent,
                 FLAG_ONE_SHOT | FLAG_CANCEL_CURRENT | FLAG_IMMUTABLE);
@@ -6198,8 +6188,6 @@ public class MediaProvider extends ContentProvider {
         // Related items are only considered for new media creation, and they
         // can't be leveraged to move existing content into blocked locations
         extras.remove(QUERY_ARG_RELATED_URI);
-        // INCLUDED_DEFAULT_DIRECTORIES extra should only be set inside MediaProvider.
-        extras.remove(INCLUDED_DEFAULT_DIRECTORIES);
 
         final String userWhere = extras.getString(QUERY_ARG_SQL_SELECTION);
         final String[] userWhereArgs = extras.getStringArray(QUERY_ARG_SQL_SELECTION_ARGS);
@@ -6273,7 +6261,8 @@ public class MediaProvider extends ContentProvider {
             }
         }
 
-        final SQLiteQueryBuilder qb = getQueryBuilder(TYPE_UPDATE, match, uri, extras, null);
+        final SQLiteQueryBuilder qb = getQueryBuilder(TYPE_UPDATE, match, uri, extras, null,
+                /* includedDefaultDirectoriesOptional */ Optional.empty());
 
         // Give callers interacting with a specific media item a chance to
         // escalate access if they don't already have it
@@ -6468,8 +6457,15 @@ public class MediaProvider extends ContentProvider {
             }
 
             final LocalCallingIdentity token = clearLocalCallingIdentity();
-            final Uri genericUri = MediaStore.Files.getContentUri(volumeName,
-                    ContentUris.parseId(uri));
+
+            final Uri genericUri;
+            try {
+                genericUri = MediaStore.Files.getContentUri(volumeName, ContentUris.parseId(uri));
+            } catch (NumberFormatException e) {
+                restoreLocalCallingIdentity(token);
+                throw e;
+            }
+
             try (Cursor c = queryForSingleItem(genericUri,
                     sPlacementColumns.toArray(new String[0]), userWhere, userWhereArgs, null)) {
                 for (int i = 0; i < c.getColumnCount(); i++) {
@@ -6747,7 +6743,8 @@ public class MediaProvider extends ContentProvider {
                 extras.putInt(QUERY_ARG_MATCH_PENDING, MATCH_INCLUDE);
                 extras.putInt(QUERY_ARG_MATCH_TRASHED, MATCH_INCLUDE);
                 final SQLiteQueryBuilder qbForReplace = getQueryBuilder(TYPE_DELETE,
-                        matchUri(uri, allowHidden), uri, extras, null);
+                        matchUri(uri, allowHidden), uri, extras, null,
+                        /* includedDefaultDirectoriesOptional */ Optional.empty());
                 final long rowId = getIdIfPathOwnedByPackages(qbForReplace, helper, path,
                         getSharedPackages());
 
@@ -7043,7 +7040,8 @@ public class MediaProvider extends ContentProvider {
         try {
             helper = getDatabaseForUri(membersUri);
             qb = getQueryBuilder(TYPE_DELETE, AUDIO_PLAYLISTS_ID_MEMBERS,
-                    membersUri, queryArgs, null);
+                    membersUri, queryArgs, null,
+                    /* includedDefaultDirectoriesOptional */ Optional.empty());
         } catch (VolumeNotFoundException ignored) {
             return new int[0];
         }
@@ -7756,7 +7754,7 @@ public class MediaProvider extends ContentProvider {
         }
 
         // Check if the caller has access to private app directories.
-        if (isUidAllowedAccessToDataOrObbPathForFuse(mCallingIdentity.get().uid, filePath)) {
+        if (isUidAllowedAccessToDataOrObbPath(mCallingIdentity.get().uid, filePath)) {
             return true;
         }
 
@@ -7775,6 +7773,7 @@ public class MediaProvider extends ContentProvider {
      * the caller does not have special access.
      */
     private boolean isPrivatePackagePathNotAccessibleByCaller(String path) {
+        path = FileUtils.normalizeAndFilterDefaultIgnorableCodepoints(path);
         // Files under the apps own private directory
         final String appSpecificDir = extractPathOwnerPackageName(path);
 
@@ -7787,7 +7786,7 @@ public class MediaProvider extends ContentProvider {
         if (isExternalMediaDirectory(path)) {
             return false;
         }
-        return !isUidAllowedAccessToDataOrObbPathForFuse(mCallingIdentity.get().uid, path);
+        return !isUidAllowedAccessToDataOrObbPath(mCallingIdentity.get().uid, path);
     }
 
     private boolean shouldBypassDatabaseAndSetDirtyForFuse(int uid, String path) {
@@ -8703,6 +8702,11 @@ public class MediaProvider extends ContentProvider {
 
     @Keep
     public boolean isUidAllowedAccessToDataOrObbPathForFuse(int uid, String path) {
+        return isUidAllowedAccessToDataOrObbPath(uid,
+                FileUtils.normalizeAndFilterDefaultIgnorableCodepoints(path));
+    }
+
+    private boolean isUidAllowedAccessToDataOrObbPath(int uid, String path) {
         final LocalCallingIdentity token =
                 clearLocalCallingIdentity(getCachedCallingIdentityForFuse(uid));
         try {
@@ -9088,7 +9092,8 @@ public class MediaProvider extends ContentProvider {
 
         // First, check to see if caller has direct write access
         if (forWrite) {
-            final SQLiteQueryBuilder qb = getQueryBuilder(TYPE_UPDATE, table, uri, extras, null);
+            final SQLiteQueryBuilder qb = getQueryBuilder(TYPE_UPDATE, table, uri, extras,
+                    null, /* includedDefaultDirectoriesOptional */ Optional.empty());
             qb.allowColumn(SQLiteQueryBuilder.ROWID_COLUMN);
             try (Cursor c = qb.query(helper, new String[] { SQLiteQueryBuilder.ROWID_COLUMN },
                     null, null, null, null, null, null, null)) {
@@ -9112,7 +9117,8 @@ public class MediaProvider extends ContentProvider {
         }
 
         // Second, check to see if caller has direct read access
-        final SQLiteQueryBuilder qb = getQueryBuilder(TYPE_QUERY, table, uri, extras, null);
+        final SQLiteQueryBuilder qb = getQueryBuilder(TYPE_QUERY, table, uri, extras, null,
+                /* includedDefaultDirectoriesOptional */ Optional.empty());
         qb.allowColumn(SQLiteQueryBuilder.ROWID_COLUMN);
         try (Cursor c = qb.query(helper, new String[] { SQLiteQueryBuilder.ROWID_COLUMN },
                 null, null, null, null, null, null, null)) {
