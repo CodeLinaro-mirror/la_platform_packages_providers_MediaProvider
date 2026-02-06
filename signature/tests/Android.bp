@@ -7,7 +7,13 @@ android_test {
     compile_multilib: "both",
     certificate: "media",
     sdk_version: "module_current",
+    target_sdk_version: "36",
     min_sdk_version: "31",
+    libs: [
+        "android.test.mock.stubs",
+        // Include stubs for @TestApi methods
+        "android_test_stubs_current",
+    ],
     static_libs: [
         // sources
         "SignatureLib",
@@ -18,6 +24,15 @@ android_test {
         "androidx.compose.runtime_runtime",
         "androidx.compose.ui_ui-test-junit4",
         "androidx.compose.ui_ui-test-manifest",
+        "androidx.navigation_navigation-testing",
+        "androidx.test.uiautomator_uiautomator",
+        "hilt_android",
+        "hilt_android_testing",
+        "kotlinx_coroutines",
+        "kotlinx_coroutines_test",
+        "mockito-kotlin2",
+        "Robolectric_all-target",
+        "mockito-target",
         "truth",
 
         // testing aconfig flags:
