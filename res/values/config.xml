@@ -35,9 +35,7 @@
     <!-- Config for OemMetadataService package -->
     <string name="config_default_oem_metadata_service_package" translatable="false"></string>
     <!-- Config for SearchMediaService package -->
-    <string name="config_default_search_media_service_package" translatable="false">
-        com.google.android.providers.media.module
-    </string>
+    <string name="config_default_search_media_service_package" translatable="false"></string>
 
     <!-- The subset of folders that should not be created during the default creation of folders on
     the root directory of mounted storage devices by the MediaProvider. This is empty by default.
@@ -53,4 +51,8 @@
     If set to true, no media processing job is scheduled. -->
     <bool name="config_disable_media_processing_for_search">false</bool>
 
+    <!-- Configuration to set the batch size for label generation. -->
+    <integer name="config_default_media_processing_batch_size">10</integer>
+    <integer name="config_default_location_processing_batch_size">50</integer>
+    <integer name="config_default_metadata_processing_batch_size">100</integer>
 </resources>

@@ -109,6 +109,7 @@ import com.android.photopicker.core.embedded.LocalEmbeddedState
 import com.android.photopicker.core.glide.Resolution
 import com.android.photopicker.core.glide.loadMedia
 import com.android.photopicker.core.theme.CustomAccentColorScheme
+import com.android.photopicker.data.model.AspectRatio
 import com.android.photopicker.data.model.Media
 import com.android.photopicker.extensions.circleBackground
 import com.android.photopicker.extensions.itemIndexAtPosition
@@ -226,6 +227,7 @@ val MEASUREMENT_DEFAULT_ALBUM_LABEL_SPACER_SIZE = 12.dp
  * @param isExpandedScreen Whether the device is using an expanded screen size.
  * @param initialColumns Initial number of cells per row.
  * @param gridCellPadding Padding between grid cells.
+ * @param aspectRatio aspect ratio to be used for the thumbnail of a mediagrid item.
  * @param modifier A [Modifier] to apply to the [LazyVerticalGrid].
  * @param contentPadding [PaddingValues] for the [LazyVerticalGrid].
  * @param userScrollEnabled Whether the user can scroll the grid.
@@ -256,6 +258,7 @@ fun mediaGrid(
     isExpandedScreen: Boolean = false,
     initialColumns: Int = getCellsPerRow(isExpandedScreen),
     gridCellPadding: Dp = MEASUREMENT_CELL_SPACING,
+    aspectRatio: Float = AspectRatio.SQUARE_1_1.ratio,
     modifier: Modifier = Modifier,
     contentPadding: PaddingValues = PaddingValues(bottom = MEASUREMENT_DEFAULT_CONTENT_PADDING),
     userScrollEnabled: Boolean = true,
@@ -279,12 +282,15 @@ fun mediaGrid(
                 dateFormat = dateFormat,
                 focusItem = focusItem,
                 selection = selection,
+                aspectRatio = aspectRatio,
             )
         },
     contentSeparatorFactory: @Composable (item: MediaGridItem.SeparatorItem) -> Unit = { item ->
         defaultBuildSeparator(item)
     },
-    contentPlaceholderFactory: @Composable () -> Unit = { defaultBuildPlaceholder() },
+    contentPlaceholderFactory: @Composable () -> Unit = {
+        defaultBuildPlaceholder(aspectRatio = aspectRatio)
+    },
     bannerContent: (@Composable () -> Unit)? = null,
     highlightMediaContent: (@Composable () -> Unit)? = null,
 ) {
@@ -298,9 +304,18 @@ fun mediaGrid(
             timeStyle = DateFormat.SHORT,
         )
 
-    var zoom by rememberSaveable(initialColumns) { mutableStateOf(1f) }
-    var currentColumns by rememberSaveable(initialColumns) { mutableStateOf(initialColumns) }
+    var zoom by rememberSaveable { mutableStateOf(1f) }
+    var currentColumns by rememberSaveable { mutableStateOf(initialColumns) }
+    var previousInitialColumns by rememberSaveable { mutableStateOf(initialColumns) }
     var zoomCanPreview by remember { mutableStateOf(currentColumns == pinchToZoomMinColumns) }
+
+    // If the window size changes (indicated by a change in initialColumns), reset the zoom level
+    // and current column count to the new default values.
+    if (initialColumns != previousInitialColumns) {
+        currentColumns = initialColumns
+        zoom = 1f
+        previousInitialColumns = initialColumns
+    }
 
     val minZoomFactor =
         remember(initialColumns) { initialColumns / pinchToZoomMaxColumns.toFloat() }
@@ -496,6 +511,7 @@ private fun defaultContentItemFactory(
     dateFormat: DateFormat,
     focusItem: MediaGridItem? = null,
     selection: Set<Media>,
+    aspectRatio: Float,
 ) {
     when (item) {
         is MediaGridItem.MediaItem ->
@@ -507,6 +523,7 @@ private fun defaultContentItemFactory(
                 dragSelectionEnabled = dragSelectionEnabled,
                 dateFormat = dateFormat,
                 focusItem = focusItem,
+                aspectRatio = aspectRatio,
             )
 
         is MediaGridItem.AlbumItem -> defaultBuildAlbumItem(item, onClick, focusItem)
@@ -536,23 +553,33 @@ public fun getCellsPerRow(isExpandedScreen: Boolean): Int {
     return if (isExpandedScreen) CELLS_PER_ROW_EXPANDED else CELLS_PER_ROW
 }
 
-/** Default Placeholder builder that loads placeholder into a square (1:1) aspect ratio GridCell */
+/**
+ * Default Placeholder builder that loads placeholder into a GridCell.
+ *
+ * This builder respects UI customization parameters for aspect ratio.
+ */
 @Composable
-private fun defaultBuildPlaceholder(modifier: Modifier = Modifier) {
+private fun defaultBuildPlaceholder(
+    modifier: Modifier = Modifier,
+    aspectRatio: Float = AspectRatio.SQUARE_1_1.ratio,
+) {
+    val placeholderDescription = stringResource(R.string.photopicker_mediagrid_placeholder)
     Box(
         modifier =
             modifier
                 .fillMaxSize()
-                .aspectRatio(
-                    1f
-                ) // Ensure it maintains a 1:1 aspect ratio, like [MediaGridItem.MediaItem]
+                .aspectRatio(aspectRatio)
                 .background(MaterialTheme.colorScheme.surfaceContainerHighest)
+                .semantics { contentDescription = placeholderDescription }
     ) {}
 }
 
 /**
  * Default [MediaGridItem.MediaItem] builder that loads media into a square (1:1) aspect ratio
  * GridCell, and provides animations and an icon for the selected state.
+ *
+ * This builder respects UI customization parameters for aspect ratio if the feature flag is
+ * enabled.
  */
 @Composable
 fun defaultBuildMediaItem(
@@ -564,9 +591,11 @@ fun defaultBuildMediaItem(
     dragSelectionEnabled: Boolean = false,
     dateFormat: DateFormat,
     focusItem: MediaGridItem?,
+    aspectRatio: Float = AspectRatio.SQUARE_1_1.ratio,
 ) {
     when (item) {
         is MediaGridItem.MediaItem -> {
+
             // Padding is animated based on the selected state of the item. When the item is
             // selected, it should shrink in the cell and provide a surface background.
 
@@ -628,7 +657,7 @@ fun defaultBuildMediaItem(
                             width(MEASUREMENT_HIGHLIGHT_GRID_UNSELECTED_CELL_WIDTH)
                                 .height(MEASUREMENT_HIGHLIGHT_GRID_UNSELECTED_CELL_HEIGHT)
                         },
-                        falseBlock = { aspectRatio(1f).fillMaxSize() },
+                        falseBlock = { aspectRatio(aspectRatio).fillMaxSize() },
                     )
                     .pointerInput(Unit) {
                         if (dragSelectionEnabled) {
@@ -951,7 +980,6 @@ fun defaultBuildPersonMediaSetItem(
     Box(
         // Apply semantics for the click handlers
         Modifier.semantics(mergeDescendants = true) {
-                contentDescription = item.mediaSet.displayName ?: ""
                 onClick(
                     action = {
                         onClick?.invoke(item)
@@ -992,7 +1020,6 @@ private fun defaultBuildCategoryItem(
     // Apply semantics for the click handlers
     var baseModifier =
         Modifier.semantics(mergeDescendants = true) {
-                contentDescription = item.category.displayName ?: ""
                 onClick(
                     action = {
                         onClick?.invoke(item)

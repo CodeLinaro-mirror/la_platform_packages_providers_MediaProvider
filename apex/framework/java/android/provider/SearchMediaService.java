@@ -28,8 +28,10 @@ import android.os.Bundle;
 import android.os.IBinder;
 import android.os.OutcomeReceiver;
 import android.os.RemoteException;
+import android.os.Trace;
 import android.util.Log;
 
+import androidx.annotation.AnyThread;
 import androidx.annotation.RequiresApi;
 
 import com.android.providers.media.flags.Flags;
@@ -44,6 +46,10 @@ import com.android.providers.media.flags.Flags;
  * <p>SearchMediaService must require the permission
  * "com.android.providers.media.permission.BIND_SEARCH_MEDIA_SERVICE". Service will be ignored for
  * binding if permission is missing. </p>
+ *
+ * <p>Note that the calling app would still require relevant read or write permission to access the
+ * files. The "com.android.providers.media.permission.BIND_SEARCH_MEDIA_SERVICE" permission only
+ * allows apps to get search results in form of {@link SearchMediaResultPage}</p>
  *
  * <pre class="prettyprint">
  * {@literal
@@ -64,10 +70,10 @@ import com.android.providers.media.flags.Flags;
  * by setting value of the resource {@code config_default_media_search_media_service_package}.
  * The overlayable subset which has this resource is {@code MediaProviderConfig}
  *
+ * <p> Usage of this class is only supported on devices running Android T (API 33) or higher.
  * @hide
  */
 @SystemApi
-@RequiresApi(Build.VERSION_CODES.TIRAMISU)
 @FlaggedApi(Flags.FLAG_ENABLE_MEDIA_SEARCH)
 public abstract class SearchMediaService extends Service {
 
@@ -163,13 +169,24 @@ public abstract class SearchMediaService extends Service {
      * Called when a media search is requested based on the given text.
      *
      * <p>
-     * The {@code searchId} must be unique for every call to properly identify the response.
+     * This method may be invoked on any thread and the results will be received on the
+     * calling app's thread which requested for search results.
      * </p>
      *
      * <p>
      * Search results or error message are returned asynchronously via the provided
-     * {@code callback}. The provided {@code callback} may be invoked on background thread and
-     * will be received on the calling app's thread that requested for search results.
+     * {@code callback}. This method may be invoked by framework on any thread.
+     * </p>
+     *
+     * <p>
+     * The callback would be invoked exactly once per query to deliver search results or error.
+     * If {@link SearchMediaService#onCancelSearch(String)} is called before search results or error
+     * is sent by callback, then the search will be considered cancelled and callback would not be
+     * invoked in this case.
+     * </p>
+     *
+     * <p>
+     * The {@code searchId} must be unique for every call to correctly identify the response.
      * </p>
      *
      * <p>
@@ -193,9 +210,26 @@ public abstract class SearchMediaService extends Service {
      * @param searchParams       a {@code Bundle} containing additional search parameters
      * @param outcomeReceiver    the {@code OutcomeReceiver} to send search results or errors
      */
+    @AnyThread
     public abstract void onSearchMedia(@NonNull String searchText, @NonNull String searchId,
             @NonNull Bundle searchParams, @NonNull OutcomeReceiver<SearchMediaResultPage,
                     SearchMediaException> outcomeReceiver);
+
+    /**
+     * Called to check if semantic search is supported by this service.
+     *
+     * <p>Implementors should return {@code true} if their service is capable of performing
+     * searches based on the meaning and context of the provided search textusing AI/ML models,
+     * rather than just simple keyword matching.</p>
+     *
+     * <p>This method is useful for calling app as they may decide whether or not to fetch search
+     * results using {@link SearchMediaService#onSearchMedia(String, String, Bundle,
+     * OutcomeReceiver)} depending upon whether semantic search is supported or not.<p/>
+     *
+     * @return {@code true} if semantic search is supported, {@code false} otherwise.
+     */
+    public abstract boolean onCheckSemanticSearchSupport();
+
 
     /**
      * Called when a request is made to cancel an ongoing search.
@@ -206,11 +240,13 @@ public abstract class SearchMediaService extends Service {
      *
      * @param searchId an ID to uniquely identify the search request.
      */
+    @AnyThread
     public abstract void onCancelSearch(@NonNull String searchId);
 
 
     private final ISearchMediaService mInterface = new ISearchMediaService.Stub() {
         @Override
+        @RequiresApi(Build.VERSION_CODES.TIRAMISU)
         public void searchMedia(String searchText, String searchId, Bundle searchParams,
                 ISearchMediaCallback callback) {
             OutcomeReceiver<SearchMediaResultPage, SearchMediaException> receiver = new
@@ -222,6 +258,9 @@ public abstract class SearchMediaService extends Service {
                     } catch (RemoteException ex) {
                         Log.e(TAG, "Unable to send back search results for searchId "
                                 + searchId, ex);
+                    } finally {
+                        Trace.endAsyncSection("SearchMediaService.onSearchMedia",
+                                searchId.hashCode());
                     }
                 }
 
@@ -232,15 +271,38 @@ public abstract class SearchMediaService extends Service {
                     } catch (RemoteException ex) {
                         Log.e(TAG, "Unable to send back search error for searchId "
                                 + searchId, ex);
+                    } finally {
+                        Trace.endAsyncSection("SearchMediaService.onSearchMedia",
+                                searchId.hashCode());
                     }
                 }
             };
-            onSearchMedia(searchText, searchId, searchParams, receiver);
+
+            try {
+                Trace.beginAsyncSection("SearchMediaService.onSearchMedia", searchId.hashCode());
+                onSearchMedia(searchText, searchId, searchParams, receiver);
+            } catch (Exception e) {
+                String errorMessage = e.getMessage() != null ? e.getMessage() : "Unknown error";
+                receiver.onError(new SearchMediaException(searchId, errorMessage,
+                        SearchMediaException.ERROR_UNKNOWN, /* isRetryable */ false));
+            }
         }
 
         @Override
+        @RequiresApi(Build.VERSION_CODES.TIRAMISU)
         public void cancelSearch(String searchId) {
             onCancelSearch(searchId);
+        }
+
+        @Override
+        @RequiresApi(Build.VERSION_CODES.TIRAMISU)
+        public boolean isSemanticSearchSupported() {
+            try {
+                Trace.beginSection("SearchMediaService.isSemanticSearchSupported");
+                return onCheckSemanticSearchSupport();
+            } finally {
+                Trace.endSection();
+            }
         }
     };
 

@@ -434,6 +434,22 @@ public final class MediaStore {
      * @hide
      */
     @VisibleForTesting
+    public static final String CREATE_DOCUMENTS_FOR_SEARCH_MEDIA_CALL =
+            "create_documents_for_search_media_call";
+
+    /**
+     * Only used for testing.
+     * @hide
+     */
+    @VisibleForTesting
+    public static final String DELETE_DOCUMENTS_FOR_SEARCH_MEDIA_CALL =
+            "delete_documents_for_search_media_call";
+
+    /**
+     * Only used for testing.
+     * @hide
+     */
+    @VisibleForTesting
     public static final String RECOVER_DATA_CALL = "recover_data_call";
 
     /**
@@ -532,6 +548,13 @@ public final class MediaStore {
      */
     @VisibleForTesting
     public static final String MARK_FILE_AS_RESTORED = "mark_file_as_restored";
+
+    /**
+     * Only used for testing.
+     * @hide
+     */
+    @VisibleForTesting
+    public static final String EXTRA_MEDIA_ITEMS = "media_items";
 
     /**
      * Activity Action: Launch a music player.
@@ -1369,8 +1392,8 @@ public final class MediaStore {
     /**
      * The name of an optional intent-extra used to allow apps to request access to the location
      * metadata of the media items selected by the user and returned by
-     * {@link MediaStore#ACTION_PICK_IMAGES}.
-     * The extra can only be specified in {@link MediaStore#ACTION_PICK_IMAGES}.
+     * {@link MediaStore#ACTION_PICK_IMAGES} or {@link Intent#ACTION_GET_CONTENT}.
+     *
      * <p>
      * This is a boolean intent extra which when set to {@code true} informs the photopicker that
      * the app is requesting location information for the media items selected by the user.
@@ -1378,17 +1401,108 @@ public final class MediaStore {
      * location metadata of the selected media items with the calling app.
      *
      * <p>
-     * Using this intent extra does not guarantee that the calling app will get the location
-     * information. The media items selected by the user may not have any location metadata
-     * associated with them at all. The photopicker also reserves the right to inform the user of
-     * this request and the user's choice to share the location information will be final.
-     * The calling app will not be able to get the requested data in both these cases.
-     * However, if location access is granted, calling apps can then extract this metadata when the
+     * <b>For {@link MediaStore#ACTION_PICK_IMAGES}:</b>
+     * This extra is always required to request location metadata. If excluded, location metadata
+     * is redacted by default.
+     *
+     * <p>
+     * <b>For {@link Intent#ACTION_GET_CONTENT}:</b>
+     * The behavior depends on the calling app's Target SDK:
+     * <ul>
+     * <li>If the app targets higher than Android 16, this extra is the sole source of truth.
+     * It behaves exactly like {@link MediaStore#ACTION_PICK_IMAGES}.</li>
+     * <li>If the app targets Android 16 or lower, this extra is not supported. The photopicker
+     * will rely solely on whether the client has been granted the
+     * {@link android.Manifest.permission#ACCESS_MEDIA_LOCATION} permission to determine if
+     * location should be included.</li>
+     * </ul>
+     *
+     * <p>
+     * <b>Note on User Choice:</b>
+     * Using this intent extra (or holding the permission on older SDKs) does not guarantee that
+     * the calling app will get the location information. The photopicker reserves the right to
+     * inform the user of this request via the UI. The user's choice to allow or deny location
+     * sharing in the picker UI is <b>final</b>.
+     * <p>
+     * This user choice overrides both the value of this intent extra and the presence of the
+     * {@link android.Manifest.permission#ACCESS_MEDIA_LOCATION} permission.
+     *
+     * <p>
+     * If location access is ultimately granted, calling apps can extract this metadata when the
      * selected media files are opened using the returned picker URIs.
      */
     @FlaggedApi(Flags.FLAG_ENABLE_PICKER_LOCATION_METADATA_API)
-    public static final String EXTRA_PICK_IMAGES_REQUEST_LOCATION_METADATA_ACCESS =
-            "android.provider.extra.PICK_IMAGES_REQUEST_LOCATION_METADATA_ACCESS";
+    public static final String EXTRA_REQUEST_LOCATION_METADATA_ACCESS =
+            "android.provider.extra.REQUEST_LOCATION_METADATA_ACCESS";
+
+    /**
+     * The name of an optional intent-extra used to pass
+     * {@link android.widget.photopicker.PhotoPickerSelectionParams} to the photo picker. This extra
+     * can only be specified in {@link MediaStore#ACTION_PICK_IMAGES}.
+     * <p>
+     * The {@link android.widget.photopicker.PhotoPickerSelectionParams} object allows the calling
+     * app to set constraints on the media items that can be selected by the user. Media items that
+     * fail to satisfy these constraints will be disabled for selection.
+     *
+     * <p>
+     * Not passing this EXTRA, means the photo picker will not apply any restrictions on what
+     * media items users can select (except for the MIME type specified in the {@link
+     * android.content.Intent#setType(String)} extra).
+     *
+     * <p>
+     * To use this key, calling apps should construct a
+     * {@link android.widget.photopicker.PhotoPickerSelectionParams} object using its
+     * {@link android.widget.photopicker.PhotoPickerSelectionParams.Builder} and pass it as the
+     * value.<br>
+     * Example: If the calling app wants to allow selection of only those media items that have a
+     * maximum size of 10,000 bytes and a minimum resolution of 500 pixels:
+     * <pre>
+     * PhotoPickerSelectionParams selectionParams = new PhotoPickerSelectionParams.Builder()
+     *     .setMaxMediaItemSizeInBytes(10000L)
+     *     .setMinMediaItemResolutionInPixels(500L)
+     *     .build();
+     * Intent intent = new Intent(MediaStore.ACTION_PICK_IMAGES);
+     * intent.putExtra(MediaStore.EXTRA_PICK_IMAGES_SELECTION_PARAMS, selectionParams);
+     * </pre>
+     */
+    @FlaggedApi(Flags.FLAG_ENABLE_PHOTOPICKER_SELECTION_PARAMS_API)
+    public static final String EXTRA_PICK_IMAGES_SELECTION_PARAMS =
+            "android.provider.extra.PICK_IMAGES_SELECTION_PARAMS";
+
+    /**
+     * The name of an optional intent-extra used to set the ui customization options in the
+     * PhotoPicker.
+     * <p>
+     * The value of this intent-extra should be a
+     * {@link android.widget.photopicker.PhotoPickerUiCustomizationParams} object. The extra can
+     * only be specified in {@link MediaStore#ACTION_PICK_IMAGES}.
+     *
+     * <p>
+     * Not passing this EXTRA, means the photo picker will use its default UI (e.g. rendering the
+     * media items grid in 1:1 aspect ratio).
+     *
+     * <p>
+     * To use this key, calling apps should construct a
+     * {@link android.widget.photopicker.PhotoPickerUiCustomizationParams} object using its
+     * {@link android.widget.photopicker.PhotoPickerUiCustomizationParams.Builder} and pass it as
+     * the value.<br>
+     * Example: If the calling app wants to allow the Photo Picker to use a 9:16 aspect ratio
+     * for the thumbnails:
+     * <pre>
+     * PhotoPickerUiCustomizationParams params = new PhotoPickerUiCustomizationParams.Builder()
+     *     .setAspectRatio(PhotoPickerUiCustomizationParams.ASPECT_RATIO_PORTRAIT_9_16)
+     *     .build();
+     * Intent intent = new Intent(MediaStore.ACTION_PICK_IMAGES);
+     * intent.putExtra(MediaStore.EXTRA_PICK_IMAGES_UI_CUSTOMIZATION_PARAMS, params);
+     * </pre>
+     *
+     * @see android.widget.photopicker.PhotoPickerUiCustomizationParams
+     */
+    @FlaggedApi(Flags.FLAG_ENABLE_PHOTOPICKER_UI_CUSTOMIZATION_PARAMS_API)
+    public static final String EXTRA_PICK_IMAGES_UI_CUSTOMIZATION_PARAMS =
+            "android.provider.extra.PICK_IMAGES_UI_CUSTOMIZATION_PARAMS";
+
+    /**
 
     /**
      * Specify that the caller wants to receive the original media format without transcoding.
@@ -2122,13 +2236,15 @@ public final class MediaStore {
     }
 
     /**
-     * Gets the package name of the Search Media Service that client apps use to connect.
+     * Gets the package name of the {@link SearchMediaService} that client apps use to connect. If
+     * there is no OEM implementation, returns the package name of the default implementation of
+     * {@link SearchMediaService} provided by MediaProvider.
      */
     @FlaggedApi(Flags.FLAG_ENABLE_MEDIA_SEARCH)
     @NonNull
     public static String getPackageForSearchMediaService(@NonNull ContentResolver resolver) {
         Bundle result = resolver.call(AUTHORITY, GET_PACKAGE_FOR_SEARCH_MEDIA_SERVICE, null, null);
-        return result.getString(PACKAGE_FOR_SEARCH_MEDIA_SERVICE, "");
+        return result.getString(PACKAGE_FOR_SEARCH_MEDIA_SERVICE);
     }
 
 

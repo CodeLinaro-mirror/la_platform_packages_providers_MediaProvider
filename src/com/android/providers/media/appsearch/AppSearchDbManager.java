@@ -24,6 +24,7 @@ import static androidx.appsearch.app.Features.SCHEMA_SCORABLE_PROPERTY_CONFIG;
 import android.content.Context;
 import android.os.Build;
 import android.os.SystemClock;
+import android.os.Trace;
 import android.util.Log;
 
 import androidx.annotation.NonNull;
@@ -42,6 +43,7 @@ import androidx.appsearch.app.SearchSpec;
 import androidx.appsearch.app.SetSchemaRequest;
 import androidx.appsearch.platformstorage.PlatformStorage;
 
+import com.android.modules.utils.build.SdkLevel;
 import com.android.providers.media.flags.Flags;
 
 import java.util.ArrayList;
@@ -52,11 +54,22 @@ import java.util.Objects;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.stream.Collectors;
 
+/**
+ * Manages all interactions with the AppSearch database used for local media search.
+ *
+ * <p>This class encapsulates the logic for connecting to the database, setting and updating the
+ * schema, and performing thread-safe Create, Read, Update, and Delete (CRUD) operations on
+ * {@link MediaItem} documents.
+ *
+ * <p>All bulk operations have a limit of {@link #MAX_BULK_OPERATIONS_SIZE} documents per call.
+ *
+ * <p>Usage of this class is only supported on devices running Android T (API 33) or higher and
+ * when the {@code enable_media_search} flag is enabled.
+ */
 public final class AppSearchDbManager {
     private static final String TAG = AppSearchDbManager.class.getSimpleName();
+    public static final String NAMESPACE = "media_appsearch_namespace";
     static final String DATABASE_NAME = "media_appsearch_db";
-    static final String NAMESPACE = "media_appsearch_namespace";
-
     static final int LATEST_SCHEMA_VERSION = 1;
     static final String SHARED_PREFERENCE_NAME = "media_appsearch_schema_version";
     static final String CURRENT_SCHEMA_VERSION = "media_appsearch_current_schema_version";
@@ -70,19 +83,29 @@ public final class AppSearchDbManager {
      */
     private static final ReentrantReadWriteLock sReadWriteLock = new ReentrantReadWriteLock();
 
-    @RequiresApi(api = Build.VERSION_CODES.TIRAMISU)
     public AppSearchDbManager(@NonNull Context context) throws Exception {
-        if (!Flags.enableMediaSearch()) {
-            throw new IllegalStateException("Flag enable_media_search should be enabled.");
-        }
+        ensureAppSearchDbManagerSupported();
         this.mContext = context.getApplicationContext();
-        connect();
+        if (SdkLevel.isAtLeastT()) {
+            connect();
+        }
+    }
+
+    private static void ensureAppSearchDbManagerSupported() {
+        if (!Flags.enableMediaSearch()) {
+            throw new UnsupportedOperationException("Flag enable_media_search should be enabled.");
+        }
+
+        if (!SdkLevel.isAtLeastT()) {
+            throw new UnsupportedOperationException("Localsearch is only enabled for "
+                    + "Android T (API 33) or higher.");
+        }
     }
 
     /**
      * Connects to the AppSearch database and sets the schema.
      */
-    @RequiresApi(api = Build.VERSION_CODES.TIRAMISU)
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     private void connect() throws Exception {
         final long startTimeMillis = SystemClock.elapsedRealtime();
         try {
@@ -135,7 +158,6 @@ public final class AppSearchDbManager {
     /**
      * Disconnects from the AppSearch database.
      */
-    @RequiresApi(api = Build.VERSION_CODES.TIRAMISU)
     public void disconnect() {
         final long startTimeMillis = SystemClock.elapsedRealtime();
         sReadWriteLock.writeLock().lock();
@@ -162,7 +184,7 @@ public final class AppSearchDbManager {
      *                                  field values according to the validation checks in
      *                                  {@code validateMediaItemList}.
      */
-    @RequiresApi(api = Build.VERSION_CODES.TIRAMISU)
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     public void insertDocuments(@NonNull List<MediaItem> documents) throws Exception {
         if (documents.size() > MAX_BULK_OPERATIONS_SIZE) {
             throw new IllegalArgumentException("Document list size exceeds the limit of "
@@ -172,6 +194,7 @@ public final class AppSearchDbManager {
         final long startTimeMillis = SystemClock.elapsedRealtime();
         sReadWriteLock.writeLock().lock();
         try {
+            Trace.beginSection("AppSearchDbManager.insertDocuments");
             ensureAppSearchDbConnected();
             AppSearchBatchResult<String, Void> result = putDocuments(documents);
 
@@ -180,6 +203,7 @@ public final class AppSearchDbManager {
                     + ", Failures: " + result.getFailures().size());
         } finally {
             sReadWriteLock.writeLock().unlock();
+            Trace.endSection();
             Log.d(TAG, "insertDocuments() took " + (SystemClock.elapsedRealtime()
                     - startTimeMillis) + " ms");
         }
@@ -236,7 +260,7 @@ public final class AppSearchDbManager {
      *                                  invalid state according to the validation checks in
      *                                  {@code validateMediaItemList}.
      */
-    @RequiresApi(api = Build.VERSION_CODES.TIRAMISU)
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     public void updateDocuments(@NonNull Map<Long, UpdateSpec> updatesByFileId) throws Exception {
         if (updatesByFileId.size() > MAX_BULK_OPERATIONS_SIZE) {
             throw new IllegalArgumentException("Updates map size exceeds the limit of "
@@ -246,6 +270,7 @@ public final class AppSearchDbManager {
         ensureAppSearchDbConnected();
         sReadWriteLock.writeLock().lock();
         try {
+            Trace.beginSection("AppSearchDbManager.updateDocuments");
             List<Long> fileIds = new ArrayList<>(updatesByFileId.keySet());
             List<GenericDocument> documents = getDocumentsByFileIds(fileIds);
             List<MediaItem> docsToUpdate = new ArrayList<>();
@@ -268,10 +293,6 @@ public final class AppSearchDbManager {
 
                     try {
                         switch (property) {
-                            case MediaItem.PROPERTY_DATE_TAKEN ->
-                                    mediaItem.setDateTaken((long) value);
-                            case MediaItem.PROPERTY_MEDIA_TYPE ->
-                                    mediaItem.setMediaType((long) value);
                             case MediaItem.PROPERTY_METADATA_EXTRACTED ->
                                     mediaItem.setMetadataExtracted((String) value);
                             case MediaItem.PROPERTY_LOCATION_EXTRACTED ->
@@ -279,8 +300,6 @@ public final class AppSearchDbManager {
                             case MediaItem.PROPERTY_LABELS_EXTRACTED ->
                                     mediaItem.setLabelsExtracted((String) value);
                             case MediaItem.PROPERTY_DIRTY -> mediaItem.setDirty((boolean) value);
-                            case MediaItem.PROPERTY_VOLUME_NAME ->
-                                    mediaItem.setVolumeName((String) value);
                             case MediaItem.PROPERTY_EMBEDDINGS -> {
                                 @SuppressWarnings("unchecked")
                                 List<EmbeddingVector> embeddingList = (List<EmbeddingVector>) value;
@@ -305,6 +324,7 @@ public final class AppSearchDbManager {
             }
         } finally {
             sReadWriteLock.writeLock().unlock();
+            Trace.endSection();
             Log.d(TAG, "updateDocuments() took " + (SystemClock.elapsedRealtime()
                     - startTimeMillis) + " ms");
         }
@@ -320,7 +340,7 @@ public final class AppSearchDbManager {
      * @throws IllegalArgumentException if the list size exceeds {@link #MAX_BULK_OPERATIONS_SIZE}.
      * @return A list of {@link GenericDocument} matching the file IDs.
      */
-    @RequiresApi(api = Build.VERSION_CODES.TIRAMISU)
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     public List<GenericDocument> getDocumentsByFileIds(@NonNull List<Long> fileIds)
             throws Exception {
         if (fileIds.size() > MAX_BULK_OPERATIONS_SIZE) {
@@ -332,6 +352,7 @@ public final class AppSearchDbManager {
         ensureAppSearchDbConnected();
         sReadWriteLock.readLock().lock();
         try {
+            Trace.beginSection("AppSearchDbManager.getDocumentsByFileIds");
             if (fileIds.isEmpty()) {
                 return new ArrayList<>();
             }
@@ -358,6 +379,7 @@ public final class AppSearchDbManager {
             }
             return results;
         } finally {
+            Trace.endSection();
             sReadWriteLock.readLock().unlock();
             Log.d(TAG, "getDocumentsByFileIds() took " + (SystemClock.elapsedRealtime()
                     - startTimeMillis) + " ms");
@@ -373,7 +395,7 @@ public final class AppSearchDbManager {
      *                exceed {@link #MAX_BULK_OPERATIONS_SIZE}.
      * @throws IllegalArgumentException if the list size exceeds {@link #MAX_BULK_OPERATIONS_SIZE}.
      */
-    @RequiresApi(api = Build.VERSION_CODES.TIRAMISU)
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     public void deleteDocumentsByFileIds(@NonNull List<Long> fileIds)
             throws Exception {
         if (fileIds.size() > MAX_BULK_OPERATIONS_SIZE) {
@@ -384,6 +406,7 @@ public final class AppSearchDbManager {
         ensureAppSearchDbConnected();
         sReadWriteLock.writeLock().lock();
         try {
+            Trace.beginSection("AppSearchDbManager.deleteDocumentsByFileIds");
             if (fileIds.isEmpty()) {
                 return;
             }
@@ -403,7 +426,31 @@ public final class AppSearchDbManager {
                     + ", Failures: " + result.getFailures().size());
         } finally {
             sReadWriteLock.writeLock().unlock();
+            Trace.endSection();
             Log.d(TAG, "deleteDocumentsByFileIds() took " + (SystemClock.elapsedRealtime()
+                    - startTimeMillis) + " ms");
+        }
+    }
+
+    /**
+     * Deletes documents from AppSearch that match the given {@code query} string, additionally
+     * filtered by the criteria in the {@link SearchSpec} in a thread-safe manner.
+     *
+     * @param query      The query string.
+     * @param searchSpec The specification for the search.
+     */
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
+    public void deleteDocuments(String query, SearchSpec searchSpec) throws Exception {
+        final long startTimeMillis = SystemClock.elapsedRealtime();
+        ensureAppSearchDbConnected();
+        sReadWriteLock.writeLock().lock();
+        try {
+            Trace.beginSection("AppSearchDbManager.deleteDocuments");
+            mAppSearchSession.removeAsync(query, searchSpec).get();
+        } finally {
+            sReadWriteLock.writeLock().unlock();
+            Trace.endSection();
+            Log.d(TAG, "deleteDocuments() took " + (SystemClock.elapsedRealtime()
                     - startTimeMillis) + " ms");
         }
     }
@@ -416,18 +463,20 @@ public final class AppSearchDbManager {
      * @param searchSpec The specification for the search.
      * @return A {@link SearchResults} object to iterate through results.
      */
-    @RequiresApi(api = Build.VERSION_CODES.TIRAMISU)
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     public SearchResults searchDocuments(String query, SearchSpec searchSpec) {
         final long startTimeMillis = SystemClock.elapsedRealtime();
         ensureAppSearchDbConnected();
         sReadWriteLock.readLock().lock();
         try {
+            Trace.beginSection("AppSearchDbManager.searchDocuments");
             return mAppSearchSession.search(query, searchSpec);
         } catch (Exception e) {
             Log.e(TAG, "searchDocuments() failed for query " + query, e);
             throw new RuntimeException(e);
         } finally {
             sReadWriteLock.readLock().unlock();
+            Trace.endSection();
             Log.d(TAG, "searchDocuments() took " + (SystemClock.elapsedRealtime()
                     - startTimeMillis) + " ms");
         }
@@ -435,8 +484,7 @@ public final class AppSearchDbManager {
 
     private void ensureAppSearchDbConnected() {
         if (mAppSearchSession == null) {
-            throw new IllegalStateException("AppSearch session is not initialized. Please call the "
-                    + "connect() method first to establish a connection to AppSearch.");
+            throw new IllegalStateException("AppSearch session is not initialized.");
         }
     }
 
@@ -452,18 +500,14 @@ public final class AppSearchDbManager {
             return null;
         }
 
-        MediaItem item = new MediaItem();
-
-        item.setId(doc.getId());
-        item.setNamespace(doc.getNamespace());
-        item.setFileId(doc.getPropertyLong(MediaItem.PROPERTY_FILE_ID));
-        item.setDateTaken(doc.getPropertyLong(MediaItem.PROPERTY_DATE_TAKEN));
-        item.setMediaType(doc.getPropertyLong(MediaItem.PROPERTY_MEDIA_TYPE));
-        item.setDirty(doc.getPropertyBoolean(MediaItem.PROPERTY_DIRTY));
+        MediaItem item = new MediaItem(doc.getPropertyLong(MediaItem.PROPERTY_FILE_ID),
+                doc.getPropertyLong(MediaItem.PROPERTY_MEDIA_TYPE),
+                doc.getPropertyLong(MediaItem.PROPERTY_DATE_TAKEN),
+                doc.getPropertyString(MediaItem.PROPERTY_VOLUME_NAME));
+        item.setDirty(doc.getPropertyLong(MediaItem.PROPERTY_DIRTY) == 1L);
         item.setMetadataExtracted(doc.getPropertyString(MediaItem.PROPERTY_METADATA_EXTRACTED));
         item.setLocationExtracted(doc.getPropertyString(MediaItem.PROPERTY_LOCATION_EXTRACTED));
         item.setLabelsExtracted(doc.getPropertyString(MediaItem.PROPERTY_LABELS_EXTRACTED));
-        item.setVolumeName(doc.getPropertyString(MediaItem.PROPERTY_VOLUME_NAME));
         EmbeddingVector[] embeddings = doc.getPropertyEmbeddingArray(MediaItem.PROPERTY_EMBEDDINGS);
         if (embeddings != null) {
             item.setEmbeddings(Arrays.asList(embeddings));
@@ -471,10 +515,9 @@ public final class AppSearchDbManager {
         return item;
     }
 
-
-        /**
-         * A data class to encapsulate the information needed for a single document update.
-         */
+    /**
+     * A data class to encapsulate the information needed for a single document update.
+     */
     public static final class UpdateSpec {
         private final Map<String, Object> mPropertiesToUpdate;
 

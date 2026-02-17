@@ -25,7 +25,10 @@ import android.os.SystemProperties
 import android.os.UserHandle
 import android.provider.MediaStore
 import android.util.Log
+import android.widget.photopicker.PhotoPickerSelectionParams
+import android.widget.photopicker.PhotoPickerUiCustomizationParams
 import com.android.photopicker.core.navigation.PhotopickerDestinations
+import com.android.photopicker.data.model.AspectRatio
 import com.android.photopicker.features.highlightmediaresults.model.HighlightQuery
 import com.android.photopicker.features.highlightmediaresults.model.HighlightQueryResultsParams
 import com.android.photopicker.features.highlightmediaresults.model.QueryResultsHighlightType
@@ -83,11 +86,20 @@ enum class PhotopickerRuntimeEnv {
  * @property highlightQueryResultsParams a [HighlightQueryResultsParams] object from
  *   [MediaStore.EXTRA_PICK_IMAGES_HIGHLIGHT_QUERY_RESULTS] with default value signalling no media
  *   results are to be highlighted by the app.
- * @property flags a snapshot of the relevant flags in [DeviceConfig]. These are not live values.
+ * @property embeddedPickerLaunchedInExpandedState if the embedded photopicker has to be launched in
+ *   an expanded state.
+ * @property locationMetadataAccessRequested whether access to location metadata has been requested
+ *   for the current session, received as an intent extra from
+ *   [MediaStore.EXTRA_PICK_IMAGES_REQUEST_LOCATION_METADATA_ACCESS]
+ * @property selectionParams a [PhotoPickerSelectionParams] object from
+ *   [MediaStore.EXTRA_PICK_IMAGES_SELECTION_PARAMS] with default value of null.
+ * @property uiCustomizationParams a [PhotoPickerUiCustomizationParams] object from
+ *   [MediaStore.EXTRA_PICK_IMAGES_UI_CUSTOMIZATION_PARAMS] with default value of null.
  * @property deviceIsDebuggable if the device is running a build which has [ro.debuggable == 1]
+ * @property flags a snapshot of the relevant flags in [DeviceConfig]. These are not live values.
+ * @property sessionId identifies the current photopicker session
  * @property intent the [Intent] that Photopicker was launched with. This property is private to
  *   restrict access outside of this class.
- * @property sessionId identifies the current photopicker session
  */
 data class PhotopickerConfiguration(
     val runtimeEnv: PhotopickerRuntimeEnv = PhotopickerRuntimeEnv.ACTIVITY,
@@ -106,6 +118,8 @@ data class PhotopickerConfiguration(
         DEFAULT_HIGHLIGHT_QUERY_RESULTS_PARAMS,
     val embeddedPickerLaunchedInExpandedState: Boolean = false,
     val locationMetadataAccessRequested: Boolean = false,
+    val selectionParams: PhotoPickerSelectionParams? = null,
+    val uiCustomizationParams: PhotoPickerUiCustomizationParams? = null,
     val deviceIsDebuggable: Boolean = buildIsDebuggable,
     val flags: PhotopickerFlags = PhotopickerFlags(),
     val sessionId: Int,
@@ -235,5 +249,24 @@ data class PhotopickerConfiguration(
      */
     fun hasOnlyVideoMimeTypes(): Boolean {
         return mimeTypes.isNotEmpty() && mimeTypes.all { it.startsWith("video/") }
+    }
+
+    /**
+     * Returns the target aspect ratio for all grids displaying media items in the current session.
+     * If [PhotoPickerUiCustomizationParams] is not set then it defaults to 1:1 (Square).
+     *
+     * @return The target [AspectRatio] for media grid items.
+     */
+    fun getAspectRatioForMediaItemGrids(): AspectRatio {
+        return when {
+
+            // If params exist AND the ratio is set to 9:16, return 9:16.
+            uiCustomizationParams?.aspectRatio ==
+                PhotoPickerUiCustomizationParams.ASPECT_RATIO_PORTRAIT_9_16 ->
+                AspectRatio.PORTRAIT_9_16
+
+            // For everything else
+            else -> AspectRatio.SQUARE_1_1
+        }
     }
 }

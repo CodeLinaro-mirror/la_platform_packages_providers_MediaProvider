@@ -26,12 +26,9 @@ import android.annotation.FlaggedApi;
 import android.annotation.NonNull;
 import android.annotation.SystemApi;
 import android.database.CursorWindow;
-import android.os.Build;
 import android.os.Bundle;
 import android.os.Parcel;
 import android.os.Parcelable;
-
-import androidx.annotation.RequiresApi;
 
 import com.android.providers.media.flags.Flags;
 
@@ -45,7 +42,6 @@ import java.util.Objects;
  * @hide
  */
 @FlaggedApi(Flags.FLAG_ENABLE_MEDIA_SEARCH)
-@RequiresApi(Build.VERSION_CODES.TIRAMISU)
 @SystemApi
 public final class SearchMediaResultPage implements Parcelable {
     private static final String CURSOR_WINDOW_NAME = "search_media_cursor_window";
@@ -127,16 +123,36 @@ public final class SearchMediaResultPage implements Parcelable {
                 }
             };
 
+    /**
+     * Returns the unique ID that identifies the search request this page belongs to.
+     */
     @NonNull
     public String getSearchId() {
         return mSearchId;
     }
 
+
+    /**
+     * Returns the list of search results for this page.
+     */
     @NonNull
     public List<SearchMediaResult> getSearchResults() {
         return mSearchResults;
     }
 
+
+    /**
+     * Returns a {@link Bundle} containing additional metadata about the results.
+     *
+     * <p>
+     * <b>Expected keys for the {@code extras} Bundle:</b>
+     * <ul>
+     * <li><b>{@code EXTRA_NEXT_PAGE_TOKEN}</b> ({@code String}): A token required for
+     * fetching the next page of search results. The caller should pass this token
+     * as-is in the {@code searchParams} when querying for the next page.</li>
+     * </ul>
+     * </p>
+     */
     @NonNull
     public Bundle getExtras() {
         return mExtras;

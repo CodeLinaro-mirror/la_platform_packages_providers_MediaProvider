@@ -19,6 +19,8 @@ package com.android.photopicker.extensions
 import android.content.Intent
 import android.platform.test.annotations.RequiresFlagsEnabled
 import android.provider.MediaStore
+import android.widget.photopicker.PhotoPickerSelectionParams
+import android.widget.photopicker.PhotoPickerUiCustomizationParams
 import androidx.core.os.bundleOf
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.SmallTest
@@ -232,9 +234,9 @@ class IntentTest {
 
     @Test
     @RequiresFlagsEnabled(Flags.FLAG_ENABLE_PICKER_LOCATION_METADATA_API)
-    fun testisLocationMetadataAccessRequested() {
+    fun testisLocationMetadataAccessRequestedPickImages() {
         val intent = Intent(MediaStore.ACTION_PICK_IMAGES)
-        intent.putExtra(MediaStore.EXTRA_PICK_IMAGES_REQUEST_LOCATION_METADATA_ACCESS, true)
+        intent.putExtra(MediaStore.EXTRA_REQUEST_LOCATION_METADATA_ACCESS, true)
 
         val locationMetadataRequested = intent.isLocationMetadataAccessRequested(default = false)
 
@@ -245,10 +247,84 @@ class IntentTest {
     @RequiresFlagsEnabled(Flags.FLAG_ENABLE_PICKER_LOCATION_METADATA_API)
     fun testisLocationMetadataAccessRequestedGetContent() {
         val intent = Intent(Intent.ACTION_GET_CONTENT)
-        intent.putExtra(MediaStore.EXTRA_PICK_IMAGES_REQUEST_LOCATION_METADATA_ACCESS, true)
+        intent.putExtra(MediaStore.EXTRA_REQUEST_LOCATION_METADATA_ACCESS, true)
+
+        val locationMetadataRequested = intent.isLocationMetadataAccessRequested(default = false)
+
+        assertThat(locationMetadataRequested).isTrue()
+    }
+
+    @Test
+    @RequiresFlagsEnabled(Flags.FLAG_ENABLE_PICKER_LOCATION_METADATA_API)
+    fun testisLocationMetadataAccessRequestedUserSelectImagesForApp() {
+        val intent = Intent(MediaStore.ACTION_USER_SELECT_IMAGES_FOR_APP)
+        intent.putExtra(MediaStore.EXTRA_REQUEST_LOCATION_METADATA_ACCESS, true)
 
         assertThrows(IllegalIntentExtraException::class.java) {
             intent.isLocationMetadataAccessRequested(default = false)
+        }
+    }
+
+    @Test
+    @RequiresFlagsEnabled(Flags.FLAG_ENABLE_PHOTOPICKER_SELECTION_PARAMS_API)
+    fun testGetSelectionOptionsFromIntent() {
+        val maxMediaItemSizeBytes = 1024L
+        val selectionParams =
+            PhotoPickerSelectionParams.Builder()
+                .setMaxMediaItemSizeInBytes(maxMediaItemSizeBytes)
+                .build()
+        val intent = Intent(MediaStore.ACTION_PICK_IMAGES)
+        intent.putExtra(MediaStore.EXTRA_PICK_IMAGES_SELECTION_PARAMS, selectionParams)
+
+        val retrievedParams = intent.getPhotoPickerSelectionParams()
+
+        assertThat(retrievedParams).isNotNull()
+        assertThat(retrievedParams!!.maxMediaItemSizeInBytes).isEqualTo(maxMediaItemSizeBytes)
+    }
+
+    @Test
+    @RequiresFlagsEnabled(Flags.FLAG_ENABLE_PHOTOPICKER_SELECTION_PARAMS_API)
+    fun testGetSelectionOptionsFromIntentInvalidAction() {
+        val selectionOptions = PhotoPickerSelectionParams.Builder().build()
+        val intent = Intent(Intent.ACTION_GET_CONTENT)
+        intent.putExtra(MediaStore.EXTRA_PICK_IMAGES_SELECTION_PARAMS, selectionOptions)
+
+        assertThrows(IllegalIntentExtraException::class.java) {
+            intent.getPhotoPickerSelectionParams()
+        }
+    }
+
+    @Test
+    @RequiresFlagsEnabled(Flags.FLAG_ENABLE_PHOTOPICKER_UI_CUSTOMIZATION_PARAMS_API)
+    fun testGetUiCustomizationOptionsFromIntent() {
+        val uiCustomizationOptions =
+            PhotoPickerUiCustomizationParams.Builder()
+                .setAspectRatio(PhotoPickerUiCustomizationParams.ASPECT_RATIO_PORTRAIT_9_16)
+                .build()
+        val intent = Intent(MediaStore.ACTION_PICK_IMAGES)
+        intent.putExtra(
+            MediaStore.EXTRA_PICK_IMAGES_UI_CUSTOMIZATION_PARAMS,
+            uiCustomizationOptions,
+        )
+
+        val retrievedOptions = intent.getPickerUiCustomizationParams()
+
+        assertThat(retrievedOptions!!.getAspectRatio())
+            .isEqualTo(PhotoPickerUiCustomizationParams.ASPECT_RATIO_PORTRAIT_9_16)
+    }
+
+    @Test
+    @RequiresFlagsEnabled(Flags.FLAG_ENABLE_PHOTOPICKER_UI_CUSTOMIZATION_PARAMS_API)
+    fun testGetUiCustomizationOptionsFromIntentInvalidAction() {
+        val uiCustomizationOptions = PhotoPickerUiCustomizationParams.Builder().build()
+        val intent = Intent(Intent.ACTION_GET_CONTENT)
+        intent.putExtra(
+            MediaStore.EXTRA_PICK_IMAGES_UI_CUSTOMIZATION_PARAMS,
+            uiCustomizationOptions,
+        )
+
+        assertThrows(IllegalIntentExtraException::class.java) {
+            intent.getPickerUiCustomizationParams()
         }
     }
 }

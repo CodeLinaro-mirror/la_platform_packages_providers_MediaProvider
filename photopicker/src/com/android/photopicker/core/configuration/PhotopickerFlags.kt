@@ -52,7 +52,7 @@ data class PhotopickerFlags(
     val PICKER_LOCATION_METADATA_ENABLED: Boolean = Flags.enablePhotopickerLocationMetadata(),
     val PICKER_TRANSCODING_ENABLED: Boolean = Flags.enablePhotopickerTranscoding(),
     val PICKER_HIGHLIGHT_MEDIA_FEATURE_ENABLED: Boolean =
-        Flags.enablePickerHighlightSearchResultsApis() && Flags.highlightSearchResultsFeature(),
+        Flags.enablePickerHighlightSearchResultsApis(),
     val OWNED_PHOTOS_ENABLED: Boolean = Flags.revokeAccessOwnedPhotos(),
     val PICKER_THUMBNAIL_PRELOAD_ENABLED: Boolean = Flags.enablePhotopickerThumbnailPreload(),
     val POLAROID_ENABLED: Boolean = Flags.photopickerPolaroid(),
@@ -61,6 +61,11 @@ data class PhotopickerFlags(
         Flags.enablePhotopickerDeleteHistorySuggestion(),
     val PHOTOPICKER_DESKTOP_ENABLED: Boolean = Flags.enablePhotopickerDesktop(),
     val PICKER_OFFLINE_BANNERS_ENABLED: Boolean = Flags.enablePhotopickerOfflineBanners(),
+    val PICKER_BANNER_REDESIGN_ENABLED: Boolean = Flags.enablePhotopickerBannerRedesign(),
+    val CMP_IMPROVEMENTS_ENABLED: Boolean = Flags.enableCmpImprovements(),
+    val PICKER_UI_CUSTOMIZATION_ENABLED: Boolean =
+        Flags.enablePhotopickerUiCustomizationParamsApi() &&
+            Flags.enablePhotopickerUiCustomizationParamsUsage(),
 ) {
     /**
      * Implement a custom equals method to correctly check the equality of the Array member
@@ -87,6 +92,9 @@ data class PhotopickerFlags(
         if (PICKER_DELETE_HISTORY_SUGGESTION != other.PICKER_DELETE_HISTORY_SUGGESTION) return false
         if (PHOTOPICKER_DESKTOP_ENABLED != other.PHOTOPICKER_DESKTOP_ENABLED) return false
         if (PICKER_OFFLINE_BANNERS_ENABLED != other.PICKER_OFFLINE_BANNERS_ENABLED) return false
+        if (PICKER_BANNER_REDESIGN_ENABLED != other.PICKER_BANNER_REDESIGN_ENABLED) return false
+        if (CMP_IMPROVEMENTS_ENABLED != other.CMP_IMPROVEMENTS_ENABLED) return false
+        if (PICKER_UI_CUSTOMIZATION_ENABLED != other.PICKER_UI_CUSTOMIZATION_ENABLED) return false
         return true
     }
 
@@ -113,5 +121,8 @@ data class PhotopickerFlags(
             PICKER_DELETE_HISTORY_SUGGESTION,
             PHOTOPICKER_DESKTOP_ENABLED,
             PICKER_OFFLINE_BANNERS_ENABLED,
+            PICKER_BANNER_REDESIGN_ENABLED,
+            CMP_IMPROVEMENTS_ENABLED,
+            PICKER_UI_CUSTOMIZATION_ENABLED,
         )
 }
