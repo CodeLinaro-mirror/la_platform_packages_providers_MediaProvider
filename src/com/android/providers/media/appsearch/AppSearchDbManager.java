@@ -24,6 +24,7 @@ import static androidx.appsearch.app.Features.SCHEMA_SCORABLE_PROPERTY_CONFIG;
 import android.content.Context;
 import android.os.Build;
 import android.os.SystemClock;
+import android.os.Trace;
 import android.util.Log;
 
 import androidx.annotation.NonNull;
@@ -47,9 +48,11 @@ import com.android.providers.media.flags.Flags;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.stream.Collectors;
 
@@ -193,6 +196,7 @@ public final class AppSearchDbManager {
         final long startTimeMillis = SystemClock.elapsedRealtime();
         sReadWriteLock.writeLock().lock();
         try {
+            Trace.beginSection("AppSearchDbManager.insertDocuments");
             ensureAppSearchDbConnected();
             AppSearchBatchResult<String, Void> result = putDocuments(documents);
 
@@ -201,6 +205,7 @@ public final class AppSearchDbManager {
                     + ", Failures: " + result.getFailures().size());
         } finally {
             sReadWriteLock.writeLock().unlock();
+            Trace.endSection();
             Log.d(TAG, "insertDocuments() took " + (SystemClock.elapsedRealtime()
                     - startTimeMillis) + " ms");
         }
@@ -267,6 +272,7 @@ public final class AppSearchDbManager {
         ensureAppSearchDbConnected();
         sReadWriteLock.writeLock().lock();
         try {
+            Trace.beginSection("AppSearchDbManager.updateDocuments");
             List<Long> fileIds = new ArrayList<>(updatesByFileId.keySet());
             List<GenericDocument> documents = getDocumentsByFileIds(fileIds);
             List<MediaItem> docsToUpdate = new ArrayList<>();
@@ -320,6 +326,7 @@ public final class AppSearchDbManager {
             }
         } finally {
             sReadWriteLock.writeLock().unlock();
+            Trace.endSection();
             Log.d(TAG, "updateDocuments() took " + (SystemClock.elapsedRealtime()
                     - startTimeMillis) + " ms");
         }
@@ -347,6 +354,7 @@ public final class AppSearchDbManager {
         ensureAppSearchDbConnected();
         sReadWriteLock.readLock().lock();
         try {
+            Trace.beginSection("AppSearchDbManager.getDocumentsByFileIds");
             if (fileIds.isEmpty()) {
                 return new ArrayList<>();
             }
@@ -373,6 +381,7 @@ public final class AppSearchDbManager {
             }
             return results;
         } finally {
+            Trace.endSection();
             sReadWriteLock.readLock().unlock();
             Log.d(TAG, "getDocumentsByFileIds() took " + (SystemClock.elapsedRealtime()
                     - startTimeMillis) + " ms");
@@ -399,25 +408,26 @@ public final class AppSearchDbManager {
         ensureAppSearchDbConnected();
         sReadWriteLock.writeLock().lock();
         try {
+            Trace.beginSection("AppSearchDbManager.deleteDocumentsByFileIds");
             if (fileIds.isEmpty()) {
                 return;
             }
-            List<GenericDocument> docsToDelete = getDocumentsByFileIds(fileIds);
-            List<String> idsToDelete = docsToDelete.stream().map(GenericDocument::getId)
+
+            List<String> idsToDelete = fileIds.stream().map(String::valueOf)
                     .collect(Collectors.toList());
 
-            RemoveByDocumentIdRequest.Builder removeRequestBuilder =
-                    new RemoveByDocumentIdRequest.Builder(NAMESPACE);
-            removeRequestBuilder.addIds(idsToDelete);
+            RemoveByDocumentIdRequest removeRequest =
+                    new RemoveByDocumentIdRequest.Builder(NAMESPACE).addIds(idsToDelete).build();
 
             AppSearchBatchResult<String, Void> result =
-                    mAppSearchSession.removeAsync(removeRequestBuilder.build()).get();
+                    mAppSearchSession.removeAsync(removeRequest).get();
 
             Log.v(TAG, "Remove documents complete. Requested: " + idsToDelete.size()
                     + ", Success: " + result.getSuccesses().size()
                     + ", Failures: " + result.getFailures().size());
         } finally {
             sReadWriteLock.writeLock().unlock();
+            Trace.endSection();
             Log.d(TAG, "deleteDocumentsByFileIds() took " + (SystemClock.elapsedRealtime()
                     - startTimeMillis) + " ms");
         }
@@ -436,9 +446,11 @@ public final class AppSearchDbManager {
         ensureAppSearchDbConnected();
         sReadWriteLock.writeLock().lock();
         try {
+            Trace.beginSection("AppSearchDbManager.deleteDocuments");
             mAppSearchSession.removeAsync(query, searchSpec).get();
         } finally {
             sReadWriteLock.writeLock().unlock();
+            Trace.endSection();
             Log.d(TAG, "deleteDocuments() took " + (SystemClock.elapsedRealtime()
                     - startTimeMillis) + " ms");
         }
@@ -458,15 +470,62 @@ public final class AppSearchDbManager {
         ensureAppSearchDbConnected();
         sReadWriteLock.readLock().lock();
         try {
+            Trace.beginSection("AppSearchDbManager.searchDocuments");
             return mAppSearchSession.search(query, searchSpec);
         } catch (Exception e) {
             Log.e(TAG, "searchDocuments() failed for query " + query, e);
             throw new RuntimeException(e);
         } finally {
             sReadWriteLock.readLock().unlock();
+            Trace.endSection();
             Log.d(TAG, "searchDocuments() took " + (SystemClock.elapsedRealtime()
                     - startTimeMillis) + " ms");
         }
+    }
+
+    /**
+     * Retrieves all file IDs currently indexed in the AppSearch database.
+     * <p>
+     * This method uses a projection to strictly return only the file ID field,
+     * avoiding the overhead of loading embeddings or metadata.
+     *
+     * @return A set of all file IDs found in the namespace.
+     */
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
+    public Set<Long> getAllFileIds() throws Exception {
+        final long startTimeMillis = SystemClock.elapsedRealtime();
+        ensureAppSearchDbConnected();
+
+        Set<Long> allFileIds = new HashSet<>();
+
+        SearchSpec searchSpec = new SearchSpec.Builder()
+                .addFilterNamespaces(NAMESPACE)
+                .addFilterSchemas(MediaItem.SCHEMA_TYPE)
+                .addProjection(MediaItem.SCHEMA_TYPE, List.of(MediaItem.PROPERTY_FILE_ID))
+                .setResultCountPerPage(MAX_BULK_OPERATIONS_SIZE)
+                .build();
+
+        // Execute an empty query to match all documents
+        sReadWriteLock.readLock().lock();
+        try (SearchResults searchResults = mAppSearchSession.search("", searchSpec)) {
+            List<SearchResult> page = searchResults.getNextPageAsync().get();
+            while (page != null && !page.isEmpty()) {
+                for (SearchResult result : page) {
+                    GenericDocument doc = result.getGenericDocument();
+                    allFileIds.add(doc.getPropertyLong(MediaItem.PROPERTY_FILE_ID));
+                }
+                page = searchResults.getNextPageAsync().get();
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "getAllFileIds() failed", e);
+            throw e;
+        } finally {
+            sReadWriteLock.readLock().unlock();
+            Log.d(TAG, "getAllFileIds() took " + (SystemClock.elapsedRealtime() - startTimeMillis)
+                    + " ms, found " + allFileIds.size() + " items");
+        }
+
+        return allFileIds;
     }
 
     private void ensureAppSearchDbConnected() {

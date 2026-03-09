@@ -396,15 +396,6 @@ flag {
 }
 
 flag {
-    name: "enable_sd_card_category"
-    namespace: "mediaprovider"
-    description: "Enables displaying of media in sd card in a separate collection in photpicker"
-    is_fixed_read_only: true
-    is_exported: false
-    bug: "431958913"
-}
-
-flag {
     name: "enable_parallel_fuse_dir_ops"
     namespace: "mediaprovider"
     description: "Enables parallel FUSE directory operations"
@@ -564,5 +555,13 @@ flag {
     namespace: "mediaprovider"
     description: "This flag enables local search for photopicker"
     bug: "477829610"
+}
+
+flag {
+    name: "enable_cmp_improvements"
+    is_exported: false
+    namespace: "mediaprovider"
+    description: "This flag pushes the missing CMP requirements to implement cloud media provider."
+    bug: "478186126"
 }
 

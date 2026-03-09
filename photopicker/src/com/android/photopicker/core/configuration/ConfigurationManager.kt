@@ -198,10 +198,20 @@ class ConfigurationManager(
         val locationMetadataAccessRequested = featureInfo.isLocationMetadataRequested
 
         // Get calling app's constraints on items for them to be selectable
-        val selectionParams = featureInfo.selectionParams
+        val selectionParams =
+            if (Flags.enablePhotopickerSelectionParamsApi()) {
+                featureInfo.selectionParams
+            } else {
+                null
+            }
 
         // get calling app's ui customization params
-        val uiCustomizationParams = featureInfo.uiCustomizationParams
+        val uiCustomizationParams =
+            if (Flags.enablePhotopickerUiCustomizationParamsApi()) {
+                featureInfo.uiCustomizationParams
+            } else {
+                null
+            }
 
         // Use updateAndGet to ensure that the values are set before this method returns so that
         // the new configuration is immediately available to the new subscribers.
@@ -434,6 +444,10 @@ class ConfigurationManager(
             PICKER_DELETE_HISTORY_SUGGESTION = Flags.enablePhotopickerDeleteHistorySuggestion(),
             PICKER_OFFLINE_BANNERS_ENABLED = Flags.enablePhotopickerOfflineBanners(),
             PICKER_BANNER_REDESIGN_ENABLED = Flags.enablePhotopickerBannerRedesign(),
+            CMP_IMPROVEMENTS_ENABLED = Flags.enableCmpImprovements(),
+            PICKER_SELECTION_PARAMS_ENABLED =
+                Flags.enablePhotopickerSelectionParamsApi() &&
+                    Flags.enablePhotopickerSelectionParamsUsage(),
         )
     }
 

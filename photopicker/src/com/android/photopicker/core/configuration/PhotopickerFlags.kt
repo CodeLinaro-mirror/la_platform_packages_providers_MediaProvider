@@ -62,6 +62,12 @@ data class PhotopickerFlags(
     val PHOTOPICKER_DESKTOP_ENABLED: Boolean = Flags.enablePhotopickerDesktop(),
     val PICKER_OFFLINE_BANNERS_ENABLED: Boolean = Flags.enablePhotopickerOfflineBanners(),
     val PICKER_BANNER_REDESIGN_ENABLED: Boolean = Flags.enablePhotopickerBannerRedesign(),
+    val CMP_IMPROVEMENTS_ENABLED: Boolean = Flags.enableCmpImprovements(),
+    val PICKER_UI_CUSTOMIZATION_ENABLED: Boolean =
+        Flags.enablePhotopickerUiCustomizationParamsApi() &&
+            Flags.enablePhotopickerUiCustomizationParamsUsage(),
+    val PICKER_SELECTION_PARAMS_ENABLED: Boolean =
+        Flags.enablePhotopickerSelectionParamsApi() && Flags.enablePhotopickerSelectionParamsUsage(),
 ) {
     /**
      * Implement a custom equals method to correctly check the equality of the Array member
@@ -89,6 +95,9 @@ data class PhotopickerFlags(
         if (PHOTOPICKER_DESKTOP_ENABLED != other.PHOTOPICKER_DESKTOP_ENABLED) return false
         if (PICKER_OFFLINE_BANNERS_ENABLED != other.PICKER_OFFLINE_BANNERS_ENABLED) return false
         if (PICKER_BANNER_REDESIGN_ENABLED != other.PICKER_BANNER_REDESIGN_ENABLED) return false
+        if (CMP_IMPROVEMENTS_ENABLED != other.CMP_IMPROVEMENTS_ENABLED) return false
+        if (PICKER_UI_CUSTOMIZATION_ENABLED != other.PICKER_UI_CUSTOMIZATION_ENABLED) return false
+        if (PICKER_SELECTION_PARAMS_ENABLED != other.PICKER_SELECTION_PARAMS_ENABLED) return false
         return true
     }
 
@@ -116,5 +125,8 @@ data class PhotopickerFlags(
             PHOTOPICKER_DESKTOP_ENABLED,
             PICKER_OFFLINE_BANNERS_ENABLED,
             PICKER_BANNER_REDESIGN_ENABLED,
+            CMP_IMPROVEMENTS_ENABLED,
+            PICKER_UI_CUSTOMIZATION_ENABLED,
+            PICKER_SELECTION_PARAMS_ENABLED,
         )
 }

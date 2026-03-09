@@ -156,6 +156,8 @@ class PreviewViewModelTest {
             sizeInBytes = 1000L,
             mimeType = "image/png",
             standardMimeTypeExtension = 1,
+            width = 512,
+            height = 512,
         )
 
     val TEST_PRE_GRANTED_MEDIA_IMAGE =
@@ -186,6 +188,8 @@ class PreviewViewModelTest {
             sizeInBytes = 1000L,
             mimeType = "image/png",
             standardMimeTypeExtension = 1,
+            width = 512,
+            height = 512,
             isPreGranted = true,
         )
 
@@ -216,6 +220,8 @@ class PreviewViewModelTest {
             mimeType = "video/mp4",
             standardMimeTypeExtension = 1,
             duration = 10000,
+            width = 512,
+            height = 512,
         )
 
     @Before
@@ -422,7 +428,7 @@ class PreviewViewModelTest {
         }
     }
 
-    /** Ensures the selection is not snapshotted until requested. */
+    /** Ensures the selection is snapshotted on creation. */
     @Test
     fun testSnapshotSelection() {
 
@@ -472,18 +478,10 @@ class PreviewViewModelTest {
                     configurationManager,
                 )
 
-            var snapshot = viewModel.selectionSnapshot.first()
-
-            assertWithMessage("Selection snapshot did not match expected")
-                .that(snapshot)
-                .isEqualTo(emptySet<Media>())
-
-            viewModel.takeNewSelectionSnapshot()
-
-            // Wait for snapshot
+            // Wait for snapshot in init
             advanceTimeBy(100)
 
-            snapshot = viewModel.selectionSnapshot.first()
+            val snapshot = viewModel.selectionSnapshot.first()
 
             assertWithMessage("Selection snapshot did not match expected")
                 .that(snapshot)
