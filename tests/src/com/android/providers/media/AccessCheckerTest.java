@@ -47,8 +47,7 @@ import static com.google.common.truth.Truth.assertWithMessage;
 
 import static org.junit.Assert.assertThrows;
 
-import android.os.Environment;
-import android.provider.MediaStore;
+import android.os.Bundle;
 import android.system.Os;
 import android.text.TextUtils;
 
@@ -60,8 +59,6 @@ import org.junit.runner.RunWith;
 
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.List;
-import java.util.Optional;
 
 @RunWith(AndroidJUnit4.class)
 public class AccessCheckerTest {
@@ -317,27 +314,22 @@ public class AccessCheckerTest {
 
         // App with no permissions only has access to owned files
         assertWithMessage("Expected owned access SQL for Audio collection")
-                .that(getWhereForConstrainedAccess(hasNoPerms, AUDIO_MEDIA, false,
-                        /* includedDefaultDirectoriesOptional */ Optional.empty()))
+                .that(getWhereForConstrainedAccess(hasNoPerms, AUDIO_MEDIA, false, Bundle.EMPTY))
                 .isEqualTo(getWhereForOwnerPackageMatch(hasNoPerms)
                         + " OR is_ringtone=1 OR is_alarm=1 OR is_notification=1");
         assertWithMessage("Expected owned access SQL for Video collection")
-                .that(getWhereForConstrainedAccess(hasNoPerms, VIDEO_MEDIA, false,
-                        /* includedDefaultDirectoriesOptional */ Optional.empty()))
+                .that(getWhereForConstrainedAccess(hasNoPerms, VIDEO_MEDIA, false, Bundle.EMPTY))
                 .isEqualTo(getWhereForOwnerPackageMatch(hasNoPerms));
         assertWithMessage("Expected owned access SQL for Images collection")
-                .that(getWhereForConstrainedAccess(hasNoPerms, IMAGES_MEDIA, false,
-                        /* includedDefaultDirectoriesOptional */ Optional.empty()))
+                .that(getWhereForConstrainedAccess(hasNoPerms, IMAGES_MEDIA, false, Bundle.EMPTY))
                 .isEqualTo(getWhereForOwnerPackageMatch(hasNoPerms));
 
         // App with no permissions only has access to owned files
         assertWithMessage("Expected owned access SQL for Downloads collection")
-                .that(getWhereForConstrainedAccess(hasNoPerms, DOWNLOADS, false,
-                        /* includedDefaultDirectoriesOptional */ Optional.empty()))
+                .that(getWhereForConstrainedAccess(hasNoPerms, DOWNLOADS, false, Bundle.EMPTY))
                 .isEqualTo(getWhereForOwnerPackageMatch(hasNoPerms));
         assertWithMessage("Expected owned access SQL for FILES collection")
-                .that(getWhereForConstrainedAccess(hasNoPerms, FILES, false,
-                        /* includedDefaultDirectoriesOptional */ Optional.empty()))
+                .that(getWhereForConstrainedAccess(hasNoPerms, FILES, false, Bundle.EMPTY))
                 .isEqualTo(getWhereForOwnerPackageMatch(hasNoPerms));
     }
 
@@ -352,27 +344,12 @@ public class AccessCheckerTest {
         // App with READ_EXTERNAL_STORAGE or READ_MEDIA_* permission has access to only owned
         // non-media files or media files.
         assertWithMessage("Expected owned access SQL for Downloads collection")
-                .that(getWhereForConstrainedAccess(hasReadMedia, DOWNLOADS, false,
-                        /* includedDefaultDirectoriesOptional */ Optional.empty()))
+                .that(getWhereForConstrainedAccess(hasReadMedia, DOWNLOADS, false, Bundle.EMPTY))
                 .isEqualTo(getWhereForOwnerPackageMatch(hasReadMedia));
         assertWithMessage("Expected owned access SQL for FILES collection")
-                .that(getWhereForConstrainedAccess(hasReadMedia, FILES, false,
-                        /* includedDefaultDirectoriesOptional */ Optional.empty()))
+                .that(getWhereForConstrainedAccess(hasReadMedia, FILES, false, Bundle.EMPTY))
                 .isEqualTo(
                         getWhereForOwnerPackageMatch(hasReadMedia) + " OR " + getFilesAccessSql());
-        assertWithMessage("Expected owned access SQL for FILES collection")
-                .that(getWhereForConstrainedAccess(hasReadMedia, FILES, false,
-                        /* includedDefaultDirectoriesOptional */Optional.of(
-                                List.of(Environment.DIRECTORY_DCIM, Environment.DIRECTORY_PICTURES,
-                                        Environment.DIRECTORY_MOVIES))))
-                .isEqualTo(
-                        getWhereForOwnerPackageMatch(hasReadMedia) + " OR "
-                                + getFilesAccessSql() + " OR "
-                                + MediaStore.Files.FileColumns.RELATIVE_PATH + " LIKE 'DCIM/%'"
-                                + " OR " + MediaStore.Files.FileColumns.RELATIVE_PATH
-                                + " LIKE 'Pictures/%'"
-                                + " OR " + MediaStore.Files.FileColumns.RELATIVE_PATH
-                                + " LIKE 'Movies/%'");
     }
 
     @Test
@@ -382,27 +359,22 @@ public class AccessCheckerTest {
 
         // App with no permissions only has access to owned files.
         assertWithMessage("Expected owned access SQL for Audio collection")
-                .that(getWhereForConstrainedAccess(noPerms, AUDIO_MEDIA, true,
-                        /* includedDefaultDirectoriesOptional */ Optional.empty()))
+                .that(getWhereForConstrainedAccess(noPerms, AUDIO_MEDIA, true, Bundle.EMPTY))
                 .isEqualTo(getWhereForOwnerPackageMatch(noPerms)
                         + " OR is_ringtone=1 OR is_alarm=1 OR is_notification=1");
         assertWithMessage("Expected owned access SQL for Video collection")
-                .that(getWhereForConstrainedAccess(noPerms, VIDEO_MEDIA, true,
-                        /* includedDefaultDirectoriesOptional */ Optional.empty()))
+                .that(getWhereForConstrainedAccess(noPerms, VIDEO_MEDIA, true, Bundle.EMPTY))
                 .isEqualTo(getWhereForOwnerPackageMatch(noPerms));
         assertWithMessage("Expected owned access SQL for Images collection")
-                .that(getWhereForConstrainedAccess(noPerms, IMAGES_MEDIA, true,
-                        /* includedDefaultDirectoriesOptional */ Optional.empty()))
+                .that(getWhereForConstrainedAccess(noPerms, IMAGES_MEDIA, true, Bundle.EMPTY))
                 .isEqualTo(getWhereForOwnerPackageMatch(noPerms));
 
         // App with no permissions only has access to owned files
         assertWithMessage("Expected owned access SQL for Downloads collection")
-                .that(getWhereForConstrainedAccess(noPerms, DOWNLOADS, true,
-                        /* includedDefaultDirectoriesOptional */ Optional.empty()))
+                .that(getWhereForConstrainedAccess(noPerms, DOWNLOADS, true, Bundle.EMPTY))
                 .isEqualTo(getWhereForOwnerPackageMatch(noPerms));
         assertWithMessage("Expected owned access SQL for FILES collection")
-                .that(getWhereForConstrainedAccess(noPerms, FILES, true,
-                        /* includedDefaultDirectoriesOptional */ Optional.empty()))
+                .that(getWhereForConstrainedAccess(noPerms, FILES, true, Bundle.EMPTY))
                 .isEqualTo(getWhereForOwnerPackageMatch(noPerms));
     }
 
@@ -417,12 +389,10 @@ public class AccessCheckerTest {
         // App with write permission to media files has access write access to media files and owned
         // files.
         assertWithMessage("Expected owned access SQL for Downloads collection")
-                .that(getWhereForConstrainedAccess(hasReadPerms, DOWNLOADS, true,
-                        /* includedDefaultDirectoriesOptional */ Optional.empty()))
+                .that(getWhereForConstrainedAccess(hasReadPerms, DOWNLOADS, true, Bundle.EMPTY))
                 .isEqualTo(getWhereForOwnerPackageMatch(hasReadPerms));
         assertWithMessage("Expected owned access SQL for FILES collection")
-                .that(getWhereForConstrainedAccess(hasReadPerms, FILES, true,
-                        /* includedDefaultDirectoriesOptional */ Optional.empty()))
+                .that(getWhereForConstrainedAccess(hasReadPerms, FILES, true, Bundle.EMPTY))
                 .isEqualTo(getWhereForOwnerPackageMatch(hasReadPerms) + " OR "
                         + getFilesAccessSql());
     }
@@ -439,13 +409,11 @@ public class AccessCheckerTest {
         // Legacy app with WRITE_EXTERNAL_STORAGE permission has access to non-media files as well.
         // However, they don't have global write access to secondary volume.
         assertWithMessage("Expected where clause SQL for Downloads collection to be")
-                .that(getWhereForConstrainedAccess(hasLegacyWrite, DOWNLOADS, true,
-                        /* includedDefaultDirectoriesOptional */ Optional.empty()))
+                .that(getWhereForConstrainedAccess(hasLegacyWrite, DOWNLOADS, true, Bundle.EMPTY))
                 .isEqualTo(getWhereForOwnerPackageMatch(hasLegacyWrite) + " OR "
                         + AccessChecker.getWhereForExternalPrimaryMatch());
         assertWithMessage("Expected where clause SQL for FILES collection to be")
-                .that(getWhereForConstrainedAccess(hasLegacyWrite, FILES, true,
-                        /* includedDefaultDirectoriesOptional */ Optional.empty()))
+                .that(getWhereForConstrainedAccess(hasLegacyWrite, FILES, true, Bundle.EMPTY))
                 .isEqualTo(getWhereForOwnerPackageMatch(hasLegacyWrite) + " OR "
                         + AccessChecker.getWhereForExternalPrimaryMatch() + " OR "
                         + getFilesAccessSql());
