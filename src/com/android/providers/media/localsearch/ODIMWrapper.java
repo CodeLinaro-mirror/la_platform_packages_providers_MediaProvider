@@ -19,6 +19,8 @@ package com.android.providers.media.localsearch;
 import static com.android.providers.media.localsearch.ODIUtils.createAppSearchEmbeddingVectorFromResponse;
 import static com.android.providers.media.localsearch.ODIUtils.createEmbeddingRequestForText;
 import static com.android.providers.media.localsearch.ODIUtils.createEmbeddingVectorListFromResponse;
+import static com.android.providers.media.localsearch.ODIUtils.createImageDescriptionFromResponse;
+import static com.android.providers.media.localsearch.ODIUtils.createImageDescriptionRequestForMedia;
 
 import android.annotation.NonNull;
 import android.app.ondeviceintelligence.ModelDownloadCallback;
@@ -27,6 +29,10 @@ import android.app.ondeviceintelligence.OnDeviceIntelligenceManager;
 import android.app.ondeviceintelligence.embedding.EmbeddingModel;
 import android.app.ondeviceintelligence.embedding.EmbeddingRequest;
 import android.app.ondeviceintelligence.embedding.EmbeddingResponse;
+import android.app.ondeviceintelligence.imagedescription.ImageDescriptionCallback;
+import android.app.ondeviceintelligence.imagedescription.ImageDescriptionModel;
+import android.app.ondeviceintelligence.imagedescription.ImageDescriptionRequest;
+import android.app.ondeviceintelligence.imagedescription.ImageDescriptionResponse;
 import android.content.Context;
 import android.net.Uri;
 import android.os.Build;
@@ -64,6 +70,9 @@ public final class ODIMWrapper {
     private static final int GENERATE_EMBEDDINGS_FOR_MEDIA_TIMEOUT_SECONDS = 300;
     private static final int GENERATE_EMBEDDING_FOR_TEXT_TIMEOUT_SECONDS = 30;
     private static final int GENERATE_EMBEDDINGS_REQUEST_LIMIT = 100;
+    private static final int FETCH_IMAGE_DESCRIPTION_MODEL_TIMEOUT_SECONDS = 60;
+    private static final int GENERATE_DESCRIPTION_FOR_MEDIA_TIMEOUT_SECONDS = 300;
+    private static final int GENERATE_DESCRIPTION_REQUEST_LIMIT = 100;
     private final OnDeviceIntelligenceManager mIntelligenceManager;
     private final Executor mExecutor;
     private final Context mContext;
@@ -397,6 +406,255 @@ public final class ODIMWrapper {
         } catch (Exception e) {
             Log.e(TAG, "generateEmbeddingForSearchText: "
                     + "Error generating embeddings for search text", e);
+            throw new IllegalStateException(e);
+        }
+    }
+
+
+    /**
+     * Synchronously fetches the first available image description model.
+     *
+     * <p> ImageDescription is updated under the hood. There is a single version available at any
+     * time per Locale. Currently only English locale is supported.
+     *
+     * @return the {@link ImageDescriptionModel} instance.
+     */
+    @NonNull
+    private ImageDescriptionModel fetchImageDescriptionModel() {
+        if (mIntelligenceManager == null) {
+            throw new UnsupportedOperationException("OnDeviceIntelligenceManager is not available");
+        }
+
+        CompletableFuture<List<ImageDescriptionModel>> future = new CompletableFuture<>();
+        mIntelligenceManager.listImageDescriptionModels(mExecutor,
+                new OutcomeReceiver<List<ImageDescriptionModel>, OnDeviceIntelligenceException>() {
+                    @Override
+                    public void onResult(List<ImageDescriptionModel> result) {
+                        future.complete(result);
+                    }
+
+                    @Override
+                    public void onError(@NonNull OnDeviceIntelligenceException error) {
+                        future.completeExceptionally(error);
+                    }
+                });
+
+        try {
+            List<ImageDescriptionModel> descriptionModels = future.get(
+                    FETCH_IMAGE_DESCRIPTION_MODEL_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+
+            if (descriptionModels == null || descriptionModels.isEmpty()) {
+                throw new UnsupportedOperationException("No image description models found.");
+            }
+
+            ImageDescriptionModel model = descriptionModels.get(0);
+
+            if (model == null) {
+                throw new UnsupportedOperationException("No image description model found.");
+            }
+
+            return model;
+        } catch (Exception e) {
+            Log.e(TAG, "fetchImageDescriptionModel: Error getting image description model", e);
+            throw new IllegalStateException(e);
+        }
+    }
+
+    /**
+     * Synchronously fetches the status of a specific image description model.
+     *
+     * @param model the image description model whose status is to be fetched.
+     * @return the status of the model.
+     */
+    @NonNull
+    private Integer getImageDescriptionModelStatus(ImageDescriptionModel model) {
+        if (model == null) {
+            throw new IllegalArgumentException("Image Description Model is null");
+        }
+
+        CompletableFuture<Integer> future = new CompletableFuture<>();
+        model.getStatus(mExecutor, new OutcomeReceiver<Integer, OnDeviceIntelligenceException>() {
+            @Override
+            public void onResult(Integer result) {
+                future.complete(result);
+            }
+
+            @Override
+            public void onError(@NonNull OnDeviceIntelligenceException error) {
+                future.completeExceptionally(error);
+            }
+        });
+
+        try {
+            Integer status = future.get(GET_MODEL_STATUS_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            if (status == null) {
+                throw new UnsupportedOperationException("ImageDescriptionModel status is null");
+            }
+            return status;
+        } catch (Exception e) {
+            Log.e(TAG, "getImageDescriptionModelStatus: Error fetching model status", e);
+            throw new IllegalStateException(e);
+        }
+    }
+
+    /**
+     * Asynchronously downloads a specific image description model.
+     *
+     * @param model  the image description model to be downloaded.
+     * @param signal a cancellation signal to stop the download.
+     * @return a {@link CompletableFuture} that resolves to {@code true} if the download was
+     * successful, {@code false} otherwise.
+     */
+    private CompletableFuture<Boolean> downloadImageDescriptionModel(ImageDescriptionModel model,
+            CancellationSignal signal) {
+        if (model == null) {
+            throw new IllegalArgumentException("Image Description Model is null");
+        }
+
+        long downloadStartTime = SystemClock.elapsedRealtime();
+
+        CompletableFuture<Boolean> future = new CompletableFuture<>();
+
+        model.download(signal, mExecutor, new ModelDownloadCallback() {
+            @Override
+            public void onDownloadStarted(long bytesToDownload) {
+                Log.d(TAG, "Download started for " + model.getModelSignature() + ", Total "
+                        + "bytes to download: " + bytesToDownload);
+            }
+
+            @Override
+            public void onDownloadProgress(long bytesDownloaded) {
+                Log.d(TAG, "Download in progress for " + model.getModelSignature()
+                        + ", bytes downloaded: " + bytesDownloaded + " Time elapsed: " + (
+                        SystemClock.elapsedRealtime() - downloadStartTime) + "ms");
+            }
+
+            @Override
+            public void onDownloadFailed(int failureStatus, @Nullable String errorMessage) {
+                Log.d(TAG, "Download failed for " + model.getModelSignature() + ". Error: "
+                        + errorMessage + " Time elapsed: " + (SystemClock.elapsedRealtime()
+                        - downloadStartTime) + "ms");
+                future.complete(false);
+            }
+
+            @Override
+            public void onDownloadCompleted() {
+                Log.d(TAG, "Download completed for " + model.getModelSignature() + " Time elapsed: "
+                        + (SystemClock.elapsedRealtime() - downloadStartTime) + "ms");
+                future.complete(true);
+            }
+        });
+
+        return future;
+    }
+
+    /**
+     * Synchronously generates image descriptions for a list of media files identified by their
+     * URIs.
+     *
+     * @param model  the image description model to use for generation.
+     * @param uris   a list of URIs to generate image descriptions for.
+     * @param signal a cancellation signal to stop the generation.
+     * @return a map of URIs to their generated list of image descriptions.
+     */
+    @NonNull
+    public Map<Uri, List<String>> generateImageDescriptionForMedia(ImageDescriptionModel model,
+            List<Uri> uris, CancellationSignal signal) {
+        if (model == null) {
+            throw new IllegalArgumentException("Image Description Model is null");
+        }
+
+        if (uris == null || uris.isEmpty()) {
+            Log.d(TAG, "No media files provided for image description generation");
+            return new HashMap<>();
+        }
+
+        if (uris.size() > GENERATE_DESCRIPTION_REQUEST_LIMIT) {
+            throw new IllegalArgumentException("Requests batch exceeded size limit. Limit: "
+                    + GENERATE_DESCRIPTION_REQUEST_LIMIT + " Actual: " + uris.size());
+        }
+
+        try {
+            HashMap<Uri, ImageDescriptionRequest> imageDescriptionRequests = new HashMap<>();
+            for (Uri uri : uris) {
+                imageDescriptionRequests.put(uri,
+                        createImageDescriptionRequestForMedia(mContext, uri, /* prompt */ null));
+            }
+
+            ConcurrentHashMap<Uri, List<String>> uriToDescriptionMap = new ConcurrentHashMap<>();
+            CountDownLatch responseLatch = new CountDownLatch(imageDescriptionRequests.size());
+
+            for (Map.Entry<Uri, ImageDescriptionRequest> requestEntry :
+                    imageDescriptionRequests.entrySet()) {
+                if (signal.isCanceled()) {
+                    Log.d(TAG, "Processing cancelled. Skipping remaining request for uri: "
+                            + requestEntry.getKey());
+                    responseLatch.countDown();
+                    continue;
+                }
+
+                Uri uri = requestEntry.getKey();
+                ImageDescriptionRequest request = requestEntry.getValue();
+                if (request == null) {
+                    responseLatch.countDown();
+                    continue;
+                }
+
+                try {
+                    model.generateImageDescription(request, signal, mExecutor,
+                            new ImageDescriptionCallback() {
+                                @Override
+                                public void onNewText(@NonNull String text) {
+                                    // Do nothing. Wait for complete result.
+                                }
+
+                                /**
+                                 * Called when the image description generation is complete.
+                                 *
+                                 * <p> After the streaming is complete, this method will be invoked
+                                 * with the cumulative output. If the total output is too large to
+                                 * send via binder, the {@link ImageDescriptionResponse}
+                                 * may be populated with an empty description to indicate that the
+                                 * streaming is complete, as the content has already been
+                                 * streamed via {@link #onNewText(String)}.
+                                 */
+                                @Override
+                                public void onResult(@NonNull ImageDescriptionResponse result) {
+                                    if (result != null
+                                            && !result.getImageDescriptions().isEmpty()) {
+                                        uriToDescriptionMap.put(uri,
+                                                createImageDescriptionFromResponse(result));
+                                    }
+                                    responseLatch.countDown();
+                                }
+
+                                @Override
+                                public void onError(@NonNull OnDeviceIntelligenceException error) {
+                                    Log.e(TAG, "Error generating image description for uri: " + uri,
+                                            error);
+                                    responseLatch.countDown();
+                                }
+                            });
+                } catch (RuntimeException e) {
+                    // Catch synchronous failures (e.g., IPC failures, invalid arguments,
+                    // executor rejections)
+                    Log.e(TAG, "generateImageDescriptionForMedia: Synchronous failure "
+                            + "dispatching image description request for uri: " + uri, e);
+                    responseLatch.countDown();
+                }
+            }
+
+            if (!responseLatch.await(GENERATE_DESCRIPTION_FOR_MEDIA_TIMEOUT_SECONDS,
+                    TimeUnit.SECONDS)) {
+                Log.w(TAG, "generateImageDescriptionForMedia: "
+                        + "Timed out waiting for image descriptions. "
+                        + "Returning partial results: " + uriToDescriptionMap.size() + " out of "
+                        + imageDescriptionRequests.size() + " completed.");
+            }
+
+            return uriToDescriptionMap;
+        } catch (Exception e) {
+            Log.e(TAG, "generateImageDescriptionForMedia: Error generating image descriptions", e);
             throw new IllegalStateException(e);
         }
     }

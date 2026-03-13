@@ -17,15 +17,23 @@
 package com.android.providers.media.localsearch;
 
 import android.annotation.NonNull;
+import android.annotation.Nullable;
 import android.annotation.RequiresApi;
 import android.app.ondeviceintelligence.Content;
 import android.app.ondeviceintelligence.Part;
 import android.app.ondeviceintelligence.embedding.EmbeddingRequest;
 import android.app.ondeviceintelligence.embedding.EmbeddingResponse;
+import android.app.ondeviceintelligence.imagedescription.ImageDescriptionRequest;
+import android.app.ondeviceintelligence.imagedescription.ImageDescriptionResponse;
+import android.content.Context;
+import android.graphics.Bitmap;
+import android.graphics.ImageDecoder;
+import android.net.Uri;
 import android.os.Build;
 
 import androidx.appsearch.app.EmbeddingVector;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -121,5 +129,41 @@ public final class ODIUtils {
         }
 
         return resultVectors;
+    }
+
+    /**
+     * Creates an {@link ImageDescriptionRequest} for the provided media URI.
+     *
+     * @param context the application context.
+     * @param uri     the URI of the image to generate a description for.
+     * @param prompt  the prompt to be used for generating the image description.
+     * @return an {@link ImageDescriptionRequest} containing the image bitmap and prompt.
+     * @throws IOException if the image could not be decoded.
+     */
+    @NonNull
+    @RequiresApi(Build.VERSION_CODES.VANILLA_ICE_CREAM)
+    public static ImageDescriptionRequest createImageDescriptionRequestForMedia(
+            @NonNull Context context, @NonNull Uri uri, @Nullable String prompt)
+            throws IOException {
+        Bitmap imageBitmap = ImageDecoder.decodeBitmap(
+                ImageDecoder.createSource(context.getContentResolver(), uri));
+        return new ImageDescriptionRequest(imageBitmap, prompt);
+    }
+
+    /**
+     * Creates a list of image descriptions from the provided {@link ImageDescriptionResponse}.
+     *
+     * @param response the {@link ImageDescriptionResponse} from the on-device intelligence service.
+     * @return a list of generated image descriptions.
+     */
+    @NonNull
+    @RequiresApi(Build.VERSION_CODES.VANILLA_ICE_CREAM)
+    public static List<String> createImageDescriptionFromResponse(
+            @NonNull ImageDescriptionResponse response) {
+        List<String> description = new ArrayList<>();
+        for (ImageDescriptionResponse.ImageDescription desc : response.getImageDescriptions()) {
+            description.add(desc.getDescription().toString());
+        }
+        return description;
     }
 }
