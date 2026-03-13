@@ -37,6 +37,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -62,6 +63,7 @@ import com.android.photopicker.core.obtainViewModel
 import com.android.photopicker.core.selection.LocalSelection
 import com.android.photopicker.core.theme.LocalWindowSizeClass
 import com.android.photopicker.data.model.Group
+import com.android.photopicker.data.model.SelectionDisabledReason
 import com.android.photopicker.features.preview.PreviewFeature
 import com.android.photopicker.util.LocalLocalizationHelper
 import kotlinx.coroutines.flow.Flow
@@ -107,20 +109,27 @@ private fun AlbumMediaGrid(
     val navController = LocalNavController.current
 
     val items = albumItems.collectAsLazyPagingItems()
+    val configuration = LocalPhotopickerConfiguration.current
 
     // Collect the selection to notify the mediaGrid of selection changes.
     val selection by LocalSelection.current.flow.collectAsStateWithLifecycle()
 
-    val selectionLimit = LocalPhotopickerConfiguration.current.selectionLimit
-    val localizedSelectionLimit = LocalLocalizationHelper.current.getLocalizedCount(selectionLimit)
+    val selectionLimit = configuration.selectionLimit
+    val resources = LocalContext.current.resources
+    val localizationHelper = LocalLocalizationHelper.current
     val selectionLimitExceededMessage =
         stringResource(
             R.string.photopicker_selection_limit_exceeded_snackbar,
-            localizedSelectionLimit,
+            localizationHelper.getLocalizedCount(selectionLimit),
+        )
+    val selectionBatchSizeLimitExceededMessage =
+        SelectionDisabledReason.getSelectionBatchSizeLimitExceededMessage(
+            LocalPhotopickerConfiguration.current,
+            localizationHelper,
+            resources,
         )
     val scope = rememberCoroutineScope()
     val events = LocalEvents.current
-    val configuration = LocalPhotopickerConfiguration.current
 
     // Use the expanded layout any time the Width is Medium or larger.
     val isExpandedScreen: Boolean =
@@ -174,10 +183,18 @@ private fun AlbumMediaGrid(
                     aspectRatio = aspectRatio,
                     onItemClick = { item ->
                         if (item is MediaGridItem.MediaItem) {
+                            val disabledReasonMessage =
+                                item.media.disabledReason?.getDisabledMessage(
+                                    configuration,
+                                    localizationHelper,
+                                    resources,
+                                )
                             viewModel.handleAlbumMediaGridItemSelection(
                                 item.media,
                                 selectionLimitExceededMessage,
                                 album,
+                                disabledReasonMessage,
+                                selectionBatchSizeLimitExceededMessage,
                             )
                         }
                     },
