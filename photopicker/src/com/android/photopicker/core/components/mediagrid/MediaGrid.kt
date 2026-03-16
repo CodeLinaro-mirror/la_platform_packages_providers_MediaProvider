@@ -396,10 +396,12 @@ private fun defaultBuildMediaItem(
             // Padding is animated based on the selected state of the item. When the item is
             // selected, it should shrink in the cell and provide a surface background.
 
+            val shouldIndicateSelected =
+                isSelected && LocalPhotopickerConfiguration.current.selectionLimit > 1
 
             val padding by
                 animateDpAsState(
-                    if (isSelected) {
+                    if (shouldIndicateSelected) {
                         MEASUREMENT_SELECTED_INTERNAL_PADDING
                     } else {
                         MEASUREMENT_NOT_SELECTED_INTERNAL_PADDING
@@ -466,7 +468,7 @@ private fun defaultBuildMediaItem(
                     Box(
                         // Switch which modifier is getting applied based on if the item is
                         // selected or not.
-                        modifier = if (isSelected) selectedModifier else baseModifier
+                        modifier = if (shouldIndicateSelected) selectedModifier else baseModifier
                     ) {
 
                         // Load the media item through the Glide entrypoint.
@@ -562,66 +564,70 @@ private fun SelectedIconOverlay(isSelected: Boolean, selectedIndex: Int) {
             exit = scaleOut(animationSpec = emphasizedAccelerateFloat),
         ) {
             val configuration = LocalPhotopickerConfiguration.current
-            when (configuration.pickImagesInOrder) {
-                true -> {
-                    val numberFormatter = remember { NumberFormat.getInstance() }
-                    var rememberedIndex by remember { mutableStateOf(selectedIndex) }
+            val shouldIndicateSelected = configuration.selectionLimit > 1
+            if (shouldIndicateSelected) {
+                when (configuration.pickImagesInOrder) {
+                    true -> {
+                        val numberFormatter = remember { NumberFormat.getInstance() }
+                        var rememberedIndex by remember { mutableStateOf(selectedIndex) }
 
-                    LaunchedEffect(isSelected, selectedIndex) {
-                        if (isSelected) {
-                            rememberedIndex = selectedIndex
+                        LaunchedEffect(isSelected, selectedIndex) {
+                            if (isSelected) {
+                                rememberedIndex = selectedIndex
+                            }
                         }
-                    }
-                    Text(
-                        // Since this is a 0-based index, increment it by 1 for displaying
-                        // to the user.
-                        text = numberFormatter.format(rememberedIndex + 1),
-                        textAlign = TextAlign.Center,
-                        modifier =
-                            Modifier.circleBackground(
-                                color =
-                                    CustomAccentColorScheme.current.getAccentColorIfDefinedOrElse(
-                                        /* fallback */ MaterialTheme.colorScheme.primary
+                        Text(
+                            // Since this is a 0-based index, increment it by 1 for displaying
+                            // to the user.
+                            text = numberFormatter.format(rememberedIndex + 1),
+                            textAlign = TextAlign.Center,
+                            modifier =
+                                Modifier.circleBackground(
+                                    color =
+                                        CustomAccentColorScheme.current
+                                            .getAccentColorIfDefinedOrElse(
+                                                /* fallback */ MaterialTheme.colorScheme.primary
+                                            ),
+                                    padding = 1.dp,
+                                    borderColor = MaterialTheme.colorScheme.surfaceVariant,
+                                    borderWidth = MEASUREMENT_SELECTED_ICON_BORDER,
+                                ),
+                            style =
+                                LocalTextStyle.current.copy(
+                                    fontSize = MEASUREMENT_SELECTED_POSITION_FONT_SIZE
+                                ),
+                            color =
+                                CustomAccentColorScheme.current
+                                    .getTextColorForAccentComponentsIfDefinedOrElse(
+                                        MaterialTheme.colorScheme.onPrimary
                                     ),
-                                padding = 1.dp,
-                                borderColor = MaterialTheme.colorScheme.surfaceVariant,
-                                borderWidth = MEASUREMENT_SELECTED_ICON_BORDER,
-                            ),
-                        style =
-                            LocalTextStyle.current.copy(
-                                fontSize = MEASUREMENT_SELECTED_POSITION_FONT_SIZE
-                            ),
-                        color =
-                            CustomAccentColorScheme.current
-                                .getTextColorForAccentComponentsIfDefinedOrElse(
-                                    MaterialTheme.colorScheme.onPrimary
-                                ),
-                        maxLines = 1,
-                        softWrap = false,
-                    )
-                }
+                            maxLines = 1,
+                            softWrap = false,
+                        )
+                    }
 
-                false ->
-                    Icon(
-                        ImageVector.vectorResource(R.drawable.photopicker_selected_media),
-                        modifier =
-                            Modifier
-                                // Background is necessary because the icon has negative
-                                // space.
-                                .background(MaterialTheme.colorScheme.onPrimary, CircleShape)
-                                // Border color should match the surface that is behind
-                                // the image.
-                                .border(
-                                    MEASUREMENT_SELECTED_ICON_BORDER,
-                                    MaterialTheme.colorScheme.surfaceContainerHighest,
-                                    CircleShape,
+                    false ->
+                        Icon(
+                            ImageVector.vectorResource(R.drawable.photopicker_selected_media),
+                            modifier =
+                                Modifier
+                                    // Background is necessary because the icon has negative
+                                    // space.
+                                    .background(MaterialTheme.colorScheme.onPrimary, CircleShape)
+                                    // Border color should match the surface that is behind
+                                    // the image.
+                                    .border(
+                                        MEASUREMENT_SELECTED_ICON_BORDER,
+                                        MaterialTheme.colorScheme.surfaceContainerHighest,
+                                        CircleShape,
+                                    ),
+                            contentDescription = stringResource(R.string.photopicker_item_selected),
+                            tint =
+                                CustomAccentColorScheme.current.getAccentColorIfDefinedOrElse(
+                                    /* fallback */ MaterialTheme.colorScheme.primary
                                 ),
-                        contentDescription = stringResource(R.string.photopicker_item_selected),
-                        tint =
-                            CustomAccentColorScheme.current.getAccentColorIfDefinedOrElse(
-                                /* fallback */ MaterialTheme.colorScheme.primary
-                            ),
-                    )
+                        )
+                }
             }
         } // Image + Icon Container
     }
