@@ -59,11 +59,9 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.PointerEventPass
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.res.vectorResource
 import androidx.compose.ui.semantics.onClick
@@ -101,8 +99,6 @@ import com.android.photopicker.extensions.getOrNull
 import com.android.photopicker.extensions.navigateToPreviewSelection
 import com.android.photopicker.util.HierarchicalFocusCoordinator
 import com.android.photopicker.util.LocalLocalizationHelper
-import com.android.photopicker.util.MEASUREMENT_DISABLED_GRADIENT_ALPHA
-import com.android.photopicker.util.SelectionDisabledOverlay
 import com.android.photopicker.util.getMediaContentDescription
 import com.android.photopicker.util.rememberActiveFocusRequester
 import java.text.DateFormat
@@ -163,10 +159,11 @@ fun PreviewSelection(
     val selection = selectionFlow?.collectAsLazyPagingItems()
 
     if (selection != null) {
-        val localizationHelper = LocalLocalizationHelper.current
-        val resources = LocalContext.current.resources
         val dateFormat =
-            localizationHelper.getLocalizedDateTimeFormatter(DateFormat.MEDIUM, DateFormat.SHORT)
+            LocalLocalizationHelper.current.getLocalizedDateTimeFormatter(
+                DateFormat.MEDIUM,
+                DateFormat.SHORT,
+            )
         val navController = LocalNavController.current
 
         Surface(modifier = Modifier.fillMaxSize(), color = Color.Black) {
@@ -198,6 +195,7 @@ fun PreviewSelection(
 
                 // Page count equal to size of selection
                 val state = rememberPagerState { selection.itemCount }
+                val config = LocalPhotopickerConfiguration.current
 
                 Box(
                     modifier =
@@ -316,6 +314,7 @@ fun PreviewSelection(
                             .padding(bottom = 48.dp, start = 4.dp, end = 16.dp, top = 12.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                 ) {
+                    val config = LocalPhotopickerConfiguration.current
                     val strategy = remember(config) { determineSelectionStrategy(config) }
                     if (previewSingleItem || strategy == SelectionStrategy.GRANTS_AWARE_SELECTION) {
                         Spacer(Modifier.size(8.dp))
@@ -332,25 +331,11 @@ fun PreviewSelection(
                         onClick = {
                             if (isSingleSelectSinglePreviewMode) {
                                 val media = selection.getOrNull(index = state.currentPage)
-                                media?.let {
-                                    if (it.disabledReason != null) {
-                                        val message =
-                                            it.disabledReason!!.getDisabledMessage(
-                                                config,
-                                                localizationHelper,
-                                                resources,
-                                            )
-                                        scope.launch { snackbarHostState.showSnackbar(message) }
-                                    } else {
-                                        viewModel.toggleInSelection(it, {})
-                                        scope.launch {
-                                            events.dispatch(
-                                                Event.MediaSelectionConfirmed(
-                                                    FeatureToken.PREVIEW.token
-                                                )
-                                            )
-                                        }
-                                    }
+                                media?.let { viewModel.toggleInSelection(it, {}) }
+                                scope.launch {
+                                    events.dispatch(
+                                        Event.MediaSelectionConfirmed(FeatureToken.PREVIEW.token)
+                                    )
                                 }
                             } else {
                                 navController.popBackStack()
@@ -489,21 +474,6 @@ private fun PreviewPager(
                                 singleItemPreview,
                                 contentDescription,
                             )
-                    }
-
-                    if (media.disabledReason != null) {
-                        val scrimColors =
-                            listOf(
-                                Color.Black.copy(alpha = MEASUREMENT_DISABLED_GRADIENT_ALPHA),
-                                Color.Transparent,
-                            )
-                        val bottomScrimGradient = Brush.verticalGradient(scrimColors.reversed())
-                        SelectionDisabledOverlay(
-                            modifier =
-                                Modifier.align(Alignment.BottomCenter)
-                                    .fillMaxWidth()
-                                    .background(bottomScrimGradient)
-                        )
                     }
                 }
             }

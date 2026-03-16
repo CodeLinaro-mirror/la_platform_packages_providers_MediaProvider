@@ -65,7 +65,6 @@ import com.android.photopicker.core.selection.LocalSelection
 import com.android.photopicker.core.theme.LocalWindowSizeClass
 import com.android.photopicker.data.model.Group
 import com.android.photopicker.data.model.Media
-import com.android.photopicker.data.model.SelectionDisabledReason
 import com.android.photopicker.extensions.navigateToPreviewMedia
 import com.android.photopicker.features.preview.PreviewFeature
 import com.android.photopicker.util.LocalLocalizationHelper
@@ -121,12 +120,6 @@ private fun MediasetContentGrid(
         stringResource(
             R.string.photopicker_selection_limit_exceeded_snackbar,
             localizationHelper.getLocalizedCount(selectionLimit),
-        )
-    val selectionBatchSizeLimitExceededMessage =
-        SelectionDisabledReason.getSelectionBatchSizeLimitExceededMessage(
-            LocalPhotopickerConfiguration.current,
-            localizationHelper,
-            resources,
         )
     // Use the expanded layout any time the Width is Medium or larger.
     val isExpandedScreen: Boolean =
@@ -284,7 +277,6 @@ private fun MediasetContentGrid(
                                 item.media,
                                 selectionLimitExceededMessage,
                                 disabledReasonMessage,
-                                selectionBatchSizeLimitExceededMessage,
                             )
                         }
                     },

@@ -97,7 +97,6 @@ import com.android.photopicker.core.navigation.LocalNavController
 import com.android.photopicker.core.obtainViewModel
 import com.android.photopicker.core.selection.LocalSelection
 import com.android.photopicker.data.model.Group
-import com.android.photopicker.data.model.SelectionDisabledReason
 import com.android.photopicker.extensions.navigateToAlbumMediaGridForCategories
 import com.android.photopicker.extensions.shimmerEffect
 import com.android.photopicker.features.categorygrid.CategoryGridViewModel
@@ -151,33 +150,23 @@ fun HighlightMedia(
     modifier: Modifier = Modifier,
     highlightMediaViewModel: HighlightMediaViewModel = obtainViewModel(isActivityScoped = true),
 ) {
-    val configuration = LocalPhotopickerConfiguration.current
-    val highlightParams: HighlightQueryResultsParams = configuration.highlightQueryResultsParams
+    val highlightParams: HighlightQueryResultsParams =
+        LocalPhotopickerConfiguration.current.highlightQueryResultsParams
     val highlightQuery: HighlightQuery = highlightParams.queryResultsHighlightQuery
     val showHighlightSection by
         highlightMediaViewModel.showHighlightSection.collectAsStateWithLifecycle()
 
     val scope = rememberCoroutineScope()
     val events = LocalEvents.current
+    val configuration = LocalPhotopickerConfiguration.current
 
     if (!checkHighlightParamsValidity(highlightParams)) {
         return
     }
 
-    val selectionLimit = configuration.selectionLimit
-    val localizationHelper = LocalLocalizationHelper.current
-    val resources = LocalContext.current.resources
+    val selectionLimit = LocalPhotopickerConfiguration.current.selectionLimit
     val selectionLimitExceededMessage =
-        stringResource(
-            R.string.photopicker_selection_limit_exceeded_snackbar,
-            localizationHelper.getLocalizedCount(selectionLimit),
-        )
-    val selectionBatchSizeLimitExceededMessage =
-        SelectionDisabledReason.getSelectionBatchSizeLimitExceededMessage(
-            configuration,
-            localizationHelper,
-            resources,
-        )
+        stringResource(R.string.photopicker_selection_limit_exceeded_snackbar, selectionLimit)
     AnimatedVisibility(
         visible = showHighlightSection,
         exit = fadeOut(animationSpec = tween(durationMillis = 300, easing = LinearEasing)),
@@ -213,18 +202,9 @@ fun HighlightMedia(
                             modifier = modifier,
                             dispatcher = viewModel.backgroundDispatcher,
                             onGridItemSelection = { highlightMediaItem ->
-                                val disabledReasonMessage =
-                                    highlightMediaItem.media.disabledReason?.getDisabledMessage(
-                                        configuration,
-                                        localizationHelper,
-                                        resources,
-                                    )
                                 viewModel.handleGridItemSelection(
                                     item = highlightMediaItem.media,
                                     selectionLimitExceededMessage = selectionLimitExceededMessage,
-                                    disabledReasonMessage = disabledReasonMessage,
-                                    selectionBatchSizeLimitExceededMessage =
-                                        selectionBatchSizeLimitExceededMessage,
                                     selectionSource = Telemetry.MediaLocation.HIGHLIGHT_MEDIA_GRID,
                                 )
                                 scope.launch {
@@ -279,18 +259,10 @@ fun HighlightMedia(
                             modifier = modifier,
                             dispatcher = viewModel.backgroundDispatcher,
                             onGridItemSelection = { highlightMediaItem ->
-                                val disabledReasonMessage =
-                                    highlightMediaItem.media.disabledReason?.getDisabledMessage(
-                                        configuration,
-                                        localizationHelper,
-                                        resources,
-                                    )
                                 viewModel.handleAlbumMediaGridItemSelection(
                                     highlightMediaItem.media,
                                     selectionLimitExceededMessage,
                                     highlightBaseAlbum,
-                                    disabledReasonMessage,
-                                    selectionBatchSizeLimitExceededMessage,
                                     Telemetry.MediaLocation.HIGHLIGHT_MEDIA_GRID,
                                 )
                                 scope.launch {

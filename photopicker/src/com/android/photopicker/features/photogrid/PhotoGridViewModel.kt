@@ -35,7 +35,6 @@ import com.android.photopicker.core.events.Telemetry
 import com.android.photopicker.core.features.FeatureManager
 import com.android.photopicker.core.features.FeatureToken.PHOTO_GRID
 import com.android.photopicker.core.selection.Selection
-import com.android.photopicker.core.selection.SelectionModifiedResult.FAILURE_SELECTION_BATCH_SIZE_LIMIT_EXCEEDED
 import com.android.photopicker.core.selection.SelectionModifiedResult.FAILURE_SELECTION_LIMIT_EXCEEDED
 import com.android.photopicker.data.DataService
 import com.android.photopicker.data.model.Media
@@ -201,7 +200,6 @@ constructor(
     fun handleGridItemSelection(
         item: Media,
         selectionLimitExceededMessage: String,
-        selectionBatchSizeLimitExceededMessage: String? = null,
         disabledReasonMessage: String? = null,
     ) {
         disabledReasonMessage?.let {
@@ -219,18 +217,12 @@ constructor(
             )
         scope.launch {
             val result = selection.toggle(updatedMediaItem)
-            when (result) {
-                FAILURE_SELECTION_LIMIT_EXCEEDED -> {
+            if (result == FAILURE_SELECTION_LIMIT_EXCEEDED) {
+                scope.launch {
                     events.dispatch(
                         Event.ShowSnackbarMessage(PHOTO_GRID.token, selectionLimitExceededMessage)
                     )
                 }
-                FAILURE_SELECTION_BATCH_SIZE_LIMIT_EXCEEDED -> {
-                    selectionBatchSizeLimitExceededMessage?.let {
-                        events.dispatch(Event.ShowSnackbarMessage(PHOTO_GRID.token, it))
-                    }
-                }
-                else -> {}
             }
         }
     }

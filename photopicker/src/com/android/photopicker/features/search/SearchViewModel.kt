@@ -35,8 +35,7 @@ import com.android.photopicker.core.events.Events
 import com.android.photopicker.core.events.Telemetry
 import com.android.photopicker.core.features.FeatureToken
 import com.android.photopicker.core.selection.Selection
-import com.android.photopicker.core.selection.SelectionModifiedResult.FAILURE_SELECTION_BATCH_SIZE_LIMIT_EXCEEDED
-import com.android.photopicker.core.selection.SelectionModifiedResult.FAILURE_SELECTION_LIMIT_EXCEEDED
+import com.android.photopicker.core.selection.SelectionModifiedResult
 import com.android.photopicker.data.DataService
 import com.android.photopicker.data.model.Icon
 import com.android.photopicker.data.model.Media
@@ -399,22 +398,14 @@ constructor(
     fun handleGridItemSelection(
         item: Media,
         selectionLimitExceededMessage: String,
-        disabledReasonMessage: String? = null,
-        selectionBatchSizeLimitExceededMessage: String? = null,
         selectionSource: Telemetry.MediaLocation = Telemetry.MediaLocation.SEARCH_GRID,
     ) {
-        disabledReasonMessage?.let {
-            scope.launch {
-                events.dispatch(Event.ShowSnackbarMessage(FeatureToken.SEARCH.token, it))
-            }
-            return
-        }
         val updatedMediaItem =
             Media.withSelectable(item, /* selectionSource */ selectionSource, /* album */ null)
         scope.launch {
             val result = selection.toggle(updatedMediaItem)
-            when (result) {
-                FAILURE_SELECTION_LIMIT_EXCEEDED -> {
+            if (result == SelectionModifiedResult.FAILURE_SELECTION_LIMIT_EXCEEDED) {
+                scope.launch {
                     events.dispatch(
                         Event.ShowSnackbarMessage(
                             FeatureToken.SEARCH.token,
@@ -422,12 +413,6 @@ constructor(
                         )
                     )
                 }
-                FAILURE_SELECTION_BATCH_SIZE_LIMIT_EXCEEDED -> {
-                    selectionBatchSizeLimitExceededMessage?.let {
-                        events.dispatch(Event.ShowSnackbarMessage(FeatureToken.SEARCH.token, it))
-                    }
-                }
-                else -> {}
             }
         }
     }
