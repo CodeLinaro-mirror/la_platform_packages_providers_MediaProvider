@@ -238,9 +238,7 @@ class HighlightMediaResultsFeatureTest : PhotopickerFeatureBaseTest() {
     }
 
     @Test
-    @EnableFlags(
-        Flags.FLAG_ENABLE_PICKER_HIGHLIGHT_SEARCH_RESULTS_APIS
-    )
+    @EnableFlags(Flags.FLAG_ENABLE_PICKER_HIGHLIGHT_SEARCH_RESULTS_APIS)
     @DisableFlags(Flags.FLAG_ENABLE_PHOTOPICKER_SEARCH)
     fun testHighlightMediaFeatureWhenSearchIsDisabled() {
         val testActionPickImagesConfiguration: PhotopickerConfiguration =
@@ -262,9 +260,7 @@ class HighlightMediaResultsFeatureTest : PhotopickerFeatureBaseTest() {
 
     @Test
     @EnableFlags(Flags.FLAG_ENABLE_PHOTOPICKER_SEARCH)
-    @DisableFlags(
-        Flags.FLAG_ENABLE_PICKER_HIGHLIGHT_SEARCH_RESULTS_APIS,
-    )
+    @DisableFlags(Flags.FLAG_ENABLE_PICKER_HIGHLIGHT_SEARCH_RESULTS_APIS)
     fun testHighlightMediaFeatureWhenHighlightMediaFlagsAreDisabled() {
         val testActionPickImagesConfiguration: PhotopickerConfiguration =
             TestPhotopickerConfiguration.build {
@@ -356,9 +352,7 @@ class HighlightMediaResultsFeatureTest : PhotopickerFeatureBaseTest() {
 
     @Test
     @DisableFlags(Flags.FLAG_ENABLE_PHOTOPICKER_SEARCH)
-    @EnableFlags(
-        Flags.FLAG_ENABLE_PICKER_HIGHLIGHT_SEARCH_RESULTS_APIS
-    )
+    @EnableFlags(Flags.FLAG_ENABLE_PICKER_HIGHLIGHT_SEARCH_RESULTS_APIS)
     fun testHighlightMediaFeatureWhenAlbumHighlightIsRequested() {
         val testActionPickImagesConfiguration: PhotopickerConfiguration =
             TestPhotopickerConfiguration.build {
@@ -433,31 +427,23 @@ class HighlightMediaResultsFeatureTest : PhotopickerFeatureBaseTest() {
             val callingPackageLabel = "TestPackage"
 
             composeTestRule.setContent {
+                val photopickerConfiguration =
+                    TestPhotopickerConfiguration.build {
+                        highlightQueryResultsParams(highlightParams)
+                        action(MediaStore.ACTION_PICK_IMAGES)
+                        intent(Intent(MediaStore.ACTION_PICK_IMAGES))
+                        callingPackageLabel(callingPackageLabel)
+                        selectionLimit(50)
+                    }
                 CompositionLocalProvider(
-                    LocalPhotopickerConfiguration provides
-                        TestPhotopickerConfiguration.build {
-                            highlightQueryResultsParams(highlightParams)
-                            action(MediaStore.ACTION_PICK_IMAGES)
-                            intent(Intent(MediaStore.ACTION_PICK_IMAGES))
-                            callingPackageLabel(callingPackageLabel)
-                            selectionLimit(50)
-                        },
+                    LocalPhotopickerConfiguration provides photopickerConfiguration,
                     LocalNavController provides createNavController(),
                     LocalSelection provides selection,
                     LocalFeatureManager provides featureManager,
                     LocalEvents provides events,
                     LocalLocalizationHelper provides LocalizationHelper(),
                 ) {
-                    PhotopickerTheme(
-                        isDarkTheme = false,
-                        config =
-                            TestPhotopickerConfiguration.build {
-                                highlightQueryResultsParams(highlightParams)
-                                action(MediaStore.ACTION_PICK_IMAGES)
-                                intent(Intent(MediaStore.ACTION_PICK_IMAGES))
-                                selectionLimit(50)
-                            },
-                    ) {
+                    PhotopickerTheme(isDarkTheme = false, config = photopickerConfiguration) {
                         // Calling just the Highlight composable to avoid any assertion conflicts
                         // with
                         // the photogrid
@@ -564,29 +550,22 @@ class HighlightMediaResultsFeatureTest : PhotopickerFeatureBaseTest() {
                 )
 
             composeTestRule.setContent {
+                val photopickerConfiguration =
+                    TestPhotopickerConfiguration.build {
+                        highlightQueryResultsParams(highlightParams)
+                        action(MediaStore.ACTION_PICK_IMAGES)
+                        intent(Intent(MediaStore.ACTION_PICK_IMAGES))
+                        selectionLimit(50)
+                    }
                 CompositionLocalProvider(
                     LocalFeatureManager provides featureManager,
-                    LocalPhotopickerConfiguration provides
-                        TestPhotopickerConfiguration.build {
-                            highlightQueryResultsParams(highlightParams)
-                            action(MediaStore.ACTION_PICK_IMAGES)
-                            intent(Intent(MediaStore.ACTION_PICK_IMAGES))
-                            selectionLimit(50)
-                        },
+                    LocalPhotopickerConfiguration provides photopickerConfiguration,
                     LocalNavController provides createNavController(),
                     LocalSelection provides selection,
                     LocalEvents provides events,
                     LocalLocalizationHelper provides LocalizationHelper(),
                 ) {
-                    PhotopickerTheme(
-                        isDarkTheme = false,
-                        config =
-                            TestPhotopickerConfiguration.build {
-                                highlightQueryResultsParams(highlightParams)
-                                action(MediaStore.ACTION_PICK_IMAGES)
-                                intent(Intent(MediaStore.ACTION_PICK_IMAGES))
-                            },
-                    ) {
+                    PhotopickerTheme(isDarkTheme = false, config = photopickerConfiguration) {
                         // Compose the entire tree for button test
                         PhotopickerMain(disruptiveDataNotification = flow { emit(0) })
                     }
@@ -793,29 +772,22 @@ class HighlightMediaResultsFeatureTest : PhotopickerFeatureBaseTest() {
                 )
 
             composeTestRule.setContent {
+                val photopickerConfiguration =
+                    TestPhotopickerConfiguration.build {
+                        highlightQueryResultsParams(highlightParams)
+                        action(MediaStore.ACTION_PICK_IMAGES)
+                        intent(Intent(MediaStore.ACTION_PICK_IMAGES))
+                        selectionLimit(50)
+                    }
                 CompositionLocalProvider(
-                    LocalPhotopickerConfiguration provides
-                        TestPhotopickerConfiguration.build {
-                            highlightQueryResultsParams(highlightParams)
-                            action(MediaStore.ACTION_PICK_IMAGES)
-                            intent(Intent(MediaStore.ACTION_PICK_IMAGES))
-                            selectionLimit(50)
-                        },
+                    LocalPhotopickerConfiguration provides photopickerConfiguration,
                     LocalNavController provides createNavController(),
                     LocalSelection provides selection,
                     LocalFeatureManager provides featureManager,
                     LocalEvents provides events,
                     LocalLocalizationHelper provides LocalizationHelper(),
                 ) {
-                    PhotopickerTheme(
-                        isDarkTheme = false,
-                        config =
-                            TestPhotopickerConfiguration.build {
-                                highlightQueryResultsParams(highlightParams)
-                                action(MediaStore.ACTION_PICK_IMAGES)
-                                intent(Intent(MediaStore.ACTION_PICK_IMAGES))
-                            },
-                    ) {
+                    PhotopickerTheme(isDarkTheme = false, config = photopickerConfiguration) {
                         // Compose only the highlight section to prevent assertion conflicts with
                         // the photo grid
                         HighlightGrid()
@@ -944,29 +916,22 @@ class HighlightMediaResultsFeatureTest : PhotopickerFeatureBaseTest() {
                 )
 
             composeTestRule.setContent {
+                val photopickerConfiguration =
+                    TestPhotopickerConfiguration.build {
+                        highlightQueryResultsParams(highlightParams)
+                        action(MediaStore.ACTION_PICK_IMAGES)
+                        intent(Intent(MediaStore.ACTION_PICK_IMAGES))
+                        selectionLimit(50)
+                    }
                 CompositionLocalProvider(
                     LocalFeatureManager provides featureManager,
-                    LocalPhotopickerConfiguration provides
-                        TestPhotopickerConfiguration.build {
-                            highlightQueryResultsParams(highlightParams)
-                            action(MediaStore.ACTION_PICK_IMAGES)
-                            intent(Intent(MediaStore.ACTION_PICK_IMAGES))
-                            selectionLimit(50)
-                        },
+                    LocalPhotopickerConfiguration provides photopickerConfiguration,
                     LocalNavController provides createNavController(),
                     LocalSelection provides selection,
                     LocalEvents provides events,
                     LocalLocalizationHelper provides LocalizationHelper(),
                 ) {
-                    PhotopickerTheme(
-                        isDarkTheme = false,
-                        config =
-                            TestPhotopickerConfiguration.build {
-                                highlightQueryResultsParams(highlightParams)
-                                action(MediaStore.ACTION_PICK_IMAGES)
-                                intent(Intent(MediaStore.ACTION_PICK_IMAGES))
-                            },
-                    ) {
+                    PhotopickerTheme(isDarkTheme = false, config = photopickerConfiguration) {
                         // Compose the entire tree to test button behaviour
                         PhotopickerMain(disruptiveDataNotification = flow { emit(0) })
                     }
@@ -1127,31 +1092,23 @@ class HighlightMediaResultsFeatureTest : PhotopickerFeatureBaseTest() {
             )
 
         composeTestRule.setContent {
+            val photopickerConfiguration =
+                TestPhotopickerConfiguration.build {
+                    startDestination(PhotopickerDestinations.HIGHLIGHT_ALBUM_MEDIA_GRID)
+                    highlightQueryResultsParams(highlightParams)
+                    action(MediaStore.ACTION_PICK_IMAGES)
+                    intent(Intent(MediaStore.ACTION_PICK_IMAGES))
+                    selectionLimit(50)
+                }
             CompositionLocalProvider(
                 LocalFeatureManager provides featureManager,
-                LocalPhotopickerConfiguration provides
-                    TestPhotopickerConfiguration.build {
-                        startDestination(PhotopickerDestinations.HIGHLIGHT_ALBUM_MEDIA_GRID)
-                        highlightQueryResultsParams(highlightParams)
-                        action(MediaStore.ACTION_PICK_IMAGES)
-                        intent(Intent(MediaStore.ACTION_PICK_IMAGES))
-                        selectionLimit(50)
-                    },
+                LocalPhotopickerConfiguration provides photopickerConfiguration,
                 LocalNavController provides createNavController(),
                 LocalSelection provides selection,
                 LocalEvents provides events,
                 LocalLocalizationHelper provides LocalizationHelper(),
             ) {
-                PhotopickerTheme(
-                    isDarkTheme = false,
-                    config =
-                        TestPhotopickerConfiguration.build {
-                            highlightQueryResultsParams(highlightParams)
-                            startDestination(PhotopickerDestinations.HIGHLIGHT_ALBUM_MEDIA_GRID)
-                            action(MediaStore.ACTION_PICK_IMAGES)
-                            intent(Intent(MediaStore.ACTION_PICK_IMAGES))
-                        },
-                ) {
+                PhotopickerTheme(isDarkTheme = false, config = photopickerConfiguration) {
                     // Compose the entire tree to test button behaviour
                     PhotopickerMain(disruptiveDataNotification = flow { emit(0) })
                 }
@@ -1214,29 +1171,22 @@ class HighlightMediaResultsFeatureTest : PhotopickerFeatureBaseTest() {
             )
 
         composeTestRule.setContent {
+            val photopickerConfiguration =
+                TestPhotopickerConfiguration.build {
+                    highlightQueryResultsParams(highlightParams)
+                    action(MediaStore.ACTION_PICK_IMAGES)
+                    intent(Intent(MediaStore.ACTION_PICK_IMAGES))
+                    selectionLimit(50)
+                }
             CompositionLocalProvider(
                 LocalFeatureManager provides featureManager,
-                LocalPhotopickerConfiguration provides
-                    TestPhotopickerConfiguration.build {
-                        highlightQueryResultsParams(highlightParams)
-                        action(MediaStore.ACTION_PICK_IMAGES)
-                        intent(Intent(MediaStore.ACTION_PICK_IMAGES))
-                        selectionLimit(50)
-                    },
+                LocalPhotopickerConfiguration provides photopickerConfiguration,
                 LocalNavController provides createNavController(),
                 LocalSelection provides selection,
                 LocalEvents provides events,
                 LocalLocalizationHelper provides LocalizationHelper(),
             ) {
-                PhotopickerTheme(
-                    isDarkTheme = false,
-                    config =
-                        TestPhotopickerConfiguration.build {
-                            highlightQueryResultsParams(highlightParams)
-                            action(MediaStore.ACTION_PICK_IMAGES)
-                            intent(Intent(MediaStore.ACTION_PICK_IMAGES))
-                        },
-                ) {
+                PhotopickerTheme(isDarkTheme = false, config = photopickerConfiguration) {
                     HighlightGrid()
                 }
             }
@@ -1259,27 +1209,21 @@ class HighlightMediaResultsFeatureTest : PhotopickerFeatureBaseTest() {
     fun testHighlightMediaDisplaysNoElementsForEmptyHighlightParams() =
         testScope.runTest {
             composeTestRule.setContent {
+                val photopickerConfiguration =
+                    TestPhotopickerConfiguration.build {
+                        action(MediaStore.ACTION_PICK_IMAGES)
+                        intent(Intent(MediaStore.ACTION_PICK_IMAGES))
+                        selectionLimit(50)
+                    }
                 CompositionLocalProvider(
                     LocalFeatureManager provides featureManager,
-                    LocalPhotopickerConfiguration provides
-                        TestPhotopickerConfiguration.build {
-                            action(MediaStore.ACTION_PICK_IMAGES)
-                            intent(Intent(MediaStore.ACTION_PICK_IMAGES))
-                            selectionLimit(50)
-                        },
+                    LocalPhotopickerConfiguration provides photopickerConfiguration,
                     LocalNavController provides createNavController(),
                     LocalSelection provides selection,
                     LocalEvents provides events,
                     LocalLocalizationHelper provides LocalizationHelper(),
                 ) {
-                    PhotopickerTheme(
-                        isDarkTheme = false,
-                        config =
-                            TestPhotopickerConfiguration.build {
-                                action(MediaStore.ACTION_PICK_IMAGES)
-                                intent(Intent(MediaStore.ACTION_PICK_IMAGES))
-                            },
-                    ) {
+                    PhotopickerTheme(isDarkTheme = false, config = photopickerConfiguration) {
                         HighlightGrid()
                     }
                 }
@@ -1309,29 +1253,22 @@ class HighlightMediaResultsFeatureTest : PhotopickerFeatureBaseTest() {
                 )
 
             composeTestRule.setContent {
+                val photopickerConfiguration =
+                    TestPhotopickerConfiguration.build {
+                        highlightQueryResultsParams(highlightParams)
+                        action(MediaStore.ACTION_PICK_IMAGES)
+                        intent(Intent(MediaStore.ACTION_PICK_IMAGES))
+                        selectionLimit(50)
+                    }
                 CompositionLocalProvider(
-                    LocalPhotopickerConfiguration provides
-                        TestPhotopickerConfiguration.build {
-                            highlightQueryResultsParams(highlightParams)
-                            action(MediaStore.ACTION_PICK_IMAGES)
-                            intent(Intent(MediaStore.ACTION_PICK_IMAGES))
-                            selectionLimit(50)
-                        },
+                    LocalPhotopickerConfiguration provides photopickerConfiguration,
                     LocalNavController provides createNavController(),
                     LocalSelection provides selection,
                     LocalFeatureManager provides featureManager,
                     LocalEvents provides events,
                     LocalLocalizationHelper provides LocalizationHelper(),
                 ) {
-                    PhotopickerTheme(
-                        isDarkTheme = false,
-                        config =
-                            TestPhotopickerConfiguration.build {
-                                highlightQueryResultsParams(highlightParams)
-                                action(MediaStore.ACTION_PICK_IMAGES)
-                                intent(Intent(MediaStore.ACTION_PICK_IMAGES))
-                            },
-                    ) {
+                    PhotopickerTheme(isDarkTheme = false, config = photopickerConfiguration) {
                         // Calling just the Highlight composable to avoid any assertion conflicts
                         // with
                         // the photogrid
@@ -1393,29 +1330,22 @@ class HighlightMediaResultsFeatureTest : PhotopickerFeatureBaseTest() {
         testDataService.mediaSetSize = 0
 
         composeTestRule.setContent {
+            val photopickerConfiguration =
+                TestPhotopickerConfiguration.build {
+                    highlightQueryResultsParams(highlightParams)
+                    action(MediaStore.ACTION_PICK_IMAGES)
+                    intent(Intent(MediaStore.ACTION_PICK_IMAGES))
+                    selectionLimit(50)
+                }
             CompositionLocalProvider(
                 LocalFeatureManager provides featureManager,
-                LocalPhotopickerConfiguration provides
-                    TestPhotopickerConfiguration.build {
-                        highlightQueryResultsParams(highlightParams)
-                        action(MediaStore.ACTION_PICK_IMAGES)
-                        intent(Intent(MediaStore.ACTION_PICK_IMAGES))
-                        selectionLimit(50)
-                    },
+                LocalPhotopickerConfiguration provides photopickerConfiguration,
                 LocalNavController provides createNavController(),
                 LocalSelection provides selection,
                 LocalEvents provides events,
                 LocalLocalizationHelper provides LocalizationHelper(),
             ) {
-                PhotopickerTheme(
-                    isDarkTheme = false,
-                    config =
-                        TestPhotopickerConfiguration.build {
-                            highlightQueryResultsParams(highlightParams)
-                            action(MediaStore.ACTION_PICK_IMAGES)
-                            intent(Intent(MediaStore.ACTION_PICK_IMAGES))
-                        },
-                ) {
+                PhotopickerTheme(isDarkTheme = false, config = photopickerConfiguration) {
                     HighlightGrid()
                 }
             }
@@ -1496,33 +1426,28 @@ class HighlightMediaResultsFeatureTest : PhotopickerFeatureBaseTest() {
                         sizeInBytes = 1000L,
                         mimeType = "image/png",
                         standardMimeTypeExtension = 1,
+                        width = 512,
+                        height = 512,
                     )
                 )
 
             composeTestRule.setContent {
+                val photopickerConfiguration =
+                    TestPhotopickerConfiguration.build {
+                        highlightQueryResultsParams(highlightParams)
+                        action(MediaStore.ACTION_PICK_IMAGES)
+                        intent(Intent(MediaStore.ACTION_PICK_IMAGES))
+                        selectionLimit(50)
+                    }
                 CompositionLocalProvider(
                     LocalFeatureManager provides featureManager,
-                    LocalPhotopickerConfiguration provides
-                        TestPhotopickerConfiguration.build {
-                            highlightQueryResultsParams(highlightParams)
-                            action(MediaStore.ACTION_PICK_IMAGES)
-                            intent(Intent(MediaStore.ACTION_PICK_IMAGES))
-                            selectionLimit(50)
-                        },
+                    LocalPhotopickerConfiguration provides photopickerConfiguration,
                     LocalNavController provides createNavController(),
                     LocalSelection provides selection,
                     LocalEvents provides events,
                     LocalLocalizationHelper provides LocalizationHelper(),
                 ) {
-                    PhotopickerTheme(
-                        isDarkTheme = false,
-                        config =
-                            TestPhotopickerConfiguration.build {
-                                highlightQueryResultsParams(highlightParams)
-                                action(MediaStore.ACTION_PICK_IMAGES)
-                                intent(Intent(MediaStore.ACTION_PICK_IMAGES))
-                            },
-                    ) {
+                    PhotopickerTheme(isDarkTheme = false, config = photopickerConfiguration) {
                         HighlightGrid()
                     }
                 }
@@ -1652,33 +1577,28 @@ class HighlightMediaResultsFeatureTest : PhotopickerFeatureBaseTest() {
                         sizeInBytes = 1000L,
                         mimeType = "image/png",
                         standardMimeTypeExtension = 1,
+                        width = 512,
+                        height = 512,
                     )
                 )
 
             composeTestRule.setContent {
+                val photopickerConfiguration =
+                    TestPhotopickerConfiguration.build {
+                        highlightQueryResultsParams(highlightParams)
+                        action(MediaStore.ACTION_PICK_IMAGES)
+                        intent(Intent(MediaStore.ACTION_PICK_IMAGES))
+                        selectionLimit(50)
+                    }
                 CompositionLocalProvider(
                     LocalFeatureManager provides featureManager,
-                    LocalPhotopickerConfiguration provides
-                        TestPhotopickerConfiguration.build {
-                            highlightQueryResultsParams(highlightParams)
-                            action(MediaStore.ACTION_PICK_IMAGES)
-                            intent(Intent(MediaStore.ACTION_PICK_IMAGES))
-                            selectionLimit(50)
-                        },
+                    LocalPhotopickerConfiguration provides photopickerConfiguration,
                     LocalNavController provides createNavController(),
                     LocalSelection provides selection,
                     LocalEvents provides events,
                     LocalLocalizationHelper provides LocalizationHelper(),
                 ) {
-                    PhotopickerTheme(
-                        isDarkTheme = false,
-                        config =
-                            TestPhotopickerConfiguration.build {
-                                highlightQueryResultsParams(highlightParams)
-                                action(MediaStore.ACTION_PICK_IMAGES)
-                                intent(Intent(MediaStore.ACTION_PICK_IMAGES))
-                            },
-                    ) {
+                    PhotopickerTheme(isDarkTheme = false, config = photopickerConfiguration) {
                         PhotopickerMain(disruptiveDataNotification = flow { emit(0) })
                     }
                 }
@@ -1791,29 +1711,22 @@ class HighlightMediaResultsFeatureTest : PhotopickerFeatureBaseTest() {
             composeTestRule.waitForIdle()
 
             composeTestRule.setContent {
+                val photopickerConfiguration =
+                    TestPhotopickerConfiguration.build {
+                        highlightQueryResultsParams(highlightParams)
+                        action(MediaStore.ACTION_PICK_IMAGES)
+                        intent(Intent(MediaStore.ACTION_PICK_IMAGES))
+                        selectionLimit(50)
+                    }
                 CompositionLocalProvider(
                     LocalFeatureManager provides featureManager,
-                    LocalPhotopickerConfiguration provides
-                        TestPhotopickerConfiguration.build {
-                            highlightQueryResultsParams(highlightParams)
-                            action(MediaStore.ACTION_PICK_IMAGES)
-                            intent(Intent(MediaStore.ACTION_PICK_IMAGES))
-                            selectionLimit(50)
-                        },
+                    LocalPhotopickerConfiguration provides photopickerConfiguration,
                     LocalNavController provides createNavController(),
                     LocalSelection provides selection,
                     LocalEvents provides events,
                     LocalLocalizationHelper provides LocalizationHelper(),
                 ) {
-                    PhotopickerTheme(
-                        isDarkTheme = false,
-                        config =
-                            TestPhotopickerConfiguration.build {
-                                highlightQueryResultsParams(highlightParams)
-                                action(MediaStore.ACTION_PICK_IMAGES)
-                                intent(Intent(MediaStore.ACTION_PICK_IMAGES))
-                            },
-                    ) {
+                    PhotopickerTheme(isDarkTheme = false, config = photopickerConfiguration) {
                         HighlightGrid()
                     }
                 }
@@ -1875,6 +1788,8 @@ class HighlightMediaResultsFeatureTest : PhotopickerFeatureBaseTest() {
                         sizeInBytes = 1000L,
                         mimeType = "image/png",
                         standardMimeTypeExtension = 1,
+                        width = 512,
+                        height = 512,
                     )
                 )
 
@@ -1960,27 +1875,21 @@ class HighlightMediaResultsFeatureTest : PhotopickerFeatureBaseTest() {
             configurationManager.get().setIntent(intent)
 
             composeTestRule.setContent {
+                val photopickerConfiguration =
+                    TestPhotopickerConfiguration.build {
+                        action(MediaStore.ACTION_PICK_IMAGES)
+                        intent(intent)
+                        selectionLimit(50)
+                    }
                 CompositionLocalProvider(
                     LocalFeatureManager provides featureManager,
-                    LocalPhotopickerConfiguration provides
-                        TestPhotopickerConfiguration.build {
-                            action(MediaStore.ACTION_PICK_IMAGES)
-                            intent(intent)
-                            selectionLimit(50)
-                        },
+                    LocalPhotopickerConfiguration provides photopickerConfiguration,
                     LocalNavController provides createNavController(),
                     LocalSelection provides selection,
                     LocalEvents provides events,
                     LocalLocalizationHelper provides LocalizationHelper(),
                 ) {
-                    PhotopickerTheme(
-                        isDarkTheme = false,
-                        config =
-                            TestPhotopickerConfiguration.build {
-                                action(MediaStore.ACTION_PICK_IMAGES)
-                                intent(intent)
-                            },
-                    ) {
+                    PhotopickerTheme(isDarkTheme = false, config = photopickerConfiguration) {
                         PhotopickerMain(disruptiveDataNotification = flow { emit(0) })
                     }
                 }
@@ -2044,16 +1953,17 @@ class HighlightMediaResultsFeatureTest : PhotopickerFeatureBaseTest() {
             // The params need to be set in the intent itself because the view model uses the
             // config manager itself when its init block is executed.
             configurationManager.get().setIntent(intent)
+            val photopickerConfiguration =
+                TestPhotopickerConfiguration.build {
+                    action(MediaStore.ACTION_PICK_IMAGES)
+                    intent(Intent(MediaStore.ACTION_PICK_IMAGES))
+                    selectionLimit(50)
+                }
 
             composeTestRule.setContent {
                 CompositionLocalProvider(
                     LocalFeatureManager provides featureManager,
-                    LocalPhotopickerConfiguration provides
-                        TestPhotopickerConfiguration.build {
-                            action(MediaStore.ACTION_PICK_IMAGES)
-                            intent(Intent(MediaStore.ACTION_PICK_IMAGES))
-                            selectionLimit(50)
-                        },
+                    LocalPhotopickerConfiguration provides photopickerConfiguration,
                     LocalNavController provides createNavController(),
                     LocalSelection provides selection,
                     LocalEvents provides events,
