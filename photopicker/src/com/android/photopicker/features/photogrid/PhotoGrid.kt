@@ -102,8 +102,6 @@ import com.android.photopicker.extensions.navigateToCategoryGrid
 import com.android.photopicker.extensions.navigateToPhotoGrid
 import com.android.photopicker.extensions.navigateToPreviewMedia
 import com.android.photopicker.features.albumgrid.AlbumGridFeature
-import com.android.photopicker.features.camera.CameraFeature
-import com.android.photopicker.features.camera.CameraViewModel
 import com.android.photopicker.features.categorygrid.CategoryGridFeature
 import com.android.photopicker.features.navigationbar.NavigationBarButton
 import com.android.photopicker.features.preview.PreviewFeature
@@ -122,13 +120,9 @@ private val RECENTS_ROW_COUNT = 3
  *
  * @param viewModel - A viewModel override for the composable. Normally, this is fetched via hilt
  *   from the backstack entry by using obtainViewModel()
- * @param cameraViewModel - Camera view model that holds camera state.
  */
 @Composable
-fun PhotoGrid(
-    viewModel: PhotoGridViewModel = obtainViewModel(),
-    cameraViewModel: CameraViewModel = obtainViewModel(),
-) {
+fun PhotoGrid(viewModel: PhotoGridViewModel = obtainViewModel()) {
     val navController = LocalNavController.current
     val featureManager = LocalFeatureManager.current
     val isPreviewEnabled = remember { featureManager.isFeatureEnabled(PreviewFeature::class.java) }
@@ -299,14 +293,6 @@ fun PhotoGrid(
                             shrinkVertically(animationSpec = standardDecelerate(150))
                     }
 
-                // Listen to whether camera is currently enabled or not
-                val isCameraAvailable =
-                    if (featureManager.isFeatureEnabled(CameraFeature::class.java)) {
-                        cameraViewModel.isCameraAvailable.collectAsStateWithLifecycle()
-                    } else {
-                        null
-                    }
-
                 // Click handler for the Grid. Extract this out because the below grid
                 // implementations differ based on flags, but both use the same click handler.
                 val onItemClick = { item: MediaGridItem ->
@@ -388,14 +374,9 @@ fun PhotoGrid(
                                 onDismiss = { banner ->
                                     // Coerce the type back to [BannerDefinitions]
                                     // so that it can be dismissed.
-                                    if (configuration.flags.PICKER_BANNER_REDESIGN_ENABLED) {
-                                        val bannerDefinition = banner.bannerDefinition
-                                        viewModel.markBannerDefinitionAsDismissed(bannerDefinition)
-                                    } else {
-                                        val declaration = banner.declaration
-                                        if (declaration is BannerDefinitions) {
-                                            viewModel.markBannerAsDismissed(declaration)
-                                        }
+                                    val declaration = banner.declaration
+                                    if (declaration is BannerDefinitions) {
+                                        viewModel.markBannerAsDismissed(declaration)
                                     }
                                 },
                             )
@@ -409,20 +390,6 @@ fun PhotoGrid(
                             )
                         }
                     },
-                    cameraEntryPointContent =
-                        if (isCameraAvailable?.value == true) {
-                            {
-                                featureManager.composeLocation(
-                                    Location.CAMERA_ENTRY_POINT,
-                                    maxSlots = 1,
-                                )
-                            }
-                        } else {
-                            // We need to return null if camera button should not be shown to avoid
-                            // lazy grid reserving the first square in media grid for the camera
-                            // button.
-                            null
-                        },
                     pinchToZoomEnabled = true,
                     onZoomAtMaxZoom = onPreviewItem,
                     onItemClick = onItemClick,

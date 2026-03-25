@@ -115,7 +115,6 @@ class EmbeddedServiceModule {
     @Provides
     @SessionScoped
     fun provideViewModelFactory(
-        @ApplicationContext appContext: Context,
         @Background backgroundDispatcher: CoroutineDispatcher,
         featureManager: Lazy<FeatureManager>,
         configurationManager: Lazy<ConfigurationManager>,
@@ -135,7 +134,6 @@ class EmbeddedServiceModule {
             Log.d(TAG, "Initializing embedded view model factory.")
             embeddedViewModelFactory =
                 EmbeddedViewModelFactory(
-                    appContext,
                     backgroundDispatcher,
                     configurationManager,
                     bannerManager,

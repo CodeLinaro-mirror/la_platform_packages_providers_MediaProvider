@@ -2831,8 +2831,7 @@ public final class MediaStore {
         public static final String CAPTURE_FRAMERATE = "capture_framerate";
 
         /**
-         * Column which allows OEMs to store custom metadata for a media file. It is expected to
-         * contain a JSON string.
+         * Column which allows OEMs to store custom metadata for a media file.
          */
         @FlaggedApi(Flags.FLAG_ENABLE_OEM_METADATA)
         @Column(value = Cursor.FIELD_TYPE_BLOB, readOnly = true)

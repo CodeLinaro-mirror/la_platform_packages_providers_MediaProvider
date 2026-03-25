@@ -40,9 +40,6 @@ class PhotopickerApplication : Hilt_PhotopickerApplication() {
         super.onCreate()
 
         _database =
-            Room.databaseBuilder(this, PhotopickerDatabase::class.java, "photopicker")
-                .addMigrations(PhotopickerDatabase.MIGRATION_1_2)
-                .addMigrations(PhotopickerDatabase.MIGRATION_2_1)
-                .build()
+            Room.databaseBuilder(this, PhotopickerDatabase::class.java, "photopicker").build()
     }
 }

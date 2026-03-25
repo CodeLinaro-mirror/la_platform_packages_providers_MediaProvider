@@ -16,12 +16,9 @@
 
 package com.android.photopicker.features.camera
 
-import android.content.Intent
-import android.provider.MediaStore
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import com.android.photopicker.core.configuration.PhotopickerConfiguration
-import com.android.photopicker.core.configuration.PhotopickerRuntimeEnv
 import com.android.photopicker.core.events.RegisteredEventClass
 import com.android.photopicker.core.features.FeatureManager
 import com.android.photopicker.core.features.FeatureRegistration
@@ -30,7 +27,6 @@ import com.android.photopicker.core.features.Location
 import com.android.photopicker.core.features.LocationParams
 import com.android.photopicker.core.features.PhotopickerUiFeature
 import com.android.photopicker.core.features.PrefetchResultKey
-import com.android.photopicker.core.features.Priority
 import kotlinx.coroutines.Deferred
 
 /** Feature class for the Camera feature. */
@@ -42,19 +38,7 @@ class CameraFeature : PhotopickerUiFeature {
             config: PhotopickerConfiguration,
             deferredPrefetchResultsMap: Map<PrefetchResultKey, Deferred<Any?>>,
         ): Boolean {
-            val isRuntimeEnvEligible = config.runtimeEnv == PhotopickerRuntimeEnv.ACTIVITY
-            if (!isRuntimeEnvEligible) return false
-
-            val isIntentActionEligible =
-                config.action == MediaStore.ACTION_PICK_IMAGES ||
-                    config.action == Intent.ACTION_GET_CONTENT
-            if (!isIntentActionEligible) return false
-
-            val isFeatureFlagEnabled = config.flags.POLAROID_ENABLED
-            if (!isFeatureFlagEnabled) return false
-
-            // TODO(b/487298902): Add API check
-            return true
+            return config.flags.POLAROID_ENABLED
         }
 
         override fun build(featureManager: FeatureManager) = CameraFeature()
@@ -67,16 +51,9 @@ class CameraFeature : PhotopickerUiFeature {
     override val eventsProduced = setOf<RegisteredEventClass>()
 
     override fun registerLocations(): List<Pair<Location, Int>> {
-        return listOf(Pair(Location.CAMERA_ENTRY_POINT, Priority.MEDIUM.priority))
+        return listOf()
     }
 
     @Composable
-    override fun compose(location: Location, modifier: Modifier, params: LocationParams) {
-        when (location) {
-            Location.CAMERA_ENTRY_POINT -> {
-                CameraEntryPoint()
-            }
-            else -> {}
-        }
-    }
+    override fun compose(location: Location, modifier: Modifier, params: LocationParams) {}
 }

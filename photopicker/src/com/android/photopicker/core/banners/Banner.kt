@@ -39,7 +39,6 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.android.photopicker.R
 import com.android.photopicker.core.configuration.LocalPhotopickerConfiguration
-import com.android.photopicker.core.configuration.PhotopickerConfiguration
 import com.android.photopicker.core.events.Event
 import com.android.photopicker.core.events.LocalEvents
 import com.android.photopicker.core.events.Telemetry.BannerType
@@ -62,12 +61,6 @@ interface Banner {
 
     /** The [BannerDeclaration] of the banner. */
     val declaration: BannerDeclaration
-
-    /**
-     * The [BannerDefinition] of the banner. This is used when flag PICKER_BANNER_REDESIGN_ENABLED
-     * is enabled.
-     */
-    val bannerDefinition: BannerDefinition
 
     /**
      * [Composable] function that returns a localized title string for the banner.
@@ -210,13 +203,7 @@ fun Banner(banner: Banner, modifier: Modifier = Modifier, onDismiss: () -> Unit 
 
             // The action Row, which sometimes may be empty if the banner is not dismissable and
             // does not provide its own Action
-            if (
-                if (config.flags.PICKER_BANNER_REDESIGN_ENABLED) {
-                    banner.bannerDefinition.manualDismissible || banner.actionLabel() != null
-                } else {
-                    banner.declaration.dismissable || banner.actionLabel() != null
-                }
-            ) {
+            if (banner.declaration.dismissable || banner.actionLabel() != null) {
                 val scope = rememberCoroutineScope()
 
                 Row(
@@ -238,7 +225,10 @@ fun Banner(banner: Banner, modifier: Modifier = Modifier, onDismiss: () -> Unit 
                                         Event.LogPhotopickerBannerInteraction(
                                             dispatcherToken = CORE.token,
                                             sessionId = config.sessionId,
-                                            bannerType = getBannerType(banner, config),
+                                            bannerType =
+                                                BannerType.fromBannerDeclaration(
+                                                    banner.declaration
+                                                ),
                                             userInteraction =
                                                 UserBannerInteraction.CLICK_BANNER_ACTION_BUTTON,
                                         )
@@ -255,13 +245,7 @@ fun Banner(banner: Banner, modifier: Modifier = Modifier, onDismiss: () -> Unit 
                     // button needs to be shown to the user. What happens when the dismiss button is
                     // clicked is up to the caller. A core string is used here to ensure consistency
                     // between banners.
-                    if (
-                        if (config.flags.PICKER_BANNER_REDESIGN_ENABLED) {
-                            banner.bannerDefinition.manualDismissible
-                        } else {
-                            banner.declaration.dismissable
-                        }
-                    ) {
+                    if (banner.declaration.dismissable) {
                         TextButton(
                             onClick = {
                                 scope.launch {
@@ -269,7 +253,10 @@ fun Banner(banner: Banner, modifier: Modifier = Modifier, onDismiss: () -> Unit 
                                         Event.LogPhotopickerBannerInteraction(
                                             dispatcherToken = CORE.token,
                                             sessionId = config.sessionId,
-                                            bannerType = getBannerType(banner, config),
+                                            bannerType =
+                                                BannerType.fromBannerDeclaration(
+                                                    banner.declaration
+                                                ),
                                             userInteraction =
                                                 UserBannerInteraction.CLICK_BANNER_DISMISS_BUTTON,
                                         )
@@ -292,28 +279,10 @@ fun Banner(banner: Banner, modifier: Modifier = Modifier, onDismiss: () -> Unit 
             Event.LogPhotopickerBannerInteraction(
                 dispatcherToken = CORE.token,
                 sessionId = config.sessionId,
-                bannerType = getBannerType(banner, config),
+                bannerType = BannerType.fromBannerDeclaration(banner.declaration),
                 // TODO(b/357010907): Add banner shown interaction when the atom exists.
                 userInteraction = UserBannerInteraction.UNSET_BANNER_INTERACTION,
             )
         )
-    }
-}
-
-/**
- * Resolves the [BannerType] for the given [Banner] based on the current configuration.
- *
- * This helper selects the appropriate banner type depending on whether the banner redesign flag is
- * enabled.
- *
- * @param banner The [Banner] to resolve the type for.
- * @param config The current [PhotopickerConfiguration] which contains the flag.
- * @return The resolved [BannerType] used for telemetry and logging.
- */
-private fun getBannerType(banner: Banner, config: PhotopickerConfiguration): BannerType {
-    if (config.flags.PICKER_BANNER_REDESIGN_ENABLED) {
-        return BannerType.fromBannerDefinition(banner.bannerDefinition)
-    } else {
-        return BannerType.fromBannerDeclaration(banner.declaration)
     }
 }
