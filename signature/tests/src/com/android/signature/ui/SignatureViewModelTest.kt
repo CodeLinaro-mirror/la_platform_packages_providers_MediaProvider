@@ -24,6 +24,7 @@ import com.android.signature.data.Signature
 import com.android.signature.data.SignatureDao
 import com.android.signature.data.SignatureFont
 import com.android.signature.data.SignatureRepository
+import com.android.signature.logging.SignatureEventLogger
 import com.android.signature.ui.create.PathState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -56,6 +57,9 @@ class SignatureViewModelTest {
     @Mock
     private lateinit var signatureDao: SignatureDao
 
+    @Mock
+    private lateinit var eventLogger: SignatureEventLogger
+
     private lateinit var bitmap: Bitmap
 
     private lateinit var repository: SignatureRepository
@@ -67,7 +71,7 @@ class SignatureViewModelTest {
         Dispatchers.setMain(UnconfinedTestDispatcher())
         whenever(signatureDao.getAllSignatures()).thenReturn(signaturesFlow)
         repository = SignatureRepository(signatureDao)
-        viewModel = SignatureViewModel(repository)
+        viewModel = SignatureViewModel(repository, eventLogger)
         // Create a real bitmap (1x1 pixel)
         bitmap = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
     }
@@ -99,9 +103,41 @@ class SignatureViewModelTest {
         runTest {
             val signature = Signature(id = "1", type = Signature.TYPE_TYPED, textData = "Test")
 
-            viewModel.deleteSignature(signature)
+            viewModel.deleteSignature(signature, SignatureEventLogger.Screen.PICKER)
 
             verify(signatureDao).deleteSignature(signature)
+            verify(eventLogger).logSignatureDeleted(signature.type, SignatureEventLogger.Screen.PICKER)
+        }
+
+    @Test
+    fun newlyAddedSignatureIndex_calculatesCorrectly() =
+        runTest {
+            val sig1 = Signature(id = "id_1", type = Signature.TYPE_TYPED, textData = "Sig 1")
+            val sig2 = Signature(id = "id_2", type = Signature.TYPE_TYPED, textData = "Sig 2")
+            val sig3 = Signature(id = "id_3", type = Signature.TYPE_TYPED, textData = "Sig 3")
+
+            // 1. Initially null
+            assertNull(viewModel.newlyAddedSignatureIndex.first())
+
+            // 2. Set signatures
+            signaturesFlow.emit(listOf(sig1, sig2, sig3))
+
+            // Still null because newSignatureId is null
+            assertNull(viewModel.newlyAddedSignatureIndex.first())
+
+            // 3. Set an ID that exists
+            viewModel.setNewSignatureId("id_2")
+
+            // The index of "id_2" is 1
+            assertEquals(1, viewModel.newlyAddedSignatureIndex.first())
+
+            // 4. Set an ID that does NOT exist
+            viewModel.setNewSignatureId("id_missing")
+            assertNull(viewModel.newlyAddedSignatureIndex.first())
+
+            // 5. Reset to null
+            viewModel.setNewSignatureId(null)
+            assertNull(viewModel.newlyAddedSignatureIndex.first())
         }
 
     @Test
@@ -237,6 +273,8 @@ class SignatureViewModelTest {
             assertEquals(Signature.TYPE_TYPED, savedSignature.type)
             assertEquals("Test", savedSignature.textData)
             assertEquals("Font", savedSignature.fontName)
+
+            verify(eventLogger).logSignatureSaveDuration(any(), org.mockito.kotlin.eq(Signature.TYPE_TYPED))
         }
 
     @Test
@@ -247,12 +285,14 @@ class SignatureViewModelTest {
                 whenever(signatureDao.insertSignature(any())).thenReturn(Unit)
             }
 
-            viewModel.saveDrawnSignature(bitmap, emptyList())
+            viewModel.saveDrawnSignature(bitmap)
 
             val captor = argumentCaptor<Signature>()
             verify(signatureDao).insertSignature(captor.capture())
             val savedSignature = captor.firstValue
             assertEquals(Signature.TYPE_DRAWN, savedSignature.type)
+
+            verify(eventLogger).logSignatureSaveDuration(any(), org.mockito.kotlin.eq(Signature.TYPE_DRAWN))
         }
 
     @Test
@@ -291,6 +331,8 @@ class SignatureViewModelTest {
                 "Compressed size should be smaller than raw size",
                 savedSignature.imageData!!.size < rawSize,
             )
+
+            verify(eventLogger).logSignatureSaveDuration(any(), org.mockito.kotlin.eq(Signature.TYPE_UPLOADED))
         }
 
     @Test
@@ -302,8 +344,8 @@ class SignatureViewModelTest {
 
             try {
                 viewModel.saveUploadedSignature(bitmap)
-                fail("Expected IllegalStateException")
-            } catch (e: IllegalStateException) {
+                fail("Expected SignatureLimitException")
+            } catch (e: SignatureLimitException) {
                 // Expected
             }
         }
