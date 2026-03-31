@@ -20,6 +20,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.platform.test.annotations.DisableFlags
+import android.platform.test.annotations.EnableFlags
 import android.platform.test.flag.junit.CheckFlagsRule
 import android.platform.test.flag.junit.DeviceFlagsValueProvider
 import android.platform.test.flag.junit.SetFlagsRule
@@ -160,6 +161,35 @@ class BannerTest {
             @Composable override fun iconContentDescription() = TEST_BANNER_3_ICON_DESCRIPTION
         }
 
+    private val PRIVACY_BANNER_TITLE = "Privacy test banner"
+    private val PRIVACY_BANNER_MESSAGE = "Privacy test banner message"
+    private val PRIVACY_BANNER_ACTION_LABEL = "Click Me"
+    private val PRIVACY_BANNER_ICON_DESCRIPTION = "I'm an icon!"
+    private val PRIVACY_BANNER =
+        object : Banner {
+
+            override val declaration =
+                object : BannerDeclaration {
+                    override val id = BannerDefinitions.PRIVACY_EXPLAINER.id
+                    override val dismissable = true
+                    override val dismissableStrategy = BannerDeclaration.DismissStrategy.ONCE
+                }
+
+            override val bannerDefinition = BannerDefinition.PRIVACY_EXPLAINER
+
+            @Composable override fun buildTitle() = PRIVACY_BANNER_TITLE
+
+            @Composable override fun buildMessage() = PRIVACY_BANNER_MESSAGE
+
+            @Composable override fun actionLabel() = PRIVACY_BANNER_ACTION_LABEL
+
+            override fun onAction(context: Context) {}
+
+            @Composable override fun getIcon() = VectorIcon(Icons.Filled.VerifiedUser)
+
+            @Composable override fun iconContentDescription() = PRIVACY_BANNER_ICON_DESCRIPTION
+        }
+
     @Composable
     private fun showBanner(banner: Banner, config: PhotopickerConfiguration, events: Events) {
 
@@ -171,7 +201,56 @@ class BannerTest {
         }
     }
 
+    @EnableFlags(Flags.FLAG_ENABLE_PHOTOPICKER_BANNER_REDESIGN)
     @Test
+    fun testPrivacyBannerEventIsLogged() = runTest {
+        val featureManager =
+            FeatureManager(
+                configuration = provideTestConfigurationFlow(scope = this.backgroundScope),
+                scope = this.backgroundScope,
+                TestPrefetchDataService(),
+            )
+
+        val events =
+            Events(
+                scope = this.backgroundScope,
+                provideTestConfigurationFlow(scope = this.backgroundScope),
+                featureManager = featureManager,
+            )
+
+        val emissions = mutableListOf<Event>()
+        backgroundScope.launch { events.flow.toList(emissions) }
+
+        composeTestRule.setContent {
+            showBanner(
+                banner = PRIVACY_BANNER,
+                TestPhotopickerConfiguration.build {
+                    action("TEST_ACTION")
+                    intent(Intent("TEST_ACTION"))
+                },
+                events,
+            )
+        }
+
+        advanceTimeBy(100)
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithText(PRIVACY_BANNER_TITLE).assertIsDisplayed()
+        composeTestRule.onNodeWithText(PRIVACY_BANNER_MESSAGE).assertIsDisplayed()
+
+        val event: LogPhotopickerBannerInteraction =
+            checkNotNull(emissions.first() as? LogPhotopickerBannerInteraction) {
+                "Emitted event was not LogPhotopickerBannerInteraction."
+            }
+
+        assertWithMessage("Expected a banner type in event.")
+            .that(event.bannerType)
+            .isEqualTo(BannerType.PRIVACY_EXPLAINER)
+        assertWithMessage("Expected a banner displayed interaction")
+            .that(event.userInteraction)
+            .isEqualTo(UserBannerInteraction.BANNER_SHOWN)
+    }
+
     fun testBannerDisplaysTitleAndMessage() = runTest {
         val featureManager =
             FeatureManager(
@@ -217,7 +296,7 @@ class BannerTest {
             .isEqualTo(BannerType.CLOUD_MEDIA_AVAILABLE)
         assertWithMessage("Expected a banner displayed interaction")
             .that(event.userInteraction)
-            .isEqualTo(UserBannerInteraction.UNSET_BANNER_INTERACTION)
+            .isEqualTo(UserBannerInteraction.BANNER_SHOWN)
     }
 
     @Test
