@@ -45,7 +45,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.ExperimentalTestApi
@@ -231,6 +230,8 @@ class PreviewFeatureTest : PhotopickerFeatureBaseTest() {
             sizeInBytes = 1000L,
             mimeType = "image/png",
             standardMimeTypeExtension = 0,
+            width = 512,
+            height = 512,
         )
 
     val TEST_MEDIA_VIDEO =
@@ -260,6 +261,8 @@ class PreviewFeatureTest : PhotopickerFeatureBaseTest() {
             mimeType = "video/mp4",
             standardMimeTypeExtension = 1,
             duration = 10000,
+            width = 512,
+            height = 512,
         )
 
     @Before

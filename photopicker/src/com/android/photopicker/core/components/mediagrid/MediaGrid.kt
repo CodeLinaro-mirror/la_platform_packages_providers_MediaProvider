@@ -59,6 +59,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Gif
 import androidx.compose.material.icons.filled.MotionPhotosOn
 import androidx.compose.material.icons.filled.PlayCircle
+import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.PhotoCamera
 import androidx.compose.material.icons.outlined.StarOutline
 import androidx.compose.material.icons.outlined.Videocam
@@ -90,6 +91,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.res.vectorResource
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
@@ -203,6 +205,18 @@ val MEASUREMENT_DEFAULT_ALBUM_BOTTOM_PADDING = 16.dp
 
 /** Size of the spacer between the album icon and the album display label */
 val MEASUREMENT_DEFAULT_ALBUM_LABEL_SPACER_SIZE = 12.dp
+
+/** The height of the gradient overlay for disabled media items */
+private val MEASUREMENT_DISABLED_GRADIENT_HEIGHT = 40.dp
+
+/** The alpha value for the gradient overlay for disabled media items */
+private val MEASUREMENT_DISABLED_GRADIENT_ALPHA = 0.1f
+
+/** The size for the error icon used for disabled media items */
+private val MEASUREMENT_DISABLED_ICON_SIZE = 18.dp
+
+/** The padding for the error icon used for disabled media items */
+private val MEASUREMENT_DISABLED_ICON_PADDING = 8.dp
 
 /**
  * Core composable implementation for creating a MediaItemGrid from a [LazyPagingItems] source.
@@ -637,6 +651,7 @@ fun defaultBuildMediaItem(
                     falseBlock = { clip(RoundedCornerShape(MEASUREMENT_SELECTED_CORNER_RADIUS)) },
                 )
 
+            val config = LocalPhotopickerConfiguration.current
             val mediaDescription = getMediaContentDescription(item.media, dateFormat, isSelected)
 
             // Wrap the entire Grid cell in a box for handling aspectRatio and clicks.
@@ -644,6 +659,10 @@ fun defaultBuildMediaItem(
                 // Apply semantics for the click handlers
                 Modifier.semantics(mergeDescendants = true) {
                         contentDescription = mediaDescription
+                        // Add the built-in disabled state if a reason exists
+                        if (item.media.disabledReason != null) {
+                            disabled()
+                        }
                         onClick(
                             action = {
                                 onClick?.invoke(item)
@@ -713,18 +732,33 @@ fun defaultBuildMediaItem(
                             modifier = Modifier.fillMaxSize(),
                         )
 
-                        // Scrim to separate the text and mimetypes from the image behind them.
-                        val scrimGradient =
-                            Brush.verticalGradient(
-                                listOf(Color.Black.copy(alpha = 0.1f), Color.Transparent)
+                        val scrimColors =
+                            listOf(
+                                Color.Black.copy(alpha = MEASUREMENT_DISABLED_GRADIENT_ALPHA),
+                                Color.Transparent,
                             )
 
+                        // Scrim to separate the text and mimetypes from the image behind them.
+                        val topScrimGradient = Brush.verticalGradient(scrimColors)
+
                         Surface(
-                            modifier = Modifier.background(scrimGradient),
+                            modifier = Modifier.background(topScrimGradient),
                             color = Color.Transparent,
                             contentColor = Color.White,
                         ) {
                             MimeTypeOverlay(item)
+                        }
+
+                        item.media.disabledReason?.let {
+                            // Scrim to separate the disabledFromSelection icon overlay from the
+                            // image behind it.
+                            val bottomScrimGradient = Brush.verticalGradient(scrimColors.reversed())
+                            SelectionDisabledOverlay(
+                                modifier =
+                                    Modifier.align(Alignment.BottomCenter)
+                                        .fillMaxWidth()
+                                        .background(bottomScrimGradient)
+                            )
                         }
                     }
 
@@ -882,6 +916,27 @@ private fun SelectedIconOverlay(
                     )
             }
         } // Image + Icon Container
+    }
+}
+
+/**
+ * Displays an overlay of an error icon with a scrim for media items that are disabled.
+ *
+ * @param modifier The [Modifier] to be applied to the overlay
+ */
+@Composable
+fun SelectionDisabledOverlay(modifier: Modifier = Modifier) {
+    Box(modifier = modifier) {
+        Icon(
+            imageVector = Icons.Outlined.ErrorOutline,
+            // TODO: update the content description b/483703300
+            contentDescription = null,
+            tint = Color.White,
+            modifier =
+                Modifier.align(Alignment.BottomEnd)
+                    .padding(MEASUREMENT_DISABLED_ICON_PADDING)
+                    .size(MEASUREMENT_DISABLED_ICON_SIZE),
+        )
     }
 }
 
