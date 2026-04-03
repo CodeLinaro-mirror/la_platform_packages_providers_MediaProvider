@@ -17,6 +17,7 @@
 package com.android.photopicker.core.events
 
 import com.android.photopicker.core.banners.BannerDeclaration
+import com.android.photopicker.core.banners.BannerDefinition
 import com.android.photopicker.core.banners.BannerDefinitions
 import com.android.photopicker.data.model.Group
 import com.android.providers.media.MediaProviderStatsLog
@@ -802,6 +803,17 @@ interface Telemetry {
         UNSET_BANNER_TYPE(
             MediaProviderStatsLog
                 .PHOTOPICKER_BANNER_INTERACTION_LOGGED__BANNER_TYPE__UNSET_BANNER_TYPE
+        ),
+        PRIVACY_EXPLAINER(
+            MediaProviderStatsLog
+                .PHOTOPICKER_BANNER_INTERACTION_LOGGED__BANNER_TYPE__PRIVACY_EXPLAINER
+        ),
+        PRIVACY_EXPLAINER_LIMITED_ACCESS(
+            MediaProviderStatsLog
+                .PHOTOPICKER_BANNER_INTERACTION_LOGGED__BANNER_TYPE__PRIVACY_EXPLAINER_LIMITED_ACCESS
+        ),
+        SWITCH_PROFILE(
+            MediaProviderStatsLog.PHOTOPICKER_BANNER_INTERACTION_LOGGED__BANNER_TYPE__SWITCH_PROFILE
         );
 
         companion object {
@@ -821,9 +833,21 @@ interface Telemetry {
                     BannerDefinitions.CLOUD_CHOOSE_PROVIDER.id -> BannerType.CHOOSE_APP
                     BannerDefinitions.CLOUD_MEDIA_AVAILABLE.id -> BannerType.CLOUD_MEDIA_AVAILABLE
                     BannerDefinitions.CLOUD_UPDATED_ACCOUNT.id -> BannerType.ACCOUNT_UPDATED
-                    // TODO(b/357010907): add a BannerType enum for the PRIVACY_EXPLAINER
-                    BannerDefinitions.PRIVACY_EXPLAINER.id -> BannerType.UNSET_BANNER_TYPE
+                    BannerDefinitions.PRIVACY_EXPLAINER.id -> BannerType.PRIVACY_EXPLAINER
+                    BannerDefinitions.SWITCH_PROFILE.id -> BannerType.SWITCH_PROFILE
                     else -> BannerType.UNSET_BANNER_TYPE
+                }
+            }
+
+            fun fromBannerDefinition(definition: BannerDefinition): BannerType {
+                return when (definition) {
+                    BannerDefinition.CLOUD_CHOOSE_ACCOUNT -> BannerType.CHOOSE_ACCOUNT
+                    BannerDefinition.CLOUD_CHOOSE_PROVIDER -> BannerType.CHOOSE_APP
+                    BannerDefinition.CLOUD_MEDIA_AVAILABLE -> BannerType.CLOUD_MEDIA_AVAILABLE
+                    BannerDefinition.PRIVACY_EXPLAINER -> BannerType.PRIVACY_EXPLAINER
+                    BannerDefinition.PRIVACY_EXPLAINER_LIMITED_ACCESS ->
+                        BannerType.PRIVACY_EXPLAINER_LIMITED_ACCESS
+                    BannerDefinition.SWITCH_PROFILE -> BannerType.SWITCH_PROFILE
                 }
             }
         }
@@ -842,13 +866,13 @@ interface Telemetry {
             MediaProviderStatsLog
                 .PHOTOPICKER_BANNER_INTERACTION_LOGGED__USER_BANNER_INTERACTION__CLICK_BANNER_DISMISS_BUTTON
         ),
-        CLICK_BANNER(
-            MediaProviderStatsLog
-                .PHOTOPICKER_BANNER_INTERACTION_LOGGED__USER_BANNER_INTERACTION__CLICK_BANNER
-        ),
         UNSET_BANNER_INTERACTION(
             MediaProviderStatsLog
                 .PHOTOPICKER_BANNER_INTERACTION_LOGGED__BANNER_TYPE__UNSET_BANNER_TYPE
+        ),
+        BANNER_SHOWN(
+            MediaProviderStatsLog
+                .PHOTOPICKER_BANNER_INTERACTION_LOGGED__USER_BANNER_INTERACTION__BANNER_SHOWN
         ),
     }
 
