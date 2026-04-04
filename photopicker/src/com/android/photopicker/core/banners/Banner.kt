@@ -293,7 +293,8 @@ fun Banner(banner: Banner, modifier: Modifier = Modifier, onDismiss: () -> Unit 
                 dispatcherToken = CORE.token,
                 sessionId = config.sessionId,
                 bannerType = getBannerType(banner, config),
-                userInteraction = UserBannerInteraction.BANNER_SHOWN,
+                // TODO(b/357010907): Add banner shown interaction when the atom exists.
+                userInteraction = UserBannerInteraction.UNSET_BANNER_INTERACTION,
             )
         )
     }

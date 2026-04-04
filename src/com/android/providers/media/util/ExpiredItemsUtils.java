@@ -34,7 +34,6 @@ import com.android.providers.media.flags.Flags;
 
 import java.io.File;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -121,8 +120,10 @@ public final class ExpiredItemsUtils {
         String selection = buildFileSelection(context, dateSelection);
 
         final List<FileRow> allItemsToExtend = new ArrayList<>();
+        // Sort by path (ASC) to ensure that parent directories are processed before their
+        // children.
         try (Cursor c = db.query(true, MediaStore.Files.TABLE, FileRow.PROJECTIONS, selection,
-                null, null, null, null, null, signal)) {
+                null, null, null, FileColumns.DATA + " ASC", null, signal)) {
             while (c.moveToNext()) {
                 FileRow fileRow = new FileRow(c);
                 // Only include directories if the trash flag is enabled
@@ -132,8 +133,6 @@ public final class ExpiredItemsUtils {
             }
         }
 
-        // Sort path (ASC) to ensure that parent directories are processed before their children.
-        allItemsToExtend.sort(Comparator.comparing(a -> a.mOriginalPath));
         // A map to store the count of items within each directory. This is used to calculate the
         // total number of extended items when a directory's expiration is extended.
         final HashMap<Long, Integer> directoryItemCount = new HashMap<>();

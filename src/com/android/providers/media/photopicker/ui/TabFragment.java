@@ -749,9 +749,13 @@ public abstract class TabFragment extends Fragment {
 
     private void changeProfile() {
         if (mUserIdManager.isManagedUserSelected()) {
+            // TODO(b/190024747): Add caching for performance before switching data to and fro
+            // work profile
             mUserIdManager.setPersonalAsCurrentUserProfile();
 
         } else {
+            // TODO(b/190024747): Add caching for performance before switching data to and fro
+            // work profile
             mUserIdManager.setManagedAsCurrentUserProfile();
         }
 

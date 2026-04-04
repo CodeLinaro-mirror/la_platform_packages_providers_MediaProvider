@@ -54,7 +54,6 @@ android_app {
         "keepanno-annotations",
         "framework-location.stubs.module_lib",
         "framework-connectivity.stubs.module_lib",
-        "framework-ondeviceintelligence-platform.stubs.module_lib",
     ],
 
     jni_libs: [
