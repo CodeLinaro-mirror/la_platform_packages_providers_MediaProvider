@@ -73,6 +73,7 @@ import static org.junit.Assert.fail;
 import android.content.ContentValues;
 import android.os.Environment;
 import android.os.SystemProperties;
+import android.os.UserHandle;
 import android.provider.MediaStore;
 import android.provider.MediaStore.Audio.AudioColumns;
 import android.provider.MediaStore.MediaColumns;
