@@ -69,7 +69,6 @@ class PreviewFeature : PhotopickerUiFeature {
         setOf<RegisteredEventClass>(
             Event.LogPhotopickerUIEvent::class.java,
             Event.LogPhotopickerPreviewInfo::class.java,
-            Event.MediaSelectionConfirmed::class.java,
         )
 
     override fun registerLocations(): List<Pair<Location, Int>> {
