@@ -16,9 +16,16 @@
 
 package com.android.photopicker.features.camera
 
+import android.content.Intent
+import android.provider.MediaStore
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.window.DialogProperties
+import androidx.navigation.NamedNavArgument
+import androidx.navigation.NavBackStackEntry
+import androidx.navigation.NavDeepLink
 import com.android.photopicker.core.configuration.PhotopickerConfiguration
+import com.android.photopicker.core.configuration.PhotopickerRuntimeEnv
 import com.android.photopicker.core.events.RegisteredEventClass
 import com.android.photopicker.core.features.FeatureManager
 import com.android.photopicker.core.features.FeatureRegistration
@@ -27,6 +34,9 @@ import com.android.photopicker.core.features.Location
 import com.android.photopicker.core.features.LocationParams
 import com.android.photopicker.core.features.PhotopickerUiFeature
 import com.android.photopicker.core.features.PrefetchResultKey
+import com.android.photopicker.core.features.Priority
+import com.android.photopicker.core.navigation.PhotopickerDestinations
+import com.android.photopicker.core.navigation.Route
 import kotlinx.coroutines.Deferred
 
 /** Feature class for the Camera feature. */
@@ -38,7 +48,19 @@ class CameraFeature : PhotopickerUiFeature {
             config: PhotopickerConfiguration,
             deferredPrefetchResultsMap: Map<PrefetchResultKey, Deferred<Any?>>,
         ): Boolean {
-            return config.flags.POLAROID_ENABLED
+            val isRuntimeEnvEligible = config.runtimeEnv == PhotopickerRuntimeEnv.ACTIVITY
+            if (!isRuntimeEnvEligible) return false
+
+            val isIntentActionEligible =
+                config.action == MediaStore.ACTION_PICK_IMAGES ||
+                    config.action == Intent.ACTION_GET_CONTENT
+            if (!isIntentActionEligible) return false
+
+            val isFeatureFlagEnabled = config.flags.POLAROID_ENABLED
+            if (!isFeatureFlagEnabled) return false
+
+            // TODO(b/487298902): Add API check
+            return true
         }
 
         override fun build(featureManager: FeatureManager) = CameraFeature()
@@ -51,9 +73,47 @@ class CameraFeature : PhotopickerUiFeature {
     override val eventsProduced = setOf<RegisteredEventClass>()
 
     override fun registerLocations(): List<Pair<Location, Int>> {
-        return listOf()
+        return listOf(Pair(Location.CAMERA_ENTRY_POINT, Priority.MEDIUM.priority))
+    }
+
+    override fun registerNavigationRoutes(): Set<Route> {
+        return setOf(
+            object : Route {
+                override val route = PhotopickerDestinations.CAMERA.route
+                override val initialRoutePriority = Priority.DISABLED.priority
+                override val arguments = emptyList<NamedNavArgument>()
+                override val deepLinks = emptyList<NavDeepLink>()
+                override val isDialog = true
+                override val dialogProperties =
+                    DialogProperties(
+                        dismissOnBackPress = true,
+                        dismissOnClickOutside = true,
+                        // It is recommended to use [decorFitsSystemWindows] set to `false` when
+                        // [usePlatformDefaultWidth] is false to support using the entire screen and
+                        // avoiding UI glitches on some devices when the IME animates in.
+                        usePlatformDefaultWidth = false,
+                        decorFitsSystemWindows = false,
+                    )
+                override val enterTransition = null
+                override val exitTransition = null
+                override val popEnterTransition = null
+                override val popExitTransition = null
+
+                @Composable
+                override fun composable(navBackStackEntry: NavBackStackEntry?) {
+                    Camera()
+                }
+            }
+        )
     }
 
     @Composable
-    override fun compose(location: Location, modifier: Modifier, params: LocationParams) {}
+    override fun compose(location: Location, modifier: Modifier, params: LocationParams) {
+        when (location) {
+            Location.CAMERA_ENTRY_POINT -> {
+                CameraEntryPoint()
+            }
+            else -> {}
+        }
+    }
 }
