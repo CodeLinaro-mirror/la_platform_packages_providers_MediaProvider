@@ -90,6 +90,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.stringResource
@@ -141,6 +142,7 @@ import com.android.photopicker.core.theme.LocalWindowSizeClass
 import com.android.photopicker.data.model.Icon
 import com.android.photopicker.data.model.Media
 import com.android.photopicker.data.model.MediaSource
+import com.android.photopicker.data.model.SelectionDisabledReason
 import com.android.photopicker.extensions.fadingEdge
 import com.android.photopicker.extensions.navigateToPreviewMedia
 import com.android.photopicker.extensions.transferScrollableTouchesToHostInEmbedded
@@ -148,6 +150,7 @@ import com.android.photopicker.features.preview.PreviewFeature
 import com.android.photopicker.features.search.model.SearchSuggestion
 import com.android.photopicker.features.search.model.SearchSuggestionType
 import com.android.photopicker.features.search.model.UserSearchState
+import com.android.photopicker.util.LocalLocalizationHelper
 import com.android.photopicker.util.applyChoice
 import com.android.photopicker.util.applyWhen
 import java.util.Locale
@@ -833,15 +836,32 @@ private fun SearchBarPlaceHolder(focused: Boolean, viewModel: SearchViewModel = 
  * @param modifier Modifier used to adjust the layout or styling of the composable.
  */
 @Composable
-fun EmptySearchResult(modifier: Modifier = Modifier) {
+fun EmptySearchResult(
+    modifier: Modifier = Modifier,
+    viewModel: SearchViewModel = obtainViewModel(),
+) {
     val localConfig = LocalConfiguration.current
     val emptyStatePadding = remember(localConfig) { (localConfig.screenHeightDp * .20).dp }
+
+    val searchableProviders by viewModel.searchableProviders.collectAsStateWithLifecycle()
+    val isCloudOnly =
+        searchableProviders.size == 1 && searchableProviders[0].mediaSource == MediaSource.REMOTE
+    val bodyText =
+        if (isCloudOnly) {
+            stringResource(
+                R.string.photopicker_search_result_empty_state_message_when_local_search_disabled
+            )
+        } else {
+            stringResource(
+                R.string.photopicker_search_result_empty_state_message_when_local_search_enabled
+            )
+        }
 
     EmptyState(
         modifier = modifier.fillMaxWidth().padding(top = emptyStatePadding),
         icon = Icons.Outlined.HideImage,
         title = stringResource(R.string.photopicker_search_result_empty_state_title),
-        body = stringResource(R.string.photopicker_search_result_empty_state_message),
+        body = bodyText,
     )
 }
 
@@ -1272,8 +1292,19 @@ private fun ResultMediaGrid(
     val selectionLimit = LocalPhotopickerConfiguration.current.selectionLimit
     val featureManager = LocalFeatureManager.current
     val isPreviewEnabled = remember { featureManager.isFeatureEnabled(PreviewFeature::class.java) }
+    val localizationHelper = LocalLocalizationHelper.current
+    val resources = LocalContext.current.resources
     val selectionLimitExceededMessage =
-        stringResource(R.string.photopicker_selection_limit_exceeded_snackbar, selectionLimit)
+        stringResource(
+            R.string.photopicker_selection_limit_exceeded_snackbar,
+            localizationHelper.getLocalizedCount(selectionLimit),
+        )
+    val selectionBatchSizeLimitExceededMessage =
+        SelectionDisabledReason.getSelectionBatchSizeLimitExceededMessage(
+            LocalPhotopickerConfiguration.current,
+            localizationHelper,
+            resources,
+        )
     val items = resultItems.collectAsLazyPagingItems()
     val scope = rememberCoroutineScope()
     val events = LocalEvents.current
@@ -1286,9 +1317,17 @@ private fun ResultMediaGrid(
 
     val onItemClick = { item: MediaGridItem ->
         if (item is MediaGridItem.MediaItem) {
+            val disabledReasonMessage =
+                item.media.disabledReason?.getDisabledMessage(
+                    configuration,
+                    localizationHelper,
+                    resources,
+                )
             viewModel.handleGridItemSelection(
                 item = item.media,
                 selectionLimitExceededMessage = selectionLimitExceededMessage,
+                disabledReasonMessage = disabledReasonMessage,
+                selectionBatchSizeLimitExceededMessage = selectionBatchSizeLimitExceededMessage,
             )
             scope.launch {
                 events.dispatch(
