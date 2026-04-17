@@ -16,24 +16,28 @@
 
 package com.android.signature.ui.settings
 
-import android.platform.test.annotations.RequiresFlagsEnabled
-import android.platform.test.flag.junit.CheckFlagsRule
-import android.platform.test.flag.junit.DeviceFlagsValueProvider
+import android.platform.test.annotations.DisableFlags
+import android.platform.test.annotations.EnableFlags
+import android.platform.test.flag.junit.SetFlagsRule
+import android.view.WindowManager
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.lifecycle.Lifecycle
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.android.signature.data.SignatureDao
 import com.android.signature.data.SignatureRepository
 import com.android.signature.di.DatabaseModule
 import com.android.signature.flags.Flags
+import com.android.signature.test.TestUtils
 import dagger.hilt.android.testing.BindValue
 import dagger.hilt.android.testing.HiltAndroidRule
 import dagger.hilt.android.testing.HiltAndroidTest
 import dagger.hilt.android.testing.UninstallModules
 import kotlinx.coroutines.flow.flowOf
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -45,20 +49,20 @@ import org.mockito.kotlin.whenever
 @UninstallModules(DatabaseModule::class)
 @RunWith(AndroidJUnit4::class)
 class SettingsActivityTest {
-
     @get:Rule(order = 0)
     val hiltRule = HiltAndroidRule(this)
 
     @get:Rule(order = 1)
-    val checkFlagsRule: CheckFlagsRule = DeviceFlagsValueProvider.createCheckFlagsRule()
+    val setFlagsRule = SetFlagsRule()
 
     @get:Rule(order = 2)
     val composeTestRule = createAndroidComposeRule<SettingsActivity>()
 
     // Stub the mock immediately to avoid NPE during Activity launch
-    private val signatureDao: SignatureDao = Mockito.mock(SignatureDao::class.java).apply {
-        whenever(getAllSignatures()).thenReturn(flowOf(emptyList()))
-    }
+    private val signatureDao: SignatureDao =
+        Mockito.mock(SignatureDao::class.java).apply {
+            whenever(getAllSignatures()).thenReturn(flowOf(emptyList()))
+        }
 
     @BindValue
     @JvmField
@@ -67,9 +71,10 @@ class SettingsActivityTest {
     @Before
     fun setup() {
         hiltRule.inject()
+        TestUtils.wakeUpDevice()
         try {
             composeTestRule.activityRule.scenario.onActivity {
-                it.window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                it.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
                 it.setShowWhenLocked(true)
                 it.setTurnScreenOn(true)
             }
@@ -79,17 +84,29 @@ class SettingsActivityTest {
     }
 
     @Test
-    @RequiresFlagsEnabled(Flags.FLAG_ENABLE_SIGNATURE)
-    fun settingsActivity_launchesAndDisplaysScreen() {
+    @EnableFlags(Flags.FLAG_ENABLE_SIGNATURE)
+    fun settingsActivity_flagEnabled_launchesAndDisplaysScreen() {
         composeTestRule.onNodeWithText("Manage Signatures").assertIsDisplayed()
     }
 
     @Test
-    @RequiresFlagsEnabled(Flags.FLAG_ENABLE_SIGNATURE)
+    @DisableFlags(Flags.FLAG_ENABLE_SIGNATURE)
+    fun settingsActivity_flagDisabled_finishesActivity() {
+        // Activity should finish itself in onCreate
+        composeTestRule.waitForIdle()
+        val scenario = composeTestRule.activityRule.scenario
+        // State might become DESTROYED very quickly
+        assertTrue(
+            scenario.state == Lifecycle.State.DESTROYED || composeTestRule.activity.isFinishing,
+        )
+    }
+
+    @Test
+    @EnableFlags(Flags.FLAG_ENABLE_SIGNATURE)
     fun settingsActivity_backNavigation_finishesActivity() {
         composeTestRule.onNodeWithContentDescription("Back").performClick()
         composeTestRule.waitForIdle()
 
-        assert(composeTestRule.activity.isFinishing || composeTestRule.activity.isDestroyed)
+        assertTrue(composeTestRule.activity.isFinishing || composeTestRule.activity.isDestroyed)
     }
 }

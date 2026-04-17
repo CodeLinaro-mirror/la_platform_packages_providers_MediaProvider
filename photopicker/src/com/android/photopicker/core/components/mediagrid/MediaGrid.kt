@@ -59,7 +59,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Gif
 import androidx.compose.material.icons.filled.MotionPhotosOn
 import androidx.compose.material.icons.filled.PlayCircle
-import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.PhotoCamera
 import androidx.compose.material.icons.outlined.StarOutline
 import androidx.compose.material.icons.outlined.Videocam
@@ -91,6 +90,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.res.vectorResource
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
@@ -117,6 +117,7 @@ import com.android.photopicker.extensions.itemIndexAtPosition
 import com.android.photopicker.extensions.transferScrollableTouchesToHostInEmbedded
 import com.android.photopicker.features.categorygrid.categoryIcon.IconGrid
 import com.android.photopicker.util.LocalLocalizationHelper
+import com.android.photopicker.util.SelectionDisabledOverlay
 import com.android.photopicker.util.applyChoice
 import com.android.photopicker.util.applyWhen
 import com.android.photopicker.util.calculateWindowRect
@@ -658,6 +659,10 @@ fun defaultBuildMediaItem(
                 // Apply semantics for the click handlers
                 Modifier.semantics(mergeDescendants = true) {
                         contentDescription = mediaDescription
+                        // Add the built-in disabled state if a reason exists
+                        if (item.media.disabledReason != null) {
+                            disabled()
+                        }
                         onClick(
                             action = {
                                 onClick?.invoke(item)
@@ -744,11 +749,7 @@ fun defaultBuildMediaItem(
                             MimeTypeOverlay(item)
                         }
 
-                        if (
-                            config.flags.PICKER_SELECTION_PARAMS_ENABLED &&
-                                item.media.disabledReason != null
-                        ) {
-
+                        item.media.disabledReason?.let {
                             // Scrim to separate the disabledFromSelection icon overlay from the
                             // image behind it.
                             val bottomScrimGradient = Brush.verticalGradient(scrimColors.reversed())
@@ -915,27 +916,6 @@ private fun SelectedIconOverlay(
                     )
             }
         } // Image + Icon Container
-    }
-}
-
-/**
- * Displays an overlay of an error icon with a scrim for media items that are disabled.
- *
- * @param modifier The [Modifier] to be applied to the overlay
- */
-@Composable
-fun SelectionDisabledOverlay(modifier: Modifier = Modifier) {
-    Box(modifier = modifier) {
-        Icon(
-            imageVector = Icons.Outlined.ErrorOutline,
-            // TODO: update the content description b/483703300
-            contentDescription = null,
-            tint = Color.White,
-            modifier =
-                Modifier.align(Alignment.BottomEnd)
-                    .padding(MEASUREMENT_DISABLED_ICON_PADDING)
-                    .size(MEASUREMENT_DISABLED_ICON_SIZE),
-        )
     }
 }
 

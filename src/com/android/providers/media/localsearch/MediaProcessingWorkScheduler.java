@@ -18,7 +18,7 @@ package com.android.providers.media.localsearch;
 
 import static com.android.providers.media.DatabaseHelper.EXTERNAL_DATABASE_NAME;
 import static com.android.providers.media.localsearch.ProcessingConstants.WORKER_LOCK;
-import static com.android.providers.media.localsearch.ProcessingHelper.isMediaProcessingRequired;
+import static com.android.providers.media.localsearch.ProcessingUtils.isMediaProcessingRequired;
 import static com.android.providers.media.localsearch.ProcessingHelper.isNetworkAvailable;
 
 import android.content.ContentProviderClient;
@@ -143,8 +143,6 @@ public class MediaProcessingWorkScheduler extends Worker {
                             + "Skip job run.");
                     return Result.failure();
                 }
-
-                processingHelper.deleteStaleRows();
 
                 processingHelper.runProcessMetadataLabels();
 

@@ -18,7 +18,7 @@ package com.android.providers.media.localsearch;
 
 import static com.android.providers.media.DatabaseHelper.EXTERNAL_DATABASE_NAME;
 import static com.android.providers.media.localsearch.ProcessingConstants.WORKER_LOCK;
-import static com.android.providers.media.localsearch.ProcessingHelper.isMediaProcessingRequired;
+import static com.android.providers.media.localsearch.ProcessingUtils.isMediaProcessingRequired;
 import static com.android.providers.media.localsearch.ProcessingHelper.isNetworkAvailable;
 
 import android.content.ContentProviderClient;
@@ -37,6 +37,7 @@ import androidx.work.WorkerParameters;
 import com.android.providers.media.DatabaseHelper;
 import com.android.providers.media.MediaProvider;
 import com.android.providers.media.WorkManagerInitializer;
+import com.android.providers.media.appsearch.AppSearchDbManager;
 
 import java.util.Optional;
 import java.util.concurrent.TimeUnit;
@@ -126,6 +127,9 @@ public class MediaProcessingRecoveryScheduler extends Worker {
                 }
 
                 processingHelper.deleteStaleRowsFromAppSearch();
+
+                processingHelper.enforceAppSearchDocumentLimit(
+                        AppSearchDbManager.MAX_DOCUMENT_COUNT);
 
                 if (isNetworkAvailable(mContext)) {
                     processingHelper.runRetryLocationLabels();
