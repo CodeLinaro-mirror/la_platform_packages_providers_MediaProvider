@@ -24,6 +24,7 @@ import com.android.signature.data.Signature
 import com.android.signature.data.SignatureDao
 import com.android.signature.data.SignatureFont
 import com.android.signature.data.SignatureRepository
+import com.android.signature.logging.SignatureEventLogger
 import com.android.signature.ui.create.PathState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -56,6 +57,9 @@ class SignatureViewModelTest {
     @Mock
     private lateinit var signatureDao: SignatureDao
 
+    @Mock
+    private lateinit var eventLogger: SignatureEventLogger
+
     private lateinit var bitmap: Bitmap
 
     private lateinit var repository: SignatureRepository
@@ -67,7 +71,7 @@ class SignatureViewModelTest {
         Dispatchers.setMain(UnconfinedTestDispatcher())
         whenever(signatureDao.getAllSignatures()).thenReturn(signaturesFlow)
         repository = SignatureRepository(signatureDao)
-        viewModel = SignatureViewModel(repository)
+        viewModel = SignatureViewModel(repository, eventLogger)
         // Create a real bitmap (1x1 pixel)
         bitmap = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
     }
@@ -99,9 +103,10 @@ class SignatureViewModelTest {
         runTest {
             val signature = Signature(id = "1", type = Signature.TYPE_TYPED, textData = "Test")
 
-            viewModel.deleteSignature(signature)
+            viewModel.deleteSignature(signature, SignatureEventLogger.Screen.PICKER)
 
             verify(signatureDao).deleteSignature(signature)
+            verify(eventLogger).logSignatureDeleted(signature.type, SignatureEventLogger.Screen.PICKER)
         }
 
     @Test
@@ -215,6 +220,45 @@ class SignatureViewModelTest {
         }
 
     @Test
+    fun setUploadedImage_updatesState() =
+        runTest {
+            assertNull(viewModel.uploadedImage.value)
+
+            viewModel.setUploadedImage(bitmap)
+            assertEquals(bitmap, viewModel.uploadedImage.value)
+
+            viewModel.setUploadedImage(null)
+            assertNull(viewModel.uploadedImage.value)
+        }
+
+    @Test
+    fun clearCreateSignatureState_clearsAllState() =
+        runTest {
+            viewModel.setSelectedTabIndex(2)
+            viewModel.setTypedText("Hello")
+            viewModel.setDrawingPaths(
+                listOf(
+                    PathState(
+                        androidx.compose.ui.graphics
+                            .Path(),
+                        androidx.compose.ui.graphics.Color.Black,
+                        5f,
+                    ),
+                ),
+            )
+            viewModel.setSelectedFont(SignatureFont("Font", FontFamily.Default, Typeface.DEFAULT))
+            viewModel.setUploadedImage(bitmap)
+
+            viewModel.clearCreateSignatureState()
+
+            assertEquals(0, viewModel.selectedTabIndex.value)
+            assertEquals("", viewModel.typedText.value)
+            assertEquals(emptyList<PathState>(), viewModel.drawingPaths.value)
+            assertNull(viewModel.selectedFont.value)
+            assertNull(viewModel.uploadedImage.value)
+        }
+
+    @Test
     fun getSignatureUri_typedSignature_returnsCorrectUri() {
         val signature =
             Signature(
@@ -268,6 +312,11 @@ class SignatureViewModelTest {
             assertEquals(Signature.TYPE_TYPED, savedSignature.type)
             assertEquals("Test", savedSignature.textData)
             assertEquals("Font", savedSignature.fontName)
+
+            verify(eventLogger).logSignatureSaveDuration(
+                any(),
+                org.mockito.kotlin.eq(Signature.TYPE_TYPED),
+            )
         }
 
     @Test
@@ -284,6 +333,11 @@ class SignatureViewModelTest {
             verify(signatureDao).insertSignature(captor.capture())
             val savedSignature = captor.firstValue
             assertEquals(Signature.TYPE_DRAWN, savedSignature.type)
+
+            verify(eventLogger).logSignatureSaveDuration(
+                any(),
+                org.mockito.kotlin.eq(Signature.TYPE_DRAWN),
+            )
         }
 
     @Test
@@ -294,8 +348,8 @@ class SignatureViewModelTest {
                 whenever(signatureDao.insertSignature(any())).thenReturn(Unit)
             }
 
-            // Use a larger bitmap to better test compression
-            val largeBitmap = Bitmap.createBitmap(100, 100, Bitmap.Config.ARGB_8888)
+            // Use a bitmap larger than MAX_IMAGE_DIMENSION (512) to test downscaling
+            val largeBitmap = Bitmap.createBitmap(1000, 1000, Bitmap.Config.ARGB_8888)
 
             viewModel.saveUploadedSignature(largeBitmap)
 
@@ -313,14 +367,21 @@ class SignatureViewModelTest {
                     savedSignature.imageData!!.size,
                 )
             assertNotNull(decodedBitmap)
-            assertEquals(largeBitmap.width, decodedBitmap.width)
-            assertEquals(largeBitmap.height, decodedBitmap.height)
+
+            // The image should be scaled down to the MAX_IMAGE_DIMENSION (512)
+            assertEquals(512, decodedBitmap.width)
+            assertEquals(512, decodedBitmap.height)
 
             // For a simple bitmap, PNG compression should be effective
             val rawSize = largeBitmap.byteCount
             assertTrue(
                 "Compressed size should be smaller than raw size",
                 savedSignature.imageData!!.size < rawSize,
+            )
+
+            verify(eventLogger).logSignatureSaveDuration(
+                any(),
+                org.mockito.kotlin.eq(Signature.TYPE_UPLOADED),
             )
         }
 
