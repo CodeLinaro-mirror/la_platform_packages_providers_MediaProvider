@@ -8780,6 +8780,22 @@ public class MediaProvider extends ContentProvider {
             }
         }
 
+        // Do not allow to create request if the list contains a uri which does not exist
+        final LocalCallingIdentity token = clearLocalCallingIdentity();
+        try {
+            for (Uri uri : uris) {
+                try (Cursor c = queryForSingleItem(uri, new String[]{FileColumns._ID}, null, null,
+                        null)) {
+                    // queryForSingleItem method throws FileNotFoundException if no items were
+                    // found, or multiple items were found, or there was trouble reading the data.
+                } catch (FileNotFoundException e) {
+                    throw new IllegalArgumentException("Invalid Uri: " + uri, e);
+                }
+            }
+        } finally {
+            restoreLocalCallingIdentity(token);
+        }
+
         final Context context = getContext();
         final Intent intent = new Intent(method, null, context, PermissionActivity.class);
         extras.putInt(EXTRA_CALLING_PACKAGE_UID, getCallingUidOrSelf());
@@ -10699,7 +10715,7 @@ public class MediaProvider extends ContentProvider {
 
         // Figure out if we need to redact contents
         final boolean redactionNeeded = isRedactionNeededForOpenViaContentResolver(redactedUri,
-                ownerPackageName, file);
+                ownerPackageName, file, opts);
         long[] redactionRanges;
         try {
             redactionRanges = redactionNeeded ? RedactionUtils.getRedactionRanges(file)
@@ -10818,10 +10834,26 @@ public class MediaProvider extends ContentProvider {
     }
 
     private boolean isRedactionNeededForOpenViaContentResolver(Uri redactedUri,
-            String ownerPackageName, File file) {
+            String ownerPackageName, File file, Bundle opts) {
         // Redacted Uris should always redact information
         if (redactedUri != null) {
             return true;
+        }
+
+        // If the caller provides a media capabilities UID, we check if that UID has the
+        // PERMISSION_IS_REDACTION_NEEDED permission. If so, we redact the data. This is
+        // used for cases where an app is acting on behalf of another app, and we need
+        // to respect the capabilities of the app for which the action is being performed.
+        if (opts != null) {
+            final int mediaCapabilitiesUid = opts.getInt(MediaStore.EXTRA_MEDIA_CAPABILITIES_UID);
+            if (mediaCapabilitiesUid > 0) {
+                final LocalCallingIdentity identity = LocalCallingIdentity.fromExternal(
+                        getContext(),
+                        mUserCache, mediaCapabilitiesUid, null, null);
+                if (identity.hasPermission(PERMISSION_IS_REDACTION_NEEDED)) {
+                    return true;
+                }
+            }
         }
 
         final boolean callerIsOwner = Objects.equals(getCallingPackageOrSelf(), ownerPackageName);
