@@ -86,8 +86,9 @@ class MainActivityTest {
 
     val testDispatcher = StandardTestDispatcher()
     /** Overrides for ActivityModule */
-    @BindValue @Main val mainScope: TestScope = TestScope(testDispatcher)
-    @BindValue @Background var testBackgroundScope: CoroutineScope = mainScope.backgroundScope
+    val testScope: TestScope = TestScope(testDispatcher)
+    @BindValue @Main val mainScope: CoroutineScope = testScope
+    @BindValue @Background var testBackgroundScope: CoroutineScope = testScope.backgroundScope
 
     /** Setup dependencies for the UninstallModules for the test class. */
     @Module @InstallIn(SingletonComponent::class) class TestModule : PhotopickerTestModule()
@@ -135,18 +136,18 @@ class MainActivityTest {
 
     @Test
     fun testMainActivitySetsActivityAction() {
-        mainScope.runTest {
+        testScope.runTest {
             val intent =
                 Intent()
                     .setAction(MediaStore.ACTION_PICK_IMAGES)
                     .setComponent(
                         ComponentName(
                             InstrumentationRegistry.getInstrumentation().targetContext,
-                            MainActivity::class.java
+                            MainActivity::class.java,
                         )
                     )
             with(ActivityScenario.launch<MainActivity>(intent)) {
-                advanceTimeBy(100)
+                advanceTimeBy(100L)
                 assertWithMessage("Expected configuration to contain an action")
                     .that(configurationManager.configuration.first().action)
                     .isEqualTo(MediaStore.ACTION_PICK_IMAGES)
@@ -169,20 +170,20 @@ class MainActivityTest {
                 .setComponent(
                     ComponentName(
                         InstrumentationRegistry.getInstrumentation().targetContext,
-                        MainActivity::class.java
+                        MainActivity::class.java,
                     )
                 )
 
         with(launchActivityForResult<MainActivity>(intent)) {
-            mainScope.runTest {
-                onActivity {
+            testScope.runTest {
+                onActivity { activity ->
                     mainScope.launch {
                         selection.add(testImage)
-                        events.get().dispatch(Event.MediaSelectionConfirmed(CORE.token))
+                        activity.onMediaSelectionConfirmed()
                     }
                 }
 
-                advanceTimeBy(100)
+                advanceTimeBy(100L)
             }
 
             val result = this.result
@@ -213,20 +214,20 @@ class MainActivityTest {
                 .setComponent(
                     ComponentName(
                         InstrumentationRegistry.getInstrumentation().targetContext,
-                        MainActivity::class.java
+                        MainActivity::class.java,
                     )
                 )
 
         with(launchActivityForResult<MainActivity>(intent)) {
-            mainScope.runTest {
-                onActivity {
-                    mainScope.launch {
-                        selection.add(testImage)
-                        events.get().dispatch(Event.MediaSelectionConfirmed(CORE.token))
-                    }
+            testScope.runTest {
+            onActivity { activity ->
+                mainScope.launch {
+                    selection.add(testImage)
+                    activity.onMediaSelectionConfirmed()
                 }
+            }
 
-                advanceTimeBy(100)
+            advanceTimeBy(100L)
             }
 
             val result = this.result
@@ -257,20 +258,20 @@ class MainActivityTest {
                 .setComponent(
                     ComponentName(
                         InstrumentationRegistry.getInstrumentation().targetContext,
-                        MainActivity::class.java
+                        MainActivity::class.java,
                     )
                 )
 
         with(launchActivityForResult<MainActivity>(intent)) {
-            mainScope.runTest {
-                onActivity {
+            testScope.runTest {
+                onActivity { activity ->
                     mainScope.launch {
                         selection.addAll(selectedItems)
-                        events.get().dispatch(Event.MediaSelectionConfirmed(CORE.token))
+                        activity.onMediaSelectionConfirmed()
                     }
                 }
 
-                advanceTimeBy(100)
+                advanceTimeBy(100L)
             }
 
             val result = this.result

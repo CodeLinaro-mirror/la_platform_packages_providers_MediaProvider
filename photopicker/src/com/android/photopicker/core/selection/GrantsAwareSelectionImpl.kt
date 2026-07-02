@@ -254,6 +254,16 @@ class GrantsAwareSelectionImpl<T : Grantable>(
     }
 
     /**
+     * Returns the number of elements in this collection.
+     *
+     * @return The number of elements.
+     */
+    @GuardedBy("mutex")
+    override suspend fun size(): Int {
+        return mutex.withLock { _selection.size }
+    }
+
+    /**
      * Toggles the requested item in the selection.
      *
      * If the item is of type [Media] and is preGranted i.e. [Media.isPreGranted] is true then when
