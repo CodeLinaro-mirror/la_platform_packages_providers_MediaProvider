@@ -27,6 +27,7 @@ import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.annotation.VisibleForTesting
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.Lifecycle
@@ -138,17 +139,6 @@ class MainActivity : Hilt_MainActivity() {
         // Begin listening for events before starting the UI.
         listenForEvents()
 
-        /*
-         * In single select sessions, the activity needs to end after a media object is selected,
-         * so register a listener to the selection so the activity can handle calling
-         * [onMediaSelectionConfirmed] itself.
-         *
-         * For multi-select, the activity has to wait for onMediaSelectionConfirmed to be called
-         * by the selection bar click handler, or for the [Event.MediaSelectionConfirmed], in
-         * the event the user ends the session from the [PreviewFeature]
-         */
-        listenForSelectionIfSingleSelect()
-
         setContent {
             val photopickerConfiguration by
                 configurationManager.configuration.collectAsStateWithLifecycle()
@@ -171,27 +161,6 @@ class MainActivity : Hilt_MainActivity() {
                         preloadMedia = preloadMedia,
                         obtainPreloaderDeferred = { preloadDeferred }
                     )
-                }
-            }
-        }
-    }
-
-    /**
-     * A collector that starts when Photopicker is running in single-select mode. This collector
-     * will trigger [onMediaSelectionConfirmed] when the first (and only) item is selected.
-     */
-    private fun listenForSelectionIfSingleSelect() {
-
-        // Only set up a collector if the selection limit is 1, otherwise the [SelectionBarFeature]
-        // will be enabled for the user to confirm the selection.
-        if (configurationManager.configuration.value.selectionLimit == 1) {
-            lifecycleScope.launch {
-                withContext(background) {
-                    selection.get().flow.collect {
-                        if (it.size == 1) {
-                            onMediaSelectionConfirmed()
-                        }
-                    }
                 }
             }
         }
@@ -225,7 +194,8 @@ class MainActivity : Hilt_MainActivity() {
      * This will result in access being issued to the calling app if the media can be successfully
      * prepared.
      */
-    private suspend fun onMediaSelectionConfirmed() {
+    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    suspend fun onMediaSelectionConfirmed() {
 
         val snapshot = selection.get().snapshot()
         // Determine if any preload of the selected media needs to happen, and

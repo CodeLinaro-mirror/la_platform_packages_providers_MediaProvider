@@ -85,6 +85,13 @@ interface Selection<T> {
     suspend fun snapshot(): Set<T>
 
     /**
+     * Returns the number of elements in this collection.
+     *
+     * @return The number of elements.
+     */
+    suspend fun size(): Int
+
+    /**
      * Toggles the requested item in the selection.
      *
      * If the item is already in the selection, it is removed. If the item is not in the selection,

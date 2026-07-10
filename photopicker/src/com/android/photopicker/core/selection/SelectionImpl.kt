@@ -91,6 +91,10 @@ class SelectionImpl<T>(
     @GuardedBy("mutex")
     override suspend fun add(item: T): SelectionModifiedResult {
         mutex.withLock {
+            // If the item is already part of the set, just return success
+            // This saves an unnecessary call to updateFlow for items that are already part of the
+            // set.
+            if (_selection.contains(item)) return SUCCESS
             val itemCanFit = ensureSelectionLimitLocked(/* size= */ 1)
             if (itemCanFit) {
                 _selection.add(item)
@@ -200,6 +204,16 @@ class SelectionImpl<T>(
     }
 
     /**
+     * Returns the number of elements in this collection.
+     *
+     * @return The number of elements.
+     */
+    @GuardedBy("mutex")
+    override suspend fun size(): Int {
+        return mutex.withLock { _selection.size }
+    }
+
+    /**
      * Toggles the requested item in the selection.
      *
      * If the item is already in the selection, it is removed. If the item is not in the selection,
@@ -213,14 +227,19 @@ class SelectionImpl<T>(
     @GuardedBy("mutex")
     override suspend fun toggle(item: T): SelectionModifiedResult {
         mutex.withLock {
-            if (_selection.contains(item)) {
-                _selection.remove(item)
-            } else {
-                val itemCanFit = ensureSelectionLimitLocked(/* size= */ 1)
-                if (itemCanFit) {
+            when {
+                _selection.contains(item) -> _selection.remove(item)
+                configuration.value.selectionLimit == 1 -> {
+                    _selection.clear()
                     _selection.add(item)
-                } else {
-                    return FAILURE_SELECTION_LIMIT_EXCEEDED
+                }
+                else -> {
+                    val itemCanFit = ensureSelectionLimitLocked(/* size= */ 1)
+                    if (itemCanFit) {
+                        _selection.add(item)
+                    } else {
+                        return FAILURE_SELECTION_LIMIT_EXCEEDED
+                    }
                 }
             }
             updateFlow()
