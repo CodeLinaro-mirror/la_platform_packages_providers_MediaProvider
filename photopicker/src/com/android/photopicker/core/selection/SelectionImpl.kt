@@ -60,7 +60,7 @@ class SelectionImpl<T>(
     val scope: CoroutineScope,
     val initialSelection: Collection<T>? = null,
     private val configuration: StateFlow<PhotopickerConfiguration>,
-    private val preSelectedMedia: StateFlow<List<T>?>
+    private val preSelectedMedia: StateFlow<List<T>?>,
 ) : Selection<T> {
 
     private val TAG = "SelectionImpl"
@@ -88,12 +88,7 @@ class SelectionImpl<T>(
         }
 
         _flow = MutableStateFlow(_selection.toSet())
-        flow =
-            _flow.stateIn(
-                scope,
-                SharingStarted.WhileSubscribed(),
-                initialValue = _flow.value,
-            )
+        flow = _flow.stateIn(scope, SharingStarted.WhileSubscribed(), initialValue = _flow.value)
     }
 
     /**
@@ -109,6 +104,10 @@ class SelectionImpl<T>(
     @GuardedBy("mutex")
     override suspend fun add(item: T): SelectionModifiedResult {
         mutex.withLock {
+            // If the item is already part of the set, just return success
+            // This saves an unnecessary call to updateFlow for items that are already part of the
+            // set.
+            if (_selection.contains(item)) return SUCCESS
             val itemCanFit = ensureSelectionLimitLocked(/* size= */ 1)
             if (itemCanFit) {
                 _selection.add(item)
@@ -220,10 +219,21 @@ class SelectionImpl<T>(
     }
 
     /**
+     * Returns the number of elements in this collection.
+     *
+     * @return The number of elements.
+     */
+    @GuardedBy("mutex")
+    override suspend fun size(): Int {
+        return mutex.withLock { _selection.size }
+    }
+
+    /**
      * Toggles the requested item in the selection.
      *
-     * If the item is already in the selection, it is removed. If the item is not in the selection,
-     * it is added. Afterwards, will emit the new selection into the exposed flow.
+     * If the item is already in the selection, it is removed. If the selection limit is 1, the new
+     * item is added in place of the existing item. If the item is not in the selection, it is
+     * added. Afterwards, will emit the new selection into the exposed flow.
      *
      * @param item the item to add
      * @param onSelectionLimitExceeded optional error handler if the item cannot fit into the
@@ -233,14 +243,19 @@ class SelectionImpl<T>(
     @GuardedBy("mutex")
     override suspend fun toggle(item: T): SelectionModifiedResult {
         mutex.withLock {
-            if (_selection.contains(item)) {
-                _selection.remove(item)
-            } else {
-                val itemCanFit = ensureSelectionLimitLocked(/* size= */ 1)
-                if (itemCanFit) {
+            when {
+                _selection.contains(item) -> _selection.remove(item)
+                configuration.value.selectionLimit == 1 -> {
+                    _selection.clear()
                     _selection.add(item)
-                } else {
-                    return FAILURE_SELECTION_LIMIT_EXCEEDED
+                }
+                else -> {
+                    val itemCanFit = ensureSelectionLimitLocked(/* size= */ 1)
+                    if (itemCanFit) {
+                        _selection.add(item)
+                    } else {
+                        return FAILURE_SELECTION_LIMIT_EXCEEDED
+                    }
                 }
             }
             updateFlow()
