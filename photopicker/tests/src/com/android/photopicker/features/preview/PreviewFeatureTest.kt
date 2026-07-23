@@ -39,6 +39,7 @@ import android.test.mock.MockContentResolver
 import android.view.Surface
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.defaultMinSize
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.assert
@@ -59,13 +60,19 @@ import com.android.photopicker.core.Background
 import com.android.photopicker.core.ConcurrencyModule
 import com.android.photopicker.core.EmbeddedServiceModule
 import com.android.photopicker.core.Main
+import com.android.photopicker.core.PhotopickerMain
 import com.android.photopicker.core.ViewModelModule
 import com.android.photopicker.core.events.Event
 import com.android.photopicker.core.events.Events
+import com.android.photopicker.core.events.LocalEvents
 import com.android.photopicker.core.features.FeatureManager
 import com.android.photopicker.core.features.FeatureToken
 import com.android.photopicker.core.navigation.PhotopickerDestinations
+import com.android.photopicker.core.selection.GrantsAwareSelectionImpl
+import com.android.photopicker.core.selection.LocalSelection
 import com.android.photopicker.core.selection.Selection
+import com.android.photopicker.core.theme.PhotopickerTheme
+import com.android.photopicker.data.TestDataServiceImpl
 import com.android.photopicker.data.model.Media
 import com.android.photopicker.data.model.MediaSource
 import com.android.photopicker.extensions.navigateToPreviewMedia
@@ -133,11 +140,12 @@ class PreviewFeatureTest : PhotopickerFeatureBaseTest() {
     val testDispatcher = StandardTestDispatcher()
 
     /* Overrides for ActivityModule */
-    @BindValue @Main val mainScope: TestScope = TestScope(testDispatcher)
-    @BindValue @Background var testBackgroundScope: CoroutineScope = mainScope.backgroundScope
+    val testScope: TestScope = TestScope(testDispatcher)
+    @BindValue @Main val mainScope: CoroutineScope = testScope
+    @BindValue @Background var testBackgroundScope: CoroutineScope = testScope.backgroundScope
 
     /* Overrides for ViewModelModule */
-    @BindValue val viewModelScopeOverride: CoroutineScope? = mainScope.backgroundScope
+    @BindValue val viewModelScopeOverride: CoroutineScope? = testScope.backgroundScope
 
     /* Overrides for the ConcurrencyModule */
     @BindValue @Main val mainDispatcher: CoroutineDispatcher = testDispatcher
@@ -316,7 +324,7 @@ class PreviewFeatureTest : PhotopickerFeatureBaseTest() {
     /** Ensures that the PreviewMedia route can be navigated to with an Image payload. */
     @Test
     fun testNavigateToPreviewImage() =
-        mainScope.runTest {
+        testScope.runTest {
             composeTestRule.setContent {
                 // Set an explicit size to prevent errors in glide being unable to measure
                 Column(modifier = Modifier.defaultMinSize(minHeight = 100.dp, minWidth = 100.dp)) {
@@ -353,7 +361,7 @@ class PreviewFeatureTest : PhotopickerFeatureBaseTest() {
 
     @Test
     fun testNavigateToPreviewVideo() =
-        mainScope.runTest {
+        testScope.runTest {
             composeTestRule.setContent {
                 callPhotopickerMain(
                     featureManager = featureManager,
@@ -388,7 +396,7 @@ class PreviewFeatureTest : PhotopickerFeatureBaseTest() {
     /** Ensures that the Preview Media route can toggle the displayed item in the selection. */
     @Test
     fun testPreviewMediaToggleSelection() =
-        mainScope.runTest {
+        testScope.runTest {
             val resources = getTestableContext().getResources()
             val selectButtonLabel = resources.getString(R.string.photopicker_select_button_label)
             val deselectButtonLabel =
@@ -418,7 +426,7 @@ class PreviewFeatureTest : PhotopickerFeatureBaseTest() {
                 .performClick()
 
             // Allow selection to update
-            advanceTimeBy(100)
+            advanceTimeBy(100L)
 
             assertWithMessage("Expected selection to contain media item")
                 .that(selection.snapshot())
@@ -433,7 +441,7 @@ class PreviewFeatureTest : PhotopickerFeatureBaseTest() {
                 .performClick()
 
             // Allow selection to update
-            advanceTimeBy(100)
+            advanceTimeBy(100L)
 
             assertWithMessage("Expected selection to contain media item")
                 .that(selection.snapshot())
@@ -443,7 +451,7 @@ class PreviewFeatureTest : PhotopickerFeatureBaseTest() {
     /** Ensures the PreviewSelection route can be navigated to. */
     @Test
     fun testNavigateToPreviewSelection() =
-        mainScope.runTest {
+        testScope.runTest {
             composeTestRule.setContent {
                 // Set an explicit size to prevent errors in glide being unable to measure
                 Column(modifier = Modifier.defaultMinSize(minHeight = 100.dp, minWidth = 100.dp)) {
@@ -456,7 +464,7 @@ class PreviewFeatureTest : PhotopickerFeatureBaseTest() {
             }
 
             selection.add(TEST_MEDIA_IMAGE)
-            advanceTimeBy(100)
+            advanceTimeBy(100L)
 
             // Navigate on the UI thread (similar to a click handler)
             composeTestRule.runOnUiThread({ navController.navigateToPreviewSelection() })
@@ -472,7 +480,7 @@ class PreviewFeatureTest : PhotopickerFeatureBaseTest() {
      */
     @Test
     fun testPreviewSelectionActions() =
-        mainScope.runTest {
+        testScope.runTest {
             val resources = getTestableContext().getResources()
             val selectButtonLabel = resources.getString(R.string.photopicker_select_button_label)
             val deselectButtonLabel =
@@ -490,7 +498,7 @@ class PreviewFeatureTest : PhotopickerFeatureBaseTest() {
             }
 
             selection.add(TEST_MEDIA_IMAGE)
-            advanceTimeBy(100)
+            advanceTimeBy(100L)
 
             // Navigate on the UI thread (similar to a click handler)
             composeTestRule.runOnUiThread({ navController.navigateToPreviewSelection() })
@@ -499,11 +507,11 @@ class PreviewFeatureTest : PhotopickerFeatureBaseTest() {
                 .that(navController.currentBackStackEntry?.destination?.route)
                 .isEqualTo(PhotopickerDestinations.PREVIEW_SELECTION.route)
 
-            advanceTimeBy(100)
+            advanceTimeBy(100L)
             composeTestRule.waitForIdle()
 
             // Allow the PreviewViewModel to collect flows
-            advanceTimeBy(100)
+            advanceTimeBy(100L)
 
             composeTestRule
                 .onNode(hasText(deselectButtonLabel))
@@ -512,7 +520,7 @@ class PreviewFeatureTest : PhotopickerFeatureBaseTest() {
                 .performClick()
 
             // Allow selection to update
-            advanceTimeBy(100)
+            advanceTimeBy(100L)
             assertWithMessage("Selection contained an unexpected item")
                 .that(selection.snapshot())
                 .doesNotContain(TEST_MEDIA_IMAGE)
@@ -524,66 +532,16 @@ class PreviewFeatureTest : PhotopickerFeatureBaseTest() {
                 .performClick()
 
             // Allow selection to update
-            advanceTimeBy(100)
+            advanceTimeBy(100L)
             assertWithMessage("Selection did not contain an expected item")
                 .that(selection.snapshot())
                 .contains(TEST_MEDIA_IMAGE)
         }
 
-    /** Ensures the feature emits its registered [Event.MediaSelectionConfirmed] event. */
-    @Test
-    fun testPreviewEmitsMediaSelectionConfirmedEvent() =
-        mainScope.runTest {
-            selection.add(TEST_MEDIA_IMAGE)
-            advanceTimeBy(100)
-
-            val eventsSent = mutableListOf<Event>()
-            backgroundScope.launch { events.flow.toList(eventsSent) }
-
-            composeTestRule.setContent {
-                // Set an explicit size to prevent errors in glide being unable to measure
-                Column(modifier = Modifier.defaultMinSize(minHeight = 100.dp, minWidth = 100.dp)) {
-                    callPhotopickerMain(
-                        featureManager = featureManager,
-                        selection = selection,
-                        events = events,
-                    )
-                }
-            }
-
-            // Navigate on the UI thread (similar to a click handler)
-            composeTestRule.runOnUiThread({ navController.navigateToPreviewSelection() })
-
-            advanceTimeBy(100)
-            composeTestRule.waitForIdle()
-
-            // Allow the PreviewViewModel to collect flows
-            advanceTimeBy(100)
-
-            val resources = getTestableContext().getResources()
-            val buttonLabel =
-                resources.getString(
-                    R.string.photopicker_add_button_label,
-                    selection.snapshot().size
-                )
-
-            composeTestRule
-                .onNode(hasText(buttonLabel))
-                .assertIsDisplayed()
-                .assert(hasClickAction())
-                .performClick()
-
-            // Allow selection to update
-            advanceTimeBy(100)
-            assertWithMessage("Expected event was not dispatched")
-                .that(eventsSent)
-                .contains(Event.MediaSelectionConfirmed(FeatureToken.PREVIEW.token))
-        }
-
     /** Ensures the VideoUi creates a RemoteSurfaceController */
     @Test
     fun testVideoUiCreatesRemoteSurfaceController() =
-        mainScope.runTest {
+        testScope.runTest {
             composeTestRule.setContent {
                 callPhotopickerMain(
                     featureManager = featureManager,
@@ -598,7 +556,7 @@ class PreviewFeatureTest : PhotopickerFeatureBaseTest() {
             })
 
             composeTestRule.waitForIdle()
-            advanceTimeBy(100)
+            advanceTimeBy(100L)
 
             verify(mockContentProvider)
                 .call(
@@ -625,7 +583,7 @@ class PreviewFeatureTest : PhotopickerFeatureBaseTest() {
     /** Ensures the VideoUi notifies of surfaceCreation */
     @Test
     fun testVideoUiNotifySurfaceCreated() =
-        mainScope.runTest {
+        testScope.runTest {
             composeTestRule.setContent {
                 callPhotopickerMain(
                     featureManager = featureManager,
@@ -640,7 +598,7 @@ class PreviewFeatureTest : PhotopickerFeatureBaseTest() {
             })
 
             composeTestRule.waitForIdle()
-            advanceTimeBy(100)
+            advanceTimeBy(100L)
 
             val bundle = controllerBundle.getValue()
             assertWithMessage("SurfaceStateChangedCallback was not provided")
@@ -665,7 +623,7 @@ class PreviewFeatureTest : PhotopickerFeatureBaseTest() {
     /** Ensures the VideoUi attempts to play videos when the controller indicates it is ready. */
     @Test
     fun testVideoUiRequestsPlayWhenMediaReady() =
-        mainScope.runTest {
+        testScope.runTest {
             composeTestRule.setContent {
                 callPhotopickerMain(
                     featureManager = featureManager,
@@ -680,7 +638,7 @@ class PreviewFeatureTest : PhotopickerFeatureBaseTest() {
             })
 
             composeTestRule.waitForIdle()
-            advanceTimeBy(100)
+            advanceTimeBy(100L)
 
             val bundle = controllerBundle.getValue()
             val binder = bundle.getBinder(EXTRA_SURFACE_STATE_CALLBACK)
@@ -688,7 +646,7 @@ class PreviewFeatureTest : PhotopickerFeatureBaseTest() {
 
             callback.setPlaybackState(/* surfaceId= */ 1, PLAYBACK_STATE_READY, null)
 
-            advanceTimeBy(100)
+            advanceTimeBy(100L)
             composeTestRule.waitForIdle()
 
             verify(mockCloudMediaSurfaceController).onMediaPlay(anyInt())
@@ -697,7 +655,7 @@ class PreviewFeatureTest : PhotopickerFeatureBaseTest() {
     /** Ensures the VideoUi auto shows & hides the player controls. */
     @Test
     fun testVideoUiShowsAndHidesPlayerControls() =
-        mainScope.runTest {
+        testScope.runTest {
             val resources = getTestableContext().getResources()
 
             val playButtonDescription =
@@ -726,7 +684,7 @@ class PreviewFeatureTest : PhotopickerFeatureBaseTest() {
             })
 
             composeTestRule.waitForIdle()
-            advanceTimeBy(100)
+            advanceTimeBy(100L)
 
             val bundle = controllerBundle.getValue()
             val binder = bundle.getBinder(EXTRA_SURFACE_STATE_CALLBACK)
@@ -734,13 +692,13 @@ class PreviewFeatureTest : PhotopickerFeatureBaseTest() {
 
             callback.setPlaybackState(/* surfaceId= */ 1, PLAYBACK_STATE_READY, null)
 
-            advanceTimeBy(100)
+            advanceTimeBy(100L)
             composeTestRule.waitForIdle()
 
             callback.setPlaybackState(/* surfaceId= */ 1, PLAYBACK_STATE_STARTED, null)
             verify(mockCloudMediaSurfaceController).onMediaPlay(anyInt())
 
-            advanceTimeBy(100)
+            advanceTimeBy(100L)
             composeTestRule.waitForIdle()
 
             // Pause is the button shown once the player begins playing.
@@ -778,7 +736,7 @@ class PreviewFeatureTest : PhotopickerFeatureBaseTest() {
     /** Ensures the VideoUi Play/Pause buttons work correctly. */
     @Test
     fun testVideoUiPlayPauseButtonOnClick() =
-        mainScope.runTest {
+        testScope.runTest {
             val resources = getTestableContext().getResources()
 
             val playButtonDescription =
@@ -801,7 +759,7 @@ class PreviewFeatureTest : PhotopickerFeatureBaseTest() {
             })
 
             composeTestRule.waitForIdle()
-            advanceTimeBy(100)
+            advanceTimeBy(100L)
 
             val bundle = controllerBundle.getValue()
             val binder = bundle.getBinder(EXTRA_SURFACE_STATE_CALLBACK)
@@ -809,7 +767,7 @@ class PreviewFeatureTest : PhotopickerFeatureBaseTest() {
 
             callback.setPlaybackState(/* surfaceId= */ 1, PLAYBACK_STATE_READY, null)
 
-            advanceTimeBy(100)
+            advanceTimeBy(100L)
             composeTestRule.waitForIdle()
 
             callback.setPlaybackState(/* surfaceId= */ 1, PLAYBACK_STATE_STARTED, null)
@@ -817,7 +775,7 @@ class PreviewFeatureTest : PhotopickerFeatureBaseTest() {
 
             clearInvocations(mockCloudMediaSurfaceController)
 
-            advanceTimeBy(100)
+            advanceTimeBy(100L)
             composeTestRule.waitForIdle()
 
             // Pause is the button shown once the player begins playing.
@@ -827,11 +785,11 @@ class PreviewFeatureTest : PhotopickerFeatureBaseTest() {
                 .assert(hasClickAction())
                 .performClick()
 
-            advanceTimeBy(100)
+            advanceTimeBy(100L)
             verify(mockCloudMediaSurfaceController).onMediaPause(anyInt())
 
             callback.setPlaybackState(/* surfaceId= */ 1, PLAYBACK_STATE_PAUSED, null)
-            advanceTimeBy(100)
+            advanceTimeBy(100L)
             composeTestRule.waitForIdle()
 
             composeTestRule
@@ -840,7 +798,7 @@ class PreviewFeatureTest : PhotopickerFeatureBaseTest() {
                 .assert(hasClickAction())
                 .performClick()
 
-            advanceTimeBy(100)
+            advanceTimeBy(100L)
             composeTestRule.waitForIdle()
             verify(mockCloudMediaSurfaceController).onMediaPlay(anyInt())
         }
@@ -848,7 +806,7 @@ class PreviewFeatureTest : PhotopickerFeatureBaseTest() {
     /** Ensures the VideoUi Mute/UnMute buttons work correctly. */
     @Test
     fun testVideoUiMuteButtonOnClick() =
-        mainScope.runTest {
+        testScope.runTest {
             val resources = getTestableContext().getResources()
             val muteButtonDescription =
                 resources.getString(R.string.photopicker_video_mute_button_description)
@@ -870,7 +828,7 @@ class PreviewFeatureTest : PhotopickerFeatureBaseTest() {
             })
 
             composeTestRule.waitForIdle()
-            advanceTimeBy(100)
+            advanceTimeBy(100L)
 
             val bundle = controllerBundle.getValue()
             val binder = bundle.getBinder(EXTRA_SURFACE_STATE_CALLBACK)
@@ -878,7 +836,7 @@ class PreviewFeatureTest : PhotopickerFeatureBaseTest() {
 
             callback.setPlaybackState(/* surfaceId= */ 1, PLAYBACK_STATE_READY, null)
 
-            advanceTimeBy(100)
+            advanceTimeBy(100L)
             composeTestRule.waitForIdle()
 
             callback.setPlaybackState(/* surfaceId= */ 1, PLAYBACK_STATE_STARTED, null)
@@ -886,7 +844,7 @@ class PreviewFeatureTest : PhotopickerFeatureBaseTest() {
 
             clearInvocations(mockCloudMediaSurfaceController)
 
-            advanceTimeBy(100)
+            advanceTimeBy(100L)
             composeTestRule.waitForIdle()
 
             // Pause is the button shown once the player begins playing.
@@ -896,12 +854,12 @@ class PreviewFeatureTest : PhotopickerFeatureBaseTest() {
                 .assert(hasClickAction())
                 .performClick()
 
-            advanceTimeBy(100)
+            advanceTimeBy(100L)
             verify(mockCloudMediaSurfaceController).onConfigChange(any(Bundle::class.java))
 
             clearInvocations(mockCloudMediaSurfaceController)
 
-            advanceTimeBy(100)
+            advanceTimeBy(100L)
             composeTestRule.waitForIdle()
 
             composeTestRule
@@ -910,7 +868,7 @@ class PreviewFeatureTest : PhotopickerFeatureBaseTest() {
                 .assert(hasClickAction())
                 .performClick()
 
-            advanceTimeBy(100)
+            advanceTimeBy(100L)
             composeTestRule.waitForIdle()
             verify(mockCloudMediaSurfaceController).onConfigChange(any(Bundle::class.java))
         }
@@ -918,7 +876,7 @@ class PreviewFeatureTest : PhotopickerFeatureBaseTest() {
     /** Ensures the VideoUi shows an error dialog for temporary failures. */
     @Test
     fun testVideoUiRetriablePlaybackError() =
-        mainScope.runTest {
+        testScope.runTest {
             val resources = getTestableContext().getResources()
 
             val retryButtonLabel =
@@ -941,7 +899,7 @@ class PreviewFeatureTest : PhotopickerFeatureBaseTest() {
             })
 
             composeTestRule.waitForIdle()
-            advanceTimeBy(100)
+            advanceTimeBy(100L)
 
             val bundle = controllerBundle.getValue()
             val binder = bundle.getBinder(EXTRA_SURFACE_STATE_CALLBACK)
@@ -949,7 +907,7 @@ class PreviewFeatureTest : PhotopickerFeatureBaseTest() {
 
             callback.setPlaybackState(/* surfaceId= */ 1, PLAYBACK_STATE_READY, null)
 
-            advanceTimeBy(100)
+            advanceTimeBy(100L)
             composeTestRule.waitForIdle()
 
             callback.setPlaybackState(/* surfaceId= */ 1, PLAYBACK_STATE_STARTED, null)
@@ -957,7 +915,7 @@ class PreviewFeatureTest : PhotopickerFeatureBaseTest() {
 
             clearInvocations(mockCloudMediaSurfaceController)
 
-            advanceTimeBy(100)
+            advanceTimeBy(100L)
             composeTestRule.waitForIdle()
 
             callback.setPlaybackState(
@@ -966,7 +924,7 @@ class PreviewFeatureTest : PhotopickerFeatureBaseTest() {
                 null
             )
 
-            advanceTimeBy(100)
+            advanceTimeBy(100L)
             composeTestRule.waitForIdle()
 
             composeTestRule.onNode(hasText(errorTitle)).assertIsDisplayed()
@@ -977,7 +935,7 @@ class PreviewFeatureTest : PhotopickerFeatureBaseTest() {
                 .assert(hasClickAction())
                 .performClick()
 
-            advanceTimeBy(100)
+            advanceTimeBy(100L)
             composeTestRule.waitForIdle()
 
             verify(mockCloudMediaSurfaceController).onMediaPlay(anyInt())
@@ -990,7 +948,7 @@ class PreviewFeatureTest : PhotopickerFeatureBaseTest() {
     /** Ensures the VideoUi shows a snackbar for permanent failures. */
     @Test
     fun testVideoUiPermanentPlaybackError() =
-        mainScope.runTest {
+        testScope.runTest {
             val resources = getTestableContext().getResources()
 
             val errorMessage =
@@ -1010,7 +968,7 @@ class PreviewFeatureTest : PhotopickerFeatureBaseTest() {
             })
 
             composeTestRule.waitForIdle()
-            advanceTimeBy(100)
+            advanceTimeBy(100L)
 
             val bundle = controllerBundle.getValue()
             val binder = bundle.getBinder(EXTRA_SURFACE_STATE_CALLBACK)
@@ -1018,7 +976,7 @@ class PreviewFeatureTest : PhotopickerFeatureBaseTest() {
 
             callback.setPlaybackState(/* surfaceId= */ 1, PLAYBACK_STATE_READY, null)
 
-            advanceTimeBy(100)
+            advanceTimeBy(100L)
             composeTestRule.waitForIdle()
 
             callback.setPlaybackState(/* surfaceId= */ 1, PLAYBACK_STATE_STARTED, null)
@@ -1026,7 +984,7 @@ class PreviewFeatureTest : PhotopickerFeatureBaseTest() {
 
             clearInvocations(mockCloudMediaSurfaceController)
 
-            advanceTimeBy(100)
+            advanceTimeBy(100L)
             composeTestRule.waitForIdle()
 
             callback.setPlaybackState(
@@ -1035,7 +993,7 @@ class PreviewFeatureTest : PhotopickerFeatureBaseTest() {
                 null
             )
 
-            advanceTimeBy(100)
+            advanceTimeBy(100L)
             composeTestRule.waitForIdle()
 
             composeTestRule.onNode(hasText(errorMessage)).assertIsDisplayed()
