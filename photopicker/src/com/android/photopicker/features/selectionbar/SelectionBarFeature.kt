@@ -40,14 +40,9 @@ class SelectionBarFeature : PhotopickerUiFeature {
         // The selection bar is only shown when in multi-select mode. For single select,
         // the activity ends as soon as the first Media is selected, so this feature is
         // disabled to prevent it's animation for playing when the selection changes.
-        override fun isEnabled(config: PhotopickerConfiguration): Boolean {
-            if (config.runtimeEnv == PhotopickerRuntimeEnv.ACTIVITY) {
-                return config.selectionLimit > 1
-            }
-            // This is static enablement of feature. It will be hidden in collapsed
-            // mode for embedded at runtime.
-            return config.runtimeEnv == PhotopickerRuntimeEnv.EMBEDDED
-        }
+        override fun isEnabled(
+            config: PhotopickerConfiguration
+        ): Boolean = true
 
         override fun build(featureManager: FeatureManager) = SelectionBarFeature()
     }
