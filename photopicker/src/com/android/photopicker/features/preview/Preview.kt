@@ -17,6 +17,7 @@
 package com.android.photopicker.features.preview
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -29,7 +30,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.PagerState
@@ -55,13 +56,20 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.res.vectorResource
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.traversalIndex
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.paging.compose.LazyPagingItems
@@ -88,6 +96,7 @@ import com.android.photopicker.core.theme.CustomAccentColorScheme
 import com.android.photopicker.core.theme.LocalFixedAccentColors
 import com.android.photopicker.data.model.Media
 import com.android.photopicker.extensions.navigateToPreviewSelection
+import java.text.DateFormat
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 
@@ -101,7 +110,7 @@ import kotlinx.coroutines.launch
 @Composable
 fun PreviewSelection(
     viewModel: PreviewViewModel = obtainViewModel(),
-    previewItemFlow: StateFlow<Media?>? = null
+    previewItemFlow: StateFlow<Media?>? = null,
 ) {
     val currentSelection by LocalSelection.current.flow.collectAsStateWithLifecycle()
 
@@ -111,35 +120,38 @@ fun PreviewSelection(
             else -> true
         }
 
-    val selection =
+    val config = LocalPhotopickerConfiguration.current
+
+    val selectionFlow =
         when (previewSingleItem) {
             true -> {
                 checkNotNull(previewItemFlow) { "Flow cannot be null for previewSingleItem" }
                 val media by previewItemFlow.collectAsStateWithLifecycle()
                 val localMedia = media
                 if (localMedia != null) {
-                    viewModel
-                        .getPreviewMediaIncludingPreGrantedItems(
+                    remember(localMedia) {
+                        viewModel.getPreviewMediaIncludingPreGrantedItems(
                             setOf(localMedia),
-                            LocalPhotopickerConfiguration.current,
-                            /* isSingleItemPreview */ true
+                            config,
+                            /* isSingleItemPreview */ true,
                         )
-                        .collectAsLazyPagingItems()
+                    }
                 } else {
                     null
                 }
             }
             false -> {
                 val selectionSnapshot by viewModel.selectionSnapshot.collectAsStateWithLifecycle()
-                viewModel
-                    .getPreviewMediaIncludingPreGrantedItems(
+                remember(selectionSnapshot) {
+                    viewModel.getPreviewMediaIncludingPreGrantedItems(
                         selectionSnapshot,
-                        LocalPhotopickerConfiguration.current,
-                        /* isSingleItemPreview */ false
+                        config,
+                        /* isSingleItemPreview */ false,
                     )
-                    .collectAsLazyPagingItems()
+                }
             }
         }
+    val selection = selectionFlow?.collectAsLazyPagingItems()
 
     if (selection != null) {
         // Only snapshot the selection once when the composable is created.
@@ -152,12 +164,12 @@ fun PreviewSelection(
                     // This is inside an edge-to-edge dialog, so apply padding to ensure the
                     // UI buttons stay above the navigation bar.
                     Modifier.windowInsetsPadding(
-                        WindowInsets.statusBars.only(WindowInsetsSides.Vertical)
+                        WindowInsets.systemBars.only(WindowInsetsSides.Vertical)
                     )
             ) {
                 Row(
                     modifier =
-                        Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 4.dp, start = 8.dp),
+                        Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 4.dp, start = 8.dp)
                 ) {
                     // back button
                     IconButton(onClick = { navController.popBackStack() }) {
@@ -188,13 +200,13 @@ fun PreviewSelection(
                         )
 
                         // Only show the selection button if not in single select.
-                        if (LocalPhotopickerConfiguration.current.selectionLimit > 1) {
+                        if (config.selectionLimit > 1) {
                             IconButton(
                                 modifier = Modifier.align(Alignment.TopStart).padding(start = 8.dp),
                                 onClick = {
                                     val media = selection.get(state.currentPage)
                                     media?.let { viewModel.toggleInSelection(it, {}) }
-                                }
+                                },
                             ) {
                                 if (currentSelection.contains(selection.get(state.currentPage))) {
                                     Icon(
@@ -235,7 +247,7 @@ fun PreviewSelection(
                     // never an option.
                     SnackbarHost(
                         snackbarHostState,
-                        modifier = Modifier.align(Alignment.BottomCenter)
+                        modifier = Modifier.align(Alignment.BottomCenter),
                     )
                 }
 
@@ -244,21 +256,27 @@ fun PreviewSelection(
                     modifier =
                         Modifier.fillMaxWidth()
                             .padding(bottom = 48.dp, start = 4.dp, end = 16.dp, top = 12.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween
+                    horizontalArrangement = Arrangement.SpaceBetween,
                 ) {
-                    val config = LocalPhotopickerConfiguration.current
                     val strategy = remember(config) { determineSelectionStrategy(config) }
                     if (previewSingleItem || strategy == SelectionStrategy.GRANTS_AWARE_SELECTION) {
                         Spacer(Modifier.size(8.dp))
                     } else {
                         SelectionButton(currentSelection = currentSelection)
                     }
+                    val scope = rememberCoroutineScope()
+                    val events = LocalEvents.current
 
                     FilledTonalButton(
                         onClick = {
                             if (config.selectionLimit == 1) {
                                 val media = selection.get(state.currentPage)
                                 media?.let { viewModel.toggleInSelection(it, {}) }
+                                scope.launch {
+                                    events.dispatch(
+                                        Event.MediaSelectionConfirmed(FeatureToken.PREVIEW.token)
+                                    )
+                                }
                             } else {
                                 navController.popBackStack()
                             }
@@ -274,7 +292,7 @@ fun PreviewSelection(
                                         .getTextColorForAccentComponentsIfDefinedOrElse(
                                             /* fallback */ MaterialTheme.colorScheme.onPrimary
                                         ),
-                            )
+                            ),
                     ) {
                         Text(
                             text =
@@ -296,9 +314,8 @@ fun PreviewSelection(
 @Composable
 private fun SelectionButton(
     currentSelection: Set<Media>,
-    viewModel: PreviewViewModel = obtainViewModel()
+    viewModel: PreviewViewModel = obtainViewModel(),
 ) {
-
     TextButton(
         onClick = {
             if (currentSelection.size > 0 && viewModel.selectionSnapshot.value.size > 0) {
@@ -403,7 +420,7 @@ private fun ImageUi(image: Media.Image, singleItemPreview: Boolean) {
                     Telemetry.PreviewModeEntry.LONG_PRESS,
                     previewItemCount = 1,
                     mediaType,
-                    Telemetry.VideoPlayBackInteractions.UNSET_VIDEO_PLAYBACK_INTERACTION
+                    Telemetry.VideoPlayBackInteractions.UNSET_VIDEO_PLAYBACK_INTERACTION,
                 )
             )
         }
@@ -443,11 +460,13 @@ fun PreviewSelectionButton(modifier: Modifier) {
             modifier = modifier,
         ) {
             Text(
-                stringResource(R.string.photopicker_preview_button_label),
+                text = stringResource(R.string.photopicker_preview_button_label),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
                 color =
                     CustomAccentColorScheme.current.getAccentColorIfDefinedOrElse(
                         /* fallback */ MaterialTheme.colorScheme.primary
-                    )
+                    ),
             )
         }
     }
@@ -470,7 +489,7 @@ private suspend fun logPreviewSelectionButtonClicked(
             Telemetry.PreviewModeEntry.VIEW_SELECTED,
             previewItemCount,
             Telemetry.MediaType.UNSET_MEDIA_TYPE,
-            Telemetry.VideoPlayBackInteractions.UNSET_VIDEO_PLAYBACK_INTERACTION
+            Telemetry.VideoPlayBackInteractions.UNSET_VIDEO_PLAYBACK_INTERACTION,
         )
     )
 
@@ -480,7 +499,7 @@ private suspend fun logPreviewSelectionButtonClicked(
             FeatureToken.PREVIEW.token,
             configuration.sessionId,
             configuration.callingPackageUid ?: -1,
-            Telemetry.UiEvent.ENTER_PICKER_PREVIEW_MODE
+            Telemetry.UiEvent.ENTER_PICKER_PREVIEW_MODE,
         )
     )
 
@@ -489,7 +508,7 @@ private suspend fun logPreviewSelectionButtonClicked(
             FeatureToken.PREVIEW.token,
             configuration.sessionId,
             configuration.callingPackageUid ?: -1,
-            Telemetry.UiEvent.PICKER_CLICK_VIEW_SELECTED
+            Telemetry.UiEvent.PICKER_CLICK_VIEW_SELECTED,
         )
     )
 }
