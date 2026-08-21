@@ -173,7 +173,7 @@ class MainActivity : Hilt_MainActivity() {
                 ->
                 when (event) {
 
-                    /**
+                     /**
                      * [MediaSelectionConfirmed] will be dispatched in response to the user
                      * confirming their selection of Media in the UI.
                      */
