@@ -36,7 +36,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
-import java.util.UUID;
 
 public final class XmpDataParser implements Closeable {
 
@@ -137,8 +136,9 @@ public final class XmpDataParser implements Closeable {
             } else if (NS_XMPMM.equals(ns)
                     && NAME_ORIGINAL_DOCUMENT_ID.equals(name)) {
                 builder.originalDocumentId(mParser.nextText());
-            } else if (NS_EXIF.equals(ns) && RedactionUtils.getsRedactedExifTags()
-                    .contains(name)) {
+            }
+
+            if (isSensitiveTagOrAttribute()) {
                 long start = offset;
                 do {
                     type = mParser.next();
@@ -169,6 +169,13 @@ public final class XmpDataParser implements Closeable {
     //    /** The [start, end] offsets in the original file where to-be redacted info is
     //    stored */
     private static LongArray getRedactionRanges(XmpData xmpData) throws IOException {
+        // when the XMP box is too large to load then mRawXmp.length will be 0 but offsets
+        // will be non zero
+        if (xmpData.mRawXmp.length == 0 && xmpData.mXmpOffsets.length > 0) {
+            // If we know the XMP is oversized, redact the entire XMP range.
+            return LongArray.fromArray(xmpData.mXmpOffsets, xmpData.mXmpOffsets.length);
+        }
+
         try (XmpDataParser parser = new XmpDataParser(xmpData.mRawXmp, xmpData.mXmpOffsets)) {
             return parser.getRedactedRanges();
         } catch (XmlPullParserException e) {
@@ -195,8 +202,8 @@ public final class XmpDataParser implements Closeable {
             // attributes or tags, so we're willing to look for both
             final String ns = mParser.getNamespace();
             final String name = mParser.getName();
-            if (NS_EXIF.equals(ns) && RedactionUtils.getsRedactedExifTags()
-                    .contains(name)) {
+
+            if (isSensitiveTagOrAttribute()) {
                 long start = offset;
                 do {
                     type = mParser.next();
@@ -211,6 +218,22 @@ public final class XmpDataParser implements Closeable {
         return redactedRanges;
     }
 
+    private boolean isSensitiveTagOrAttribute() {
+        if (NS_EXIF.equals(mParser.getNamespace()) && RedactionUtils.getsRedactedExifTags()
+                .contains(mParser.getName())) {
+            return true;
+        }
+        for (int i = 0; i < mParser.getAttributeCount(); i++) {
+            final String attrNs = mParser.getAttributeNamespace(i);
+            final String attrName = mParser.getAttributeName(i);
+            if (NS_EXIF.equals(attrNs)
+                    && RedactionUtils.getsRedactedExifTags().contains(attrName)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static class XmpData {
         @NonNull
         private final byte[] mRawXmp;
@@ -223,17 +246,19 @@ public final class XmpDataParser implements Closeable {
         }
 
         static @NonNull XmpData extractXmpData(@NonNull IsoInterface iso) {
-            UUID uuid = UUID.fromString("be7acfcb-97a9-42e8-9c71-999491e3afac");
-            byte[] buf = iso.getBoxBytes(uuid);
-            long[] xmpOffsets = iso.getBoxRanges(uuid);
+            byte[] buf = iso.getBoxBytesForXmpUuid();
+            long[] xmpOffsets = iso.getBoxRangesForXmpUuid();
 
-            if (buf == null) {
+            // getBoxBytesForXmpUuid will return null if the box is not found or if the size
+            // exceeds 1MB. We check xmpOffsets.length to distinguish between these cases.
+            // If xmpOffsets is non-empty, it means the box was too large to load,
+            // and we should not fall back to BOX_XMP.
+            if (buf == null && xmpOffsets.length == 0) {
                 buf = iso.getBoxBytes(IsoInterface.BOX_XMP);
                 xmpOffsets = iso.getBoxRanges(IsoInterface.BOX_XMP);
             }
             if (buf == null) {
                 buf = new byte[0];
-                xmpOffsets = new long[0];
             }
             return new XmpData(buf, xmpOffsets);
         }
