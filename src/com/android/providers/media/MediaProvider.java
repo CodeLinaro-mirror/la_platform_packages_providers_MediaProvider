@@ -25,6 +25,7 @@ import static android.content.ContentResolver.QUERY_ARG_SQL_SELECTION;
 import static android.content.ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS;
 import static android.content.pm.PackageManager.PERMISSION_GRANTED;
 import static android.database.Cursor.FIELD_TYPE_BLOB;
+import static android.provider.MediaStore.EXTRA_CALLING_PACKAGE_UID;
 import static android.provider.MediaStore.MATCH_DEFAULT;
 import static android.provider.MediaStore.MATCH_EXCLUDE;
 import static android.provider.MediaStore.MATCH_INCLUDE;
@@ -5890,8 +5891,25 @@ public class MediaProvider extends ContentProvider {
             }
         }
 
+        // Do not allow to create request if the list contains a uri which does not exist
+        final LocalCallingIdentity token = clearLocalCallingIdentity();
+        try {
+            for (Uri uri : uris) {
+                try (Cursor c = queryForSingleItem(uri, new String[]{FileColumns._ID}, null, null,
+                        null)) {
+                    // queryForSingleItem method throws FileNotFoundException if no items were
+                    // found, or multiple items were found, or there was trouble reading the data.
+                } catch (FileNotFoundException e) {
+                    throw new IllegalArgumentException("Invalid Uri: " + uri, e);
+                }
+            }
+        } finally {
+            restoreLocalCallingIdentity(token);
+        }
+
         final Context context = getContext();
         final Intent intent = new Intent(method, null, context, PermissionActivity.class);
+        extras.putInt(EXTRA_CALLING_PACKAGE_UID, getCallingUidOrSelf());
         intent.putExtras(extras);
         return PendingIntent.getActivity(context, PermissionActivity.REQUEST_CODE, intent,
                 FLAG_ONE_SHOT | FLAG_CANCEL_CURRENT | FLAG_IMMUTABLE);
@@ -6468,8 +6486,15 @@ public class MediaProvider extends ContentProvider {
             }
 
             final LocalCallingIdentity token = clearLocalCallingIdentity();
-            final Uri genericUri = MediaStore.Files.getContentUri(volumeName,
-                    ContentUris.parseId(uri));
+
+            final Uri genericUri;
+            try {
+                genericUri = MediaStore.Files.getContentUri(volumeName, ContentUris.parseId(uri));
+            } catch (NumberFormatException e) {
+                restoreLocalCallingIdentity(token);
+                throw e;
+            }
+
             try (Cursor c = queryForSingleItem(genericUri,
                     sPlacementColumns.toArray(new String[0]), userWhere, userWhereArgs, null)) {
                 for (int i = 0; i < c.getColumnCount(); i++) {
@@ -7756,7 +7781,7 @@ public class MediaProvider extends ContentProvider {
         }
 
         // Check if the caller has access to private app directories.
-        if (isUidAllowedAccessToDataOrObbPathForFuse(mCallingIdentity.get().uid, filePath)) {
+        if (isUidAllowedAccessToDataOrObbPath(mCallingIdentity.get().uid, filePath)) {
             return true;
         }
 
@@ -7775,6 +7800,7 @@ public class MediaProvider extends ContentProvider {
      * the caller does not have special access.
      */
     private boolean isPrivatePackagePathNotAccessibleByCaller(String path) {
+        path = FileUtils.normalizeAndFilterDefaultIgnorableCodepoints(path);
         // Files under the apps own private directory
         final String appSpecificDir = extractPathOwnerPackageName(path);
 
@@ -7787,7 +7813,7 @@ public class MediaProvider extends ContentProvider {
         if (isExternalMediaDirectory(path)) {
             return false;
         }
-        return !isUidAllowedAccessToDataOrObbPathForFuse(mCallingIdentity.get().uid, path);
+        return !isUidAllowedAccessToDataOrObbPath(mCallingIdentity.get().uid, path);
     }
 
     private boolean shouldBypassDatabaseAndSetDirtyForFuse(int uid, String path) {
@@ -8703,6 +8729,11 @@ public class MediaProvider extends ContentProvider {
 
     @Keep
     public boolean isUidAllowedAccessToDataOrObbPathForFuse(int uid, String path) {
+        return isUidAllowedAccessToDataOrObbPath(uid,
+                FileUtils.normalizeAndFilterDefaultIgnorableCodepoints(path));
+    }
+
+    private boolean isUidAllowedAccessToDataOrObbPath(int uid, String path) {
         final LocalCallingIdentity token =
                 clearLocalCallingIdentity(getCachedCallingIdentityForFuse(uid));
         try {
