@@ -61,7 +61,7 @@ class PreviewFeature : PhotopickerUiFeature {
 
     /** Events produced by the Preview page */
     override val eventsProduced =
-        setOf<RegisteredEventClass>(Event.MediaSelectionConfirmed::class.java)
+    setOf<RegisteredEventClass>(Event.MediaSelectionConfirmed::class.java)
 
     override fun registerLocations(): List<Pair<Location, Int>> {
         return listOf(
